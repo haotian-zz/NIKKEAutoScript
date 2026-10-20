@@ -244,6 +244,12 @@ class ExecutionStore:
             db.execute('UPDATE retries SET state=? WHERE id=?', ('done', retry_id))
             db.execute('UPDATE runs SET finished_at=?,revision=revision+1 WHERE id='
                        '(SELECT run_id FROM retries WHERE id=?)', (timestamp(), retry_id))
+            db.execute('UPDATE runs SET state="finished" WHERE id='
+                       '(SELECT run_id FROM retries WHERE id=?) AND state="interrupted" '
+                       'AND NOT EXISTS (SELECT 1 FROM tasks WHERE run_id=runs.id '
+                       'AND status NOT IN ("success","skipped")) '
+                       'AND NOT EXISTS (SELECT 1 FROM retries WHERE run_id=runs.id '
+                       'AND state IN ("queued","running"))', (retry_id,))
 
     def interrupt(self, instance, summary='执行已停止；进行中的操作结果尚未确认', worker_pid=None,
                   include_queued=True):

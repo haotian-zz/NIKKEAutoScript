@@ -237,6 +237,57 @@ class ExecutionReportTests(unittest.TestCase):
         method(config, schedule=True)
         self.assertEqual(config.modified, {'Reward.Scheduler.NextRun': 'unchanged'})
 
+    def login_recovery_runner(self, outcomes):
+        from unittest.mock import Mock
+        import module.exception as exceptions
+        namespace = dict(vars(exceptions), logger=Mock(), TaskEnd=type('TaskEnd', (Exception,), {}))
+        method = self.source_method('main.py', 'run', namespace)
+        script = SimpleNamespace(is_independent_task=Mock(return_value=False), device=Mock(),
+                                 event=Mock(side_effect=outcomes), start=Mock(), config=Mock(), save_error_log=Mock())
+        return method, script
+
+    def test_selected_task_continues_after_login_recovery(self):
+        from module.exception import GameStart
+        method, script = self.login_recovery_runner([GameStart(), None])
+        self.assertTrue(method(script, 'event'))
+        self.assertEqual(script.event.call_count, 2)
+        script.start.assert_called_once()
+        script.config.task_call.assert_not_called()
+
+    def test_repeated_login_recovery_is_bounded(self):
+        from module.exception import GameStart
+        method, script = self.login_recovery_runner([GameStart()] * 4)
+        self.assertFalse(method(script, 'event'))
+        self.assertEqual(script.start.call_count, 3)
+        script.config.task_call.assert_called_once_with('Restart')
+
+    def test_interrupted_report_finishes_when_all_tasks_recover(self):
+        run_id = self.store.create_run('test', ['Reward'])
+        self.store.begin_attempt(run_id, 'Reward', 'hash')
+        self.store.interrupt('test')
+        run = self.store.get_run('test', run_id)
+        self.enqueue(run)
+        job = self.store.claim_retry('test')
+        attempt, _ = self.store.begin_attempt(run_id, 'Reward', 'hash')
+        self.store.save_attempt(attempt, 'success', '领取已确认')
+        self.store.finish_retry(job['id'])
+        final = self.store.get_run('test', run_id)
+        self.assertEqual(final['state'], 'finished')
+        self.assertEqual([item['status'] for item in final['tasks'][0]['history']], ['success', 'unknown'])
+
+    def test_recovering_one_task_does_not_hide_unstarted_tasks(self):
+        run_id = self.store.create_run('test', ['Reward', 'Mailbox'])
+        self.store.begin_attempt(run_id, 'Reward', 'hash')
+        self.store.interrupt('test')
+        self.enqueue(self.store.get_run('test', run_id))
+        job = self.store.claim_retry('test')
+        attempt, _ = self.store.begin_attempt(run_id, 'Reward', 'hash')
+        self.store.save_attempt(attempt, 'success', '领取已确认')
+        self.store.finish_retry(job['id'])
+        final = self.store.get_run('test', run_id)
+        self.assertEqual(final['state'], 'interrupted')
+        self.assertEqual(final['counts']['pending'], 1)
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -3,6 +3,7 @@ import ast
 from pathlib import Path
 from types import SimpleNamespace
 import unittest
+from unittest.mock import Mock, patch
 
 
 source = ast.parse((Path(__file__).resolve().parents[1] / 'module/event/story.py').read_text())
@@ -50,6 +51,25 @@ class Runner:
 
 
 class EventProgressionTests(unittest.TestCase):
+    def test_entry_timeout_is_failure_instead_of_activity_closed(self):
+        from module.exception import GameStuckError
+        import sys
+        tree = ast.parse((Path(__file__).resolve().parents[1] / 'module/event/event.py').read_text())
+        method = next(node for node in ast.walk(tree)
+                      if isinstance(node, ast.FunctionDef) and node.name == 'ensure_into_event')
+        namespace = dict(logger=Mock(), Timer=Mock(return_value=Mock()), GameStuckError=GameStuckError)
+        exec(compile(ast.Module(body=[method], type_ignores=[]), 'event_entry', 'exec'), namespace)
+        script = SimpleNamespace(device=Mock(), event_assets=SimpleNamespace(EVENT_CHECK='event'),
+                                 appear=Mock(return_value=False))
+        save_image, outcome = Mock(), Mock()
+        with patch.dict(sys.modules, {'module.base.watchdog': SimpleNamespace(save_wait_image=save_image)}), \
+                patch('module.execution.context.report', outcome):
+            with self.assertRaises(GameStuckError):
+                namespace['ensure_into_event'](script)
+        save_image.assert_called_once()
+        self.assertEqual(outcome.call_args.args[0], 'failed')
+        self.assertTrue(outcome.call_args.kwargs['retryable'])
+
     def test_normal_clear_unlocks_hard_before_spending_repeat_tickets(self):
         run = Runner(releases={'story_1_normal': ['story_1_hard']})
         run.story()

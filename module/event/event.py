@@ -10,6 +10,7 @@ from module.event.login import EventLogin
 from module.event.reward import EventReward
 from module.event.shop import EventShop
 from module.event.story import EventStory
+from module.exception import GameStuckError
 from module.logger import logger
 from module.ui.assets import EVENT_SWITCH, MAIN_CHECK, SKIP
 from module.ui.page import page_main
@@ -48,8 +49,11 @@ class Event(
                 event_timer.clear()
 
             if confirm_timer.reached():
-                logger.error('Event not found')
-                raise EventUnavailableError
+                from module.base.watchdog import save_wait_image
+                from module.execution.context import report
+                save_wait_image(self.device, 'event_entry_timeout')
+                report('failed', '活动入口未能打开', '30 秒内未进入活动，不能据此判定活动已结束', retryable=True)
+                raise GameStuckError('Event entry did not open within 30 seconds')
 
             # 切换活动
             if (

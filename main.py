@@ -170,7 +170,10 @@ class NikkeAutoScript:
                     try:
                         self.__getattribute__(command)()
                     except GameStart:
+                        if retry >= 3:
+                            raise GameStuckError(f'Task `{command}` still requires login after 3 recoveries')
                         self.start()
+                        continue
                     return True
                 except GameSystemError as e:
                     logger.error(f'Task `{command}`: {e}')
