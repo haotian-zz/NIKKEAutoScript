@@ -495,6 +495,16 @@ class Interception(UI):
         match = re.search(r'(?<!\d)([0-3])\s*[/／]\s*3(?!\d)', text)
         return int(match.group(1)) if match else None
 
+    def special_button_enabled(self, quick):
+        top = 1090 if quick else 1170
+        red, green, blue = np.mean(self.device.image[top:top + 30, 620:660], axis=(0, 1))
+        if red < 160 or red - green < 35 or red - blue < 35:
+            return False
+        area = (375, 1080, 680, 1145) if quick else (375, 1155, 680, 1215)
+        text = Ocr(area, name='SPECIAL_INTERCEPTION_ACTION',
+                   model_type=self.config.Optimization_OcrModelType).ocr(self.device.image)['text']
+        return ('快速战斗' if quick else '进入战斗') in re.sub(r'\s+', '', text)
+
     def run_special(self):
         """使用当前特殊目标编队消化免费拦截次数，优先使用已解锁的快速战斗。
 
@@ -553,16 +563,15 @@ class Interception(UI):
                 report('success', '特殊目标免费次数已用完（0/3）')
                 return True
 
-            # 此处只检查已确认面板内按钮的启用颜色，禁用态为灰色。
-            red, green, blue = np.mean(self.device.image[1090:1120, 620:660], axis=(0, 1))
-            if red > 150 and red > green * 1.15 and green > blue * 1.5:
+            # Require an enabled fill and the correct action label on the verified panel.
+            if self.special_button_enabled(quick=True):
                 logger.info('Special interception: quick battle')
                 self.device.click_xy(530, 1105)
             elif self.config.Interception_QuickBattleOnly:
                 report('blocked', '快速战斗不可用', '请先完成首次战斗，或关闭仅快速战斗选项')
                 logger.warning('Special interception skipped: quick battle is unavailable')
                 return False
-            elif self.appear(BATTLE, threshold=25):
+            elif self.special_button_enabled(quick=False):
                 logger.info('Special interception: enter battle with the current team')
                 self.device.click_xy(530, 1190)
             else:

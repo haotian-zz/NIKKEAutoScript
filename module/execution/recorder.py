@@ -37,6 +37,9 @@ class ExecutionRecorder:
             if self.run_id and self.store.get_run(self.instance, self.run_id, False)['game_day'] != game_day():
                 self.idle()
             if not self.run_id:
+                if not single:
+                    # A timer wake-up can leave the pre-wait (empty) queue cached in config.
+                    config.get_next_task()
                 pending = [task.command for task in config.pending_task] if not single else []
                 self.run_id = self.store.create_run(self.instance, [command, *pending],
                                                     source='manual' if single else 'schedule')

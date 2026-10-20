@@ -255,6 +255,12 @@ class UI(InfoHandler):
                 continue
             if self.ui_additional():
                 continue
+            # Some locked-mode selection pages have no matching page template.
+            # Use their Home control only after popups and recognized pages are handled.
+            if self.appear(GOTO_MAIN, offset=offset) and not any(
+                page.check_button and self.appear(page.check_button, offset=offset) for page in self.ui_pages
+            ):
+                self.appear_then_click(GOTO_MAIN, offset=offset, interval=2)
 
     def ui_ensure(self, destination, confirm_wait=0, skip_first_screenshot=True):
         logger.hr('UI ensure')

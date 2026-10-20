@@ -251,6 +251,13 @@ class RookieArena(UI, ArenaBase):
                 self.check_battle_times()
 
             self.ensure_into_rookie_arena()
+            self.device.screenshot()
+            if self.appear(ROOKIE_ARENA_CHECK, offset=30) and not self.free_opportunity_remain:
+                report('success', '新人竞技场已检查，当前无可用免费挑战')
+            elif self.battle_times <= 0:
+                report('success', '新人竞技场已达到配置挑战次数')
+            else:
+                report('unknown', '新人竞技场剩余次数未确认', retryable=True)
         except RookieArenaIsUnavailable:
             report('skipped', '新人竞技场正在等待新赛季')
             logger.warning('Waiting for the next season')

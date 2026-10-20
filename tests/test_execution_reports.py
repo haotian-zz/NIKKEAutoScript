@@ -167,9 +167,40 @@ class ExecutionReportTests(unittest.TestCase):
         second.finish(True)
         self.assertEqual(calls, ['resume'])
 
+    def test_timer_wakeup_records_unstarted_due_tasks_even_after_stop(self):
+        from module.execution.recorder import ExecutionRecorder
+        recorder = ExecutionRecorder.__new__(ExecutionRecorder)
+        recorder.instance, recorder.store, recorder.run_id, recorder.job = 'test', self.store, None, None
+        self.config.pending_task = []
+        def refresh_queue():
+            self.config.pending_task = [SimpleNamespace(command=task) for task in ('Reward', 'Mailbox')]
+        self.config.get_next_task = refresh_queue
+        attempt = recorder.begin('Reward', self.config)
+        run_id = recorder.run_id
+        attempt.finish(error=KeyboardInterrupt())
+        recorder.stop()
+        result = self.store.get_run('test', run_id)
+        self.assertEqual([(task['command'], task['status']) for task in result['tasks']],
+                         [('Reward', 'unknown'), ('Mailbox', 'pending')])
+
+    def test_single_task_does_not_collect_other_due_tasks(self):
+        from module.execution.recorder import ExecutionRecorder
+        recorder = ExecutionRecorder.__new__(ExecutionRecorder)
+        recorder.instance, recorder.store, recorder.run_id, recorder.job = 'test', self.store, None, None
+        self.config.pending_task = [SimpleNamespace(command='Mailbox')]
+        attempt = recorder.begin('Reward', self.config, single=True)
+        attempt.finish(True)
+        self.assertEqual([task['command'] for task in self.store.get_run('test', recorder.run_id)['tasks']], ['Reward'])
+
     def test_daily_reset_uses_server_day(self):
         self.assertEqual(game_day(datetime(2026, 10, 20, 19, 59, tzinfo=timezone.utc)), '2026-10-20')
         self.assertEqual(game_day(datetime(2026, 10, 20, 20, 0, tzinfo=timezone.utc)), '2026-10-21')
+
+    def test_notification_retry_is_only_a_configuration_check(self):
+        config = {'Notify': {'Scheduler': {'Enable': True}}}
+        allowed, hint = retry_policy(config, 'Notify')
+        self.assertTrue(allowed)
+        self.assertIn('不会重复发送', hint)
 
     def test_consumptive_tasks_cannot_be_replayed_blindly(self):
         config = {name: {'Scheduler': {'Enable': True}} for name in ('DailyRecruit', 'Destruction', 'Reward')}

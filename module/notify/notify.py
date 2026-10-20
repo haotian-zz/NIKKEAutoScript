@@ -8,6 +8,7 @@ from onepush.exceptions import OnePushException
 from onepush.providers.custom import Custom
 from requests import Response
 
+from module.execution.context import report
 from module.logger import logger
 from module.notify import handle_notify
 from module.ui.ui import UI
@@ -108,6 +109,13 @@ class Notify(UI):
         super().__init__(config, independent=True)
 
     def run(self):
+        if getattr(self.config, 'execution_retry', False):
+            if self.config.Notification_WhenDailyTaskCompleted:
+                report('unknown', '通知已启用，补做仅检查配置，不重复发送', '原通知是否送达不能自动确认')
+            else:
+                report('skipped', '通知已关闭，未发送')
+            logger.info('Notify retry checks configuration only; no message is sent')
+            return
         if self.config.Notification_WhenDailyTaskCompleted:
             handle_notify(
                 config=self.config,
@@ -117,5 +125,6 @@ class Notify(UI):
             )
         else:
             logger.info('Notify config disabled, skip sending')
+            report('skipped', '通知已关闭，未发送')
         # 按任务配置的周期/时间排期（执行时间管理页可改），不再写死服务器刷新时间
         self.config.task_delay(schedule=True)

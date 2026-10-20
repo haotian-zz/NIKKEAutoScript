@@ -1,3 +1,5 @@
+import re
+
 from module.base.langs import Langs
 from module.base.timer import Timer
 from module.base.utils import (
@@ -83,13 +85,23 @@ class Conversation(UI):
 
         return ANSWER.ocr(self.device.image)['text']
 
+    def detail_opportunities(self):
+        text = Ocr((430, 1050, 610, 1110), name='CONVERSATION_DETAIL_OPPORTUNITIES',
+                   model_type=self.config.Optimization_OcrModelType).ocr(self.device.image)['text']
+        match = re.search(r'(?<!\d)(\d+)\s*[/／]\s*([1-9]\d*)(?!\d)', text)
+        if match and int(match[1]) <= int(match[2]):
+            return int(match[1])
+        return None
+
     def get_next_target(self, skip_first_screenshot=True):
         # 是否进入到某个角色
         if DETAIL_CHECK.match(self.device.image, threshold=0.71) and GIFT.match_appear_on(
             self.device.image, threshold=10
         ):
             # 没有次数
-            if OPPORTUNITY_B.match(self.device.image, offset=5, threshold=0.96, static=False):
+            if self.detail_opportunities() == 0 or OPPORTUNITY_B.match(
+                self.device.image, offset=5, threshold=0.96, static=False
+            ):
                 logger.warning('There are no remaining opportunities')
                 raise NoOpportunitiesRemain
 
@@ -348,9 +360,9 @@ class Conversation(UI):
             except ChooseNextNIKKETooLong as e:
                 report('partial', '已执行部分咨询，剩余次数未确认', '未能继续找到可咨询角色', retryable=True)
                 logger.error(e)
-            except NoOpportunitiesRemain as e:
+            except NoOpportunitiesRemain:
                 report('success', '咨询次数已用完')
-                logger.error(e)
+                logger.info('There are no remaining conversation opportunities')
             except ConversationQueueIsEmpty as e:
                 report('blocked', '没有可咨询目标', '请检查收藏与咨询筛选条件')
                 logger.error(e)
