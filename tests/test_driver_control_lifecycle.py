@@ -21,6 +21,7 @@ class Scheduler(NikkeAutoScript):
         self.config_name = 'driver_test'
         self.is_first_task = False
         self.failure_record = {}
+        self.prepare_startup = Mock()
         self.stop_event = Mock()
         self.stop_event.is_set.return_value = False
         self.execution = Mock(job=None)

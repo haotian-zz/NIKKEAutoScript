@@ -160,13 +160,53 @@ class NikkeAutoScript:
         """
         return command in self.config.INDEPENDENT_TASKS or command in self.config.INDEPENDENT_TASKS_UNDER
 
+    def startup(self):
+        self.ensure_game_ready()
+
+    def prepare_startup(self):
+        if not any(
+            command != 'NKAS' and task.get('Scheduler', {}).get('Enable')
+            and not self.is_independent_task(command)
+            for command, task in self.config.data.items() if isinstance(task, dict)
+        ):
+            return
+        while True:
+            self.serial_report_due(datetime.now())
+            if self.serial_wait_turn('startup') and self.driver_wait_turn('startup'):
+                if not self.run('startup', skip_first_screenshot=True):
+                    self.is_first_task = False
+                return
+            del_cached_property(self, 'config')
+
+    def ensure_game_ready(self):
+        from module.handler import assets
+        from module.handler.login import LoginHandler
+
+        if not self.device.app_is_running():
+            logger.info('Startup check: game is closed, starting and logging in')
+            self.start()
+            return
+        self.device.screenshot()
+        login = LoginHandler(self.config, device=self.device)
+        login_buttons = (assets.LOGIN_PAGE_CHECK, assets.LOGO_PAGE_CHECK, assets.LOGIN_CHECK, assets.LOGIN_CHECK_B)
+        if getattr(self.device, 'login_required', False) or any(
+            login.appear(button, offset=30) for button in login_buttons
+        ):
+            logger.info('Startup check: entering the game before the selected task')
+            login.handle_app_login()
+        else:
+            logger.info('Startup check: game is already running, continue the selected task')
+
     def run(self, command, skip_first_screenshot=False):
         try:
             for retry in range(4):
                 try:
-                    # 妮游社等独立任务不需要device
-                    if not self.is_independent_task(command) and not skip_first_screenshot:
-                        self.device.screenshot()
+                    # All game entry points share this check; independent tasks never create a device.
+                    if not self.is_independent_task(command):
+                        if command not in ('start', 'restart', 'startup'):
+                            self.ensure_game_ready()
+                        if not skip_first_screenshot:
+                            self.device.screenshot()
                     try:
                         self.__getattribute__(command)()
                     except GameStart:
@@ -194,10 +234,15 @@ class NikkeAutoScript:
         except (GameStuckError, GameTooManyClickError, ScreenshotError) as e:
             logger.error(e)
             self.save_error_log()
-            logger.warning(f'Game stuck, {self.device.package} will be restarted in 10 seconds')
+            retry_only = getattr(self.config, 'execution_retry', False)
+            if retry_only:
+                logger.warning('Stop the current retry after recovery failure; preserve the game state')
+            else:
+                logger.warning(f'Game stuck, {self.device.package} will be restarted in 10 seconds')
             logger.warning('If you are playing by hand, please stop NKAS')
             self.config.task_call('Restart')
-            self.device.sleep(10)
+            if not retry_only:
+                self.device.sleep(10)
             return False
         except GamePageUnknownError:
             report('failed', '无法识别当前游戏页面', '检查游戏网络和画面状态后重试', retryable=True)
@@ -887,7 +932,7 @@ class NikkeAutoScript:
                 self.device.stuck_record_clear()
                 self.device.click_record_clear()
                 from module.base.watchdog import WaitGuard
-                limit = 1800 if task in ('Event', 'Event2', 'SimulationRoom') else 900
+                limit = 3600 if task == 'SoloRaid' else 1800 if task in ('Event', 'Event2', 'SimulationRoom') else 900
                 self.device._execution_guard = WaitGuard(self.device, f'{task}总执行时限',
                                                         timeout=limit, warn_after=120)
             success = self.run(command, skip_first_screenshot=skip_first_screenshot)
@@ -906,6 +951,7 @@ class NikkeAutoScript:
             self.execution.end_retry()
 
     def _loop(self):
+        self.prepare_startup()
         while 1:
             # Check update event from GUI
             if self.stop_event is not None:

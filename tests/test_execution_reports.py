@@ -268,13 +268,21 @@ class ExecutionReportTests(unittest.TestCase):
         method(config, schedule=True)
         self.assertEqual(config.modified, {'Reward.Scheduler.NextRun': 'unchanged'})
 
+    def test_retry_recovery_cannot_force_enable_or_reschedule_another_task(self):
+        from unittest.mock import Mock
+        fn = self.source_method('module/config/config.py', 'task_call', dict(logger=Mock()))
+        config = SimpleNamespace(execution_retry=True, modified={'Restart.Scheduler.NextRun': 'unchanged'})
+        self.assertFalse(fn(config, 'Restart'))
+        self.assertEqual(config.modified, {'Restart.Scheduler.NextRun': 'unchanged'})
+
     def login_recovery_runner(self, outcomes):
         from unittest.mock import Mock
         import module.exception as exceptions
         namespace = dict(vars(exceptions), logger=Mock(), TaskEnd=type('TaskEnd', (Exception,), {}))
         method = self.source_method('main.py', 'run', namespace)
         script = SimpleNamespace(is_independent_task=Mock(return_value=False), device=Mock(),
-                                 event=Mock(side_effect=outcomes), start=Mock(), config=Mock(), save_error_log=Mock())
+                                 event=Mock(side_effect=outcomes), start=Mock(), ensure_game_ready=Mock(),
+                                 config=Mock(), save_error_log=Mock())
         return method, script
 
     def test_selected_task_continues_after_login_recovery(self):

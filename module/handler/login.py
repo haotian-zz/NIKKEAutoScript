@@ -1,4 +1,5 @@
 from module.base.timer import Timer
+from module.base.watchdog import WaitGuard
 from module.exception import GameStuckError, GameTooManyClickError, RequestHumanTakeover
 from module.handler.assets import *
 from module.logger import logger
@@ -14,6 +15,7 @@ class LoginHandler(UI):
             out: page_main
         """
         logger.hr('App login')
+        guard = WaitGuard(self.device, '游戏启动登录', timeout=300, warn_after=30)
 
         confirm_timer = Timer(5, count=6).start()
         click_timer = Timer(0.3)
@@ -27,6 +29,7 @@ class LoginHandler(UI):
                 orientation_timer.reset()
 
             self.device.screenshot()
+            guard.check()
 
             # 当 MAIN_CHECK 累计出现6次，并且保持在5秒以上
             if self.appear(MAIN_CHECK, offset=(30, 30)) and self.appear(MAIN_CHECK, threshold=20):
@@ -126,6 +129,7 @@ class LoginHandler(UI):
             self.device.click_record_clear()
             try:
                 self._handle_app_login()
+                self.device.login_required = False
                 return True
             except (GameTooManyClickError, GameStuckError) as e:
                 logger.warning(e)

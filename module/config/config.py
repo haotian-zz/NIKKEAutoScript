@@ -386,6 +386,9 @@ class NikkeConfig(ConfigUpdater, ManualConfig, GeneratedConfig, ConfigWatcher):
             )
 
     def task_call(self, task, force_call=True):
+        if getattr(self, 'execution_retry', False):
+            logger.info(f'Execution retry: keep the original schedule for {task}')
+            return False
         if not deep_get(self.data, keys=f"{task}.Scheduler.NextRun", default=None):
             raise ScriptError(f"Task to call: `{task}` does not exist in user config")
 

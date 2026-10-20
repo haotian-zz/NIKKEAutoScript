@@ -252,6 +252,8 @@ class AppControl(WinClient, Login):
                 # self.check_resolution(PROGRAM_LAUNCHER, 900, 600)
                 # time.sleep(5)
 
+                # A visible process is not ready until the title screen reaches the lobby.
+                self.login_required = True
                 # 登录
                 self.login()
                 # 切换到游戏前台

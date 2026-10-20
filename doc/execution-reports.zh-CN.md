@@ -45,3 +45,5 @@
 活动推图、加成编队与超时设置见[活动流程说明](event-progression.zh-CN.md)。
 
 执行记录接口位于 `/api/{实例名}/executions`；重试接口为 `POST /api/{实例名}/executions/{记录ID}/retry`。重试需要所选任务、报告 revision 和唯一 request_id，由服务器校验当前状态并去重，不会强制启用任务或移动原计划时间。
+
+默认启动检查及单人突击空队处理见[启动与突击说明](startup-and-solo-raid.zh-CN.md)。

@@ -144,8 +144,8 @@ class Attempt(logging.Handler):
                                   summary='执行中断，未能确认完成' if isinstance(error, SystemExit) else '任务异常退出',
                                   reason=type(error).__name__, retryable=False)
             elif success is False and result['status'] not in ('failed', 'partial', 'blocked'):
-                result = dict(status='failed', summary='任务未完成，需要恢复游戏后重试',
-                              reason='调度器已请求恢复游戏', retryable=True)
+                result = dict(status='failed', summary='任务未完成，请查看日志与截图后重试',
+                              reason='执行流程未能确认完成', retryable=True)
             self.store.save_attempt(self.id, **result, steps=self.steps, logs=list(self.lines), screenshot=screenshot)
         finally:
             logger.removeHandler(self)
