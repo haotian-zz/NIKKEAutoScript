@@ -118,23 +118,20 @@ class Reward(UI):
         return True
 
     def receive_ranking(self, skip_first_screenshot=True):
+        """通过排名图标领取奖励，并在入口或领取状态无法确认时限时退出。
+
+        方舟侧栏的相邻入口可能同时显示红点，不能用大范围红点匹配结果作为点击位置。
+        入口和奖励阶段分别限时，避免版面变化阻塞整轮日常。
+        """
         logger.hr('Receive ranking reward')
-
-        if not self.appear(RANKING_RED_POINT_CHECK, offset=70, threshold=0.85):
-            return True
-        # self.ui_ensure(page_ranking)
-
-        confirm_timer = Timer(3, count=3)
+        entry_timeout = Timer(20, count=20).start()
+        confirm_timer = Timer(1, count=3)
         while 1:
             if skip_first_screenshot:
                 skip_first_screenshot = False
             else:
                 self.device.screenshot()
 
-            if self.appear_then_click(RANKING_RED_POINT_CHECK, offset=70, threshold=0.85, interval=1):
-                continue
-
-            # 等待排名页面加载完成
             if self.appear(RANKING_CHECK, offset=10):
                 if not confirm_timer.started():
                     confirm_timer.start()
@@ -143,8 +140,29 @@ class Reward(UI):
             else:
                 confirm_timer.clear()
 
+            if entry_timeout.reached():
+                logger.warning('Ranking reward skipped: ranking page did not open within 20 seconds')
+                return False
+
+            if self.appear_then_click(ARK_GOTO_RANKING, offset=20, threshold=0.85, interval=3):
+                continue
+
+            if self.appear(ARK_CHECK, offset=10):
+                location = self.appear_text('排名', threshold=0.9, interval=3)
+                if location and 570 <= location[0] < 720 and 80 <= location[1] < 350:
+                    self.device.click_xy(*location)
+                    continue
+
+        reward_timeout = Timer(60, count=60).start()
         while 1:
             self.device.screenshot()
+
+            if reward_timeout.reached():
+                logger.warning('Ranking reward stopped: reward collection exceeded 60 seconds')
+                return False
+
+            if self.handle_reward(interval=1):
+                continue
 
             # 获得奖励
             if self.appear_then_click(RANKING_REWARD, threshold=30, interval=1):
@@ -156,7 +174,7 @@ class Reward(UI):
 
             # 返回
             if self.appear(RANKING_NO_REWARD, threshold=30):
-                break
+                return True
 
     def ensure_back(self, skip_first_screenshot=True):
         click_timer = Timer(0.3)
@@ -202,7 +220,14 @@ class Reward(UI):
         self.ui_ensure(page_reward)
         self.receive_reward()
         # 友情点
-        if self.config.Reward_CollectSocialPoint:
+        collect_social = self.config.Reward_CollectSocialPoint
+        collect_special = self.config.Reward_CollectSpecialArenaPoint
+        collect_ranking = self.config.Reward_CollectRanking
+        if internal_call:
+            collect_social = self.config.cross_get('Reward.Reward.CollectSocialPoint', default=collect_social)
+            collect_special = self.config.cross_get('Reward.Reward.CollectSpecialArenaPoint', default=collect_special)
+            collect_ranking = self.config.cross_get('Reward.Reward.CollectRanking', default=collect_ranking)
+        if collect_social:
             # ----
             # self.ui_ensure(page_friend)
             # ----
@@ -211,14 +236,14 @@ class Reward(UI):
             # ----
             self.receive_social_point()
         # pjjc奖励
-        if self.config.Reward_CollectSpecialArenaPoint:
+        if collect_special:
             self.ui_ensure(page_arena)
             try:
                 self.receive_special_arena_point()
             except NoRewards:
                 self.ensure_back()
         # 方舟排名奖励
-        if self.config.Reward_CollectRanking:
+        if collect_ranking:
             self.ui_ensure(page_ark)
             self.receive_ranking()
 

@@ -1216,7 +1216,8 @@
       "Indivilia": "Indivilia (Body)",
       "Harvester": "Harvester (Legs)",
       "MirrorContainer": "Mirror Container (Arms)",
-      "Ultra": "Ultra (Head)"
+      "Ultra": "Ultra (Head)",
+      "Special": "Special target (before Anomaly unlock)"
     },
     "AchieveLevel": {
       "name": "Achieve Level",

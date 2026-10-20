@@ -109,11 +109,16 @@ class Event(
                 self.shop(TEMPLATE_SHOP_GEM)
                 self.back_to_event()
             if self.config.StoryStage_AutoPush or self.config.StoryStage_Sweep:
-                self.story()
-                # 重复执行一次
-                self.back_to_event()
-                self.device.sleep(3)
-                self.story()
+                for index in range(2):
+                    try:
+                        self.story()
+                    except EventSelectError:
+                        logger.warning('Event story skipped: configured difficulty is unavailable')
+                        self.back_to_event()
+                        break
+                    if index == 0:
+                        self.back_to_event()
+                        self.device.sleep(3)
             # if self.config.Event_Coop:
             #     coop_reschedule = self.coop()
             if self.config.Event_Game:

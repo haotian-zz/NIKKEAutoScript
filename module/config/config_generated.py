@@ -218,7 +218,7 @@ class GeneratedConfig:
     CheerStrategy_Strategy = 'Most'  # Most, Few, Random
 
     # Group `Interception`
-    Interception_Boss = 'Kraken'  # Kraken, Indivilia, Harvester, MirrorContainer, Ultra
+    Interception_Boss = 'Kraken'  # Kraken, Indivilia, Harvester, MirrorContainer, Ultra, Special
     Interception_AchieveLevel = 1  # 1, 2, 3, 4, 5, 6, 7, 8, 9
     Interception_QuickBattleOnly = False
     Interception_DropScreenshotPath = None

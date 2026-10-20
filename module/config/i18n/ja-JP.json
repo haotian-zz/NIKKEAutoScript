@@ -1216,7 +1216,8 @@
       "Indivilia": "インディヴィリア（躯体）",
       "Harvester": "ハーベスター（脚）",
       "MirrorContainer": "ミラーコンテナ（手）",
-      "Ultra": "過激派（頭）"
+      "Ultra": "過激派（頭）",
+      "Special": "特殊個体（異常個体未解放時）"
     },
     "AchieveLevel": {
       "name": "レベル達成",

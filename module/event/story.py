@@ -6,7 +6,7 @@ from module.base.timer import Timer
 from module.base.utils import crop, sort_buttons_by_location
 from module.conversation.assets import ANSWER_CHECK
 from module.event.assets import *
-from module.event.base import EventBase
+from module.event.base import EventBase, EventSelectError
 from module.event.challenge import CHALLENGE_QUICKLY_DISABLE
 from module.logger import logger
 from module.simulation_room.assets import END_FIGHTING, FIGHT, FIGHT_QUICKLY
@@ -414,6 +414,14 @@ class EventStory(EventBase):
 
             self.device.sleep(1)
             self.device.screenshot()
+            if self.config.EventInfo_StoryDifficulty == 'Normal':
+                self.device.click(self.event_assets.STORY_1_NORMAL)
+                self.device.sleep(1)
+                self.device.screenshot()
+                open_story = 'story_1_normal'
+                logger.info('Open configured event story normal')
+                break
+
             # 困难难度关闭
             if self.appear(self.event_assets.STORY_1_NORMAL, threshold=20) and self.appear(
                 self.event_assets.STORY_1_HARD_LOCKED, offset=10
@@ -444,11 +452,16 @@ class EventStory(EventBase):
                     self.back_to_event()
                     return
 
+                hard_timeout = Timer(20, count=20).start()
                 while 1:
                     if skip_first_screenshot:
                         skip_first_screenshot = False
                     else:
                         self.device.screenshot()
+
+                    if hard_timeout.reached():
+                        logger.warning('Event hard mode unavailable: normal story completion may be required')
+                        raise EventSelectError
 
                     # story困难难度切换
                     if self.appear_then_click(self.event_assets.STORY_1_HARD_HIDDEN, threshold=10):

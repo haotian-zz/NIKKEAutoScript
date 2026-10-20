@@ -314,6 +314,10 @@ class SimulationRoom(UI):
                 continue
 
     def ensure_into_simulation(self, skip_first_screenshot=True):
+        """进入指定模拟区域，快速模拟不可用时回退到普通模拟。
+
+        仅在难度选择面板持续停留 15 秒时回退，不在正常的快速模拟战斗中切换模式。
+        """
         ensure_timer = Timer(2, count=5)
         click_timer = Timer(0.3)
 
@@ -354,6 +358,8 @@ class SimulationRoom(UI):
         click_timer.reset()
 
         selected = False
+        quick_simulation = self.config.SimulationRoom_QuickSimulation
+        quick_timeout = Timer(15, count=15).start()
         while 1:
             if skip_first_screenshot:
                 skip_first_screenshot = False
@@ -407,7 +413,15 @@ class SimulationRoom(UI):
                 click_timer.reset()
                 continue
 
-            if self.config.SimulationRoom_QuickSimulation:
+            if (
+                quick_simulation
+                and quick_timeout.reached()
+                and self.appear(DIFFICULTY_AREA_CHECK, offset=(30, 30))
+            ):
+                logger.warning('Quick simulation unavailable: use the configured ordinary simulation area')
+                quick_simulation = False
+
+            if quick_simulation:
                 if (
                     click_timer.reached()
                     and not self.appear(END_SIMULATION, offset=(30, 30), static=False)

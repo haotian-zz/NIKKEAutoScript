@@ -1,3 +1,4 @@
+from module.base.timer import Timer
 from module.base.utils import get_button_by_location
 from module.challenge.assets import *
 from module.event.assets import *
@@ -12,7 +13,12 @@ from module.ui.assets import FIGHT_QUICKLY_CHECK
 
 class EventChallenge(EventBase):
     def challenge(self, skip_first_screenshot=True):
+        """执行活动挑战，并在关卡无法入场时返回活动继续其他日常。
+
+        编队为空或按钮失效时，关卡面板停留最多 30 秒；实际战斗不受该等待限制。
+        """
         logger.hr('START EVENT CHALLENGE', 2)
+        entry_timeout = Timer(30, count=30).start()
 
         # 进入挑战页面
         while 1:
@@ -25,6 +31,10 @@ class EventChallenge(EventBase):
                 self.event_assets.CHALLENGE, offset=10, interval=5
             ):
                 continue
+
+            if entry_timeout.reached():
+                logger.warning('Event challenge skipped: challenge page did not open within 30 seconds')
+                raise ChallengeNotFoundError
 
             if self.appear(CHALLENGE_CHECK, offset=10):
                 self.device.sleep(2)
@@ -48,6 +58,7 @@ class EventChallenge(EventBase):
             logger.info('Finf cleared challenge stage')
             self.device.click(stage)
 
+        stage_timeout = Timer(30, count=30).start()
         while 1:
             if skip_first_screenshot:
                 skip_first_screenshot = False
@@ -72,6 +83,12 @@ class EventChallenge(EventBase):
                     if self.appear_then_click(END_FIGHTING, offset=30, interval=1):
                         continue
                 break
+
+            if self.appear(CHALLENGE_STAGE_CHECK, offset=10) and stage_timeout.reached():
+                logger.warning('Event challenge skipped: battle did not start; check the challenge team')
+                self.appear_then_click(CHALLENGE_CANCEL, offset=10, interval=1)
+                self.back_to_event()
+                return False
 
             # 快速战斗
             if (

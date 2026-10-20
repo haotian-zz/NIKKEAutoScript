@@ -16,10 +16,10 @@ from module.interception.data import (
     resolve_stone_csv_path,
 )
 from module.logger import logger
-from module.ocr.ocr import Digit
+from module.ocr.ocr import Digit, Ocr
 from module.simulation_room.assets import AUTO_BURST, AUTO_SHOOT, END_FIGHTING, PAUSE
-from module.ui.assets import INTERCEPTION_CHECK
-from module.ui.page import page_interception
+from module.ui.assets import ARK_CHECK, ARK_GOTO_INTERCEPTION, INTERCEPTION_CHECK, SPECIAL_INTERCEPTION_CHECK
+from module.ui.page import page_ark
 from module.ui.ui import UI
 from module.warehouse_stats.assets import CUSTOM_MODULE_TEMPLATE, ITEM_NUM_PREFIX
 from module.warehouse_stats.warehouse_stats import WarehouseStats
@@ -101,6 +101,7 @@ class Interception(UI):
 
     def _run(self, skip_first_screenshot=True):
         boss = self.get_current_boss()
+        entry_timeout = Timer(30, count=30).start()
         while 1:
             if skip_first_screenshot:
                 skip_first_screenshot = False
@@ -109,6 +110,15 @@ class Interception(UI):
 
             if self.appear(ABNORMAL_INTERCEPTION_CHECK, offset=(10, 30)):
                 break
+
+            if entry_timeout.reached():
+                logger.warning('Anomaly interception unavailable: check unlock status or select Special mode')
+                return False
+
+            if self.appear(ARK_CHECK, offset=10) and self.appear_then_click(
+                ARK_GOTO_INTERCEPTION, offset=10, interval=3
+            ):
+                continue
 
             if self.appear(self.get_boss_button(boss), offset=10, interval=1):
                 logger.info('Click %s @ CHALLANGE' % point2str(360, 1030))
@@ -126,6 +136,9 @@ class Interception(UI):
                 logger.info('Click %s @ SWITCH' % point2str(580, 960))
                 self.device.click_xy(580, 960)
                 self.device.sleep(0.5)
+                continue
+
+            if self.appear_text_then_click('异常个体拦截战', threshold=0.85, interval=3):
                 continue
 
         self.device.click_record_clear()
@@ -464,10 +477,96 @@ class Interception(UI):
         if ok:
             logger.info(f'InterceptionStats: record saved, boss={boss}, stone_count={stone_count}, csv={csv_path}')
 
+    def special_opportunities(self):
+        """读取简体中文 720×1280 特殊拦截面板中的剩余免费次数。
+
+        仅接受分母为 3、分子在 0 至 3 内的结果；识别不确定时返回 None，禁止继续入场。
+        """
+        counter = Ocr(
+            [(390, 1190, 700, 1240)],
+            name='SPECIAL_INTERCEPTION_OPPORTUNITIES',
+            model_type=self.config.Optimization_OcrModelType,
+            lang='ch',
+        )
+        text = counter.ocr(self.device.image)['text']
+        match = re.search(r'(?<!\d)([0-3])\s*[/／]\s*3(?!\d)', text)
+        return int(match.group(1)) if match else None
+
+    def run_special(self):
+        """使用当前特殊目标编队消化免费拦截次数，优先使用已解锁的快速战斗。
+
+        此模式仅支持简体中文 720×1280 界面，不选择异常 Boss 或记录异常石头掉落。
+        入口等待、无法识别次数和战斗总时长均有退出条件；不购买次数或修改编队。
+        """
+        if self.config.Client_Language != 'zh-CN':
+            logger.warning('Special interception skipped: only the Simplified Chinese layout is supported')
+            return False
+        entry_timeout = Timer(30, count=30).start()
+        while 1:
+            self.device.screenshot()
+            if self.appear(SPECIAL_INTERCEPTION_CHECK, offset=(10, 30)):
+                break
+            if entry_timeout.reached():
+                logger.warning('Special interception skipped: target page did not open within 30 seconds')
+                return False
+            if self.appear(ARK_CHECK, offset=10) and self.appear_then_click(
+                ARK_GOTO_INTERCEPTION, offset=10, interval=3
+            ):
+                continue
+            if self.appear_text_then_click('特殊目标拦截战', threshold=0.85, interval=3):
+                continue
+            if self.appear(INTERCEPTION_CHECK, offset=10, interval=3):
+                self.device.click_xy(470, 1160)
+
+        battle_timeout = Timer(720, count=720).start()
+        action_timer = Timer(3)
+        while 1:
+            self.device.screenshot()
+            if battle_timeout.reached():
+                logger.warning('Special interception stopped: battle flow exceeded 12 minutes')
+                return False
+            if self.appear_then_click(END_FIGHTING, offset=30, interval=2):
+                continue
+            if self.appear_then_click(AUTO_SHOOT, offset=10, threshold=0.9, interval=5):
+                continue
+            if self.appear_then_click(AUTO_BURST, offset=10, threshold=0.9, interval=5):
+                continue
+            if not self.appear(SPECIAL_INTERCEPTION_CHECK, offset=(10, 30)) or not action_timer.reached():
+                continue
+            if self.device.image.shape[:2] != (1280, 720):
+                logger.warning('Special interception skipped: unexpected client resolution')
+                return False
+            remaining = self.special_opportunities()
+            if remaining is None:
+                logger.warning('Special interception skipped: free opportunity counter could not be verified')
+                return False
+            logger.info(f'Special interception free opportunities remaining: {remaining}/3')
+            if remaining == 0:
+                return True
+
+            # 此处只检查已确认面板内按钮的启用颜色，禁用态为灰色。
+            red, green, blue = np.mean(self.device.image[1090:1120, 620:660], axis=(0, 1))
+            if red > 150 and red > green * 1.15 and green > blue * 1.5:
+                logger.info('Special interception: quick battle')
+                self.device.click_xy(530, 1105)
+            elif self.config.Interception_QuickBattleOnly:
+                logger.warning('Special interception skipped: quick battle is unavailable')
+                return False
+            elif self.appear(BATTLE, threshold=25):
+                logger.info('Special interception: enter battle with the current team')
+                self.device.click_xy(530, 1190)
+            else:
+                logger.warning('Special interception skipped: no enabled free battle button')
+                return False
+            action_timer.reset()
+
     def run(self):
-        self.ui_ensure(page_interception)
+        self.ui_ensure(page_ark)
         try:
-            self._run()
+            if self.config.Interception_Boss == 'Special':
+                self.run_special()
+            else:
+                self._run()
         except NoOpportunity:
             pass
         self.config.task_delay(schedule=True)

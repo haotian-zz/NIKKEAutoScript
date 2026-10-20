@@ -27,9 +27,13 @@ class RubbishShop(ShopBase):
             priority = self.config.RUBBISH_SHOP_CORE_PRIORITY
         else:
             priority = self.config.RubbishShop_priority
-        priority = re.sub(r'\s+', '', priority).split('>')
+        priority = [name for name in re.sub(r'\s+', '', priority or '').split('>') if name]
         return SelectedGrids(
-            [Product(i, self.config.RUBBISH_SHOP_CORE_PRODUCT.get(i), self.assets.get(i)) for i in priority]
+            [
+                Product(i, self.config.RUBBISH_SHOP_CORE_PRODUCT[i], self.assets[i])
+                for i in priority
+                if i in self.config.RUBBISH_SHOP_CORE_PRODUCT and i in self.assets
+            ]
         )
 
     @cached_property
@@ -39,9 +43,13 @@ class RubbishShop(ShopBase):
             priority = self.config.RUBBISH_SHOP_BONE_PRIORITY
         else:
             priority = self.config.RubbishShop_bonePriority
-        priority = re.sub(r'\s+', '', priority).split('>')
+        priority = [name for name in re.sub(r'\s+', '', priority or '').split('>') if name]
         return SelectedGrids(
-            [Product(i, self.config.RUBBISH_SHOP_BONE_PRODUCT.get(i), self.assets.get(i)) for i in priority]
+            [
+                Product(i, self.config.RUBBISH_SHOP_BONE_PRODUCT[i], self.assets[i])
+                for i in priority
+                if i in self.config.RUBBISH_SHOP_BONE_PRODUCT and i in self.assets
+            ]
         )
 
     @cached_property
