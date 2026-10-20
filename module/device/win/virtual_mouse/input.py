@@ -130,6 +130,8 @@ class VirtualMouseInput(Input):
         self._move_recoveries = 0
         self._landing_warned = False
         self.mouse_driver = shared_mouse()
+        if getattr(self.mouse_driver, 'session_local', False) is True:
+            self.move_backend = 'cursor'
         logger.info(f'Virtual mouse move backend: {self.move_backend}')
         self._preflight()
 
@@ -158,6 +160,10 @@ class VirtualMouseInput(Input):
             raise RequestHumanTakeover
         if self._channel_ready():
             return
+        if getattr(self.mouse_driver, 'session_local', False) is True:
+            logger.error('RDP session input is unavailable. Check the Interception RDP mouse binding; '
+                         'console HID input and automatic driver repair are disabled in this session.')
+            raise RequestHumanTakeover
         # repair 前必须释放本进程持有的设备句柄：重装期间句柄被占用会让 Windows 以
         # PNP_VetoOutstandingOpen 拒绝移除，repair 必然失败。幽灵设备（代码 45）场景下
         # open() 成功、句柄常驻，正是这条路径在自我占用。
@@ -187,7 +193,9 @@ class VirtualMouseInput(Input):
         幽灵设备（代码 45）下接口照样能打开、IOCTL 也返回成功，只测 open() 会把它误判成
         可用；子设备判不出来（None）时按可用处理，不改变既有行为。
         """
-        return self.mouse_driver.open() and sub_device_present() is not False
+        return self.mouse_driver.open() and (
+            getattr(self.mouse_driver, 'session_local', False) is True or sub_device_present() is not False
+        )
 
     # ------------------------------------------------------------------
     # 失败处理：显式报错，绝不静默降级

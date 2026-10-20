@@ -5,7 +5,7 @@ from module.exception import GameNotRunningError, GamePageUnknownError, GameStar
 from module.handler.assets import *
 from module.handler.info_handle import InfoHandler
 from module.logger import logger
-from module.ui.assets import GOTO_MAIN, UI_LOADING_1, UI_LOADING_2, UI_LOADING_3, UI_LOADING_4
+from module.ui.assets import FACILITY_BACK, FACILITY_ENTER, GOTO_MAIN, UI_LOADING_1, UI_LOADING_2, UI_LOADING_3, UI_LOADING_4
 from module.ui.page import (
     Page,
     page_arena,
@@ -276,6 +276,13 @@ class UI(InfoHandler):
         """
         # TODO SKIP, 战斗, 公告, etc.
 
+        # Unrecognized outpost buildings share these controls; close their detail panel
+        # before a gray claim label underneath is mistaken for a login reward.
+        if self.appear(FACILITY_BACK, offset=10, threshold=0.9) and self.appear(
+            FACILITY_ENTER, offset=10, threshold=0.9
+        ):
+            return self.appear_then_click(FACILITY_BACK, offset=10, threshold=0.9, interval=1)
+
         # 指挥官等级升级
         if self.handle_level_up():
             return True
@@ -291,8 +298,10 @@ class UI(InfoHandler):
         if self.handle_announcement():
             return True
 
-        # Daily Login, Memories Spring, Monthly Card, etc.
-        if self.handle_login_reward():
+        # A navigation cooldown may leave an already-recognized board on screen briefly.
+        # Its gray claim label is not a login-reward popup.
+        if not (self.appear(page_commission.check_button, offset=30)
+                or self.appear(page_outpost.check_button, offset=30)) and self.handle_login_reward():
             return True
 
         if self.handle_server():

@@ -32,6 +32,7 @@ class Scheduler(NikkeAutoScript):
             INDEPENDENT_TASKS=['CheckIn'], INDEPENDENT_TASKS_UNDER=['check_in'],
             PCClient_ScreenRotate=False, PCClient_DisableVoice=False, Vdd_VddScreen=False,
             Optimization_ScriptPath='unused.ps1', start_watching=Mock(), should_reload=Mock(return_value=False),
+            init_task=Mock(),
         )
 
     @property
@@ -216,6 +217,14 @@ class DriverLifecycleTests(unittest.TestCase):
         self.script._post_action.assert_not_called()
         device.app_stop.assert_not_called()
         run_script.assert_not_called()
+
+    def test_single_task_binds_its_settings_before_executing(self):
+        self.script.serial_report_due = Mock()
+        def run(*args, **kwargs):
+            self.script.config.init_task.assert_called_once_with('Commission')
+            return True
+        self.script.run = Mock(side_effect=run)
+        self.assertTrue(self.script.run_once('commission'))
 
     def test_single_task_acquires_before_execution_and_releases_on_error(self):
         self.script.serial_report_due = Mock()

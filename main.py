@@ -843,6 +843,7 @@ class NikkeAutoScript:
 
     def run_once(self, command, skip_first_screenshot=False):
         try:
+            self.config.init_task(inflection.camelize(command))
             while 1:
                 self.serial_report_due(datetime.now())
                 if not self.serial_wait_turn(command) or not self.driver_wait_turn(command):

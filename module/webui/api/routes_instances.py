@@ -61,6 +61,15 @@ def _driver_scheme_missing_driver(name):
         return False
     if deep_get(config, keys='NKAS.PCClientInfo.ControlScheme', default='pyautogui') != 'driver':
         return False
+    if sys.platform == 'win32':
+        from module.device.win.virtual_mouse.rdp_mouse import remote_session_id
+        try:
+            if remote_session_id() is not None:
+                # Session binding runs under the worker's mutex, without a console-HID repair.
+                return False
+        except OSError as exc:
+            logger.error(f'Cannot verify input session: {exc}')
+            return True
     from module.tools.virtual_mouse_driver import (
         driver_package_present,
         probe_device,

@@ -391,7 +391,7 @@ class EventStory(EventBase):
                             if not self.appear(FIGHT_CLOSE, offset=10):
                                 break
                         # 没票直接退出
-                        if self.event_tickets() == 0:
+                        if self.event_tickets(open_story) == 0:
                             return 'tickets'
                         report('unknown', '入场按钮不可用，未确认免费票为零', retryable=True)
                         raise GameStuckError('Event entry unavailable; ticket count not confirmed zero')
@@ -450,11 +450,33 @@ class EventStory(EventBase):
             return 'cleared'
 
 
-    def event_tickets(self):
-        result = Ocr([(520, 305, 705, 350), (360, 20, 435, 68)], name='EVENT_FREE_TICKETS',
-                     model_type=self.config.Optimization_OcrModelType).ocr(self.device.image)
-        match = re.search(r'(\d+)\s*[/／]\s*5', result['text'])
-        return int(match[1]) if match else None
+    def event_tickets(self, open_story=None):
+        def read_counter():
+            # The counter is absent on some story maps and hidden by stage panels.
+            # Read each location independently so unrelated OCR cannot form a fake fraction.
+            for area in ((350, 10, 460, 85), (520, 305, 705, 350)):
+                result = Ocr(area, name='EVENT_FREE_TICKETS',
+                             model_type=self.config.Optimization_OcrModelType).ocr(self.device.image)
+                match = re.fullmatch(r'\s*(\d+)\s*[/／]\s*5\s*', result['text'])
+                if not match and result['text'].strip():
+                    # Tiny white slashes may disappear in the unprocessed RGB screenshot.
+                    result = Ocr(area, name='EVENT_FREE_TICKETS_WHITE',
+                                 model_type=self.config.Optimization_OcrModelType,
+                                 text_color=(255, 255, 255),
+                                 text_color_tolerance=(179, 100, 100)).ocr(self.device.image)
+                    match = re.fullmatch(r'\s*(\d+)\s*[/／]\s*5\s*', result['text'])
+                if match:
+                    return int(match[1])
+            return None
+
+        tickets = read_counter()
+        if tickets is None and open_story is not None:
+            self.back_to_event()
+            self.device.screenshot()
+            tickets = read_counter()
+            if tickets != 0 and not self.open_story_page(open_story):
+                raise EventSelectError('Unable to return to story after checking event tickets')
+        return tickets
 
     def open_team(self):
         guard = WaitGuard(self.device, '活动打开编队', timeout=30, warn_after=15)
@@ -546,7 +568,7 @@ class EventStory(EventBase):
     def find_and_sweep_stage(self, open_story):
         guard = WaitGuard(self.device, f'{open_story}倒数第二关扫荡', timeout=120)
         self.device.screenshot()
-        if self.event_tickets() == 0:
+        if self.event_tickets(open_story) == 0:
             report('success', f'{open_story} 免费活动票已用完')
             return
         self.ensure_sroll_to_bottom(x1=(680, 1000), x2=(680, 480), count=3, delay=0.4)
@@ -568,7 +590,7 @@ class EventStory(EventBase):
             if self.appear(self.event_assets.STORY_STAGE_CHECK, offset=30):
                 if self.appear(CHALLENGE_QUICKLY_DISABLE, threshold=10):
                     self.appear_then_click(FIGHT_CLOSE, offset=30, interval=1)
-                    if self.event_tickets() == 0:
+                    if self.event_tickets(open_story) == 0:
                         report('success', f'{open_story} 免费活动票已用完，刷票选择倒数第二关')
                     else:
                         report('unknown', '快速战斗不可用，未确认票数为零', retryable=True)
@@ -596,7 +618,7 @@ class EventStory(EventBase):
                 self.event_assets.STORY_STAGE_CHECK, offset=30
             ):
                 if submitted and completed:
-                    tickets = self.event_tickets()
+                    tickets = self.event_tickets(open_story)
                     if tickets == 0:
                         report('success', f'{open_story} 倒数第二关加成编队扫荡完成，免费票为零')
                         return

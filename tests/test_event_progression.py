@@ -9,7 +9,7 @@ from unittest.mock import Mock, patch
 source = ast.parse((Path(__file__).resolve().parents[1] / 'module/event/story.py').read_text())
 methods = [node for node in source.body if isinstance(node, ast.ClassDef)][0].body
 body = [node for node in methods if isinstance(node, ast.FunctionDef) and node.name in
-        ('story', 'story_modes', 'stage_assets', 'STORY_STAGE_11', 'STORY_STAGE_12', 'find_and_sweep_stage')]
+        ('story', 'story_modes', 'stage_assets', 'STORY_STAGE_11', 'STORY_STAGE_12', 'find_and_sweep_stage', 'event_tickets')]
 namespace = {'logger': SimpleNamespace(hr=lambda *args: None, info=lambda *args: None),
              'report': lambda *args: None, 're': __import__('re'), 'EventSelectError': ValueError}
 exec(compile(ast.fix_missing_locations(ast.Module(body=body, type_ignores=[])), 'event_orchestration', 'exec'), namespace)
@@ -133,7 +133,7 @@ class SweepRunner:
                          FIGHT_QUICKLY='quick', FIGHT_QUICKLY_CHECK='quick-panel',
                          FIGHT_QUICKLY_MAX='max', FIGHT_QUICKLY_FIGHT='fight')
 
-    def event_tickets(self):
+    def event_tickets(self, open_story=None):
         return None if self.unreadable and self.batches else self.tickets
 
     def appear(self, button, **kwargs):
@@ -179,6 +179,43 @@ class EventSweepTests(unittest.TestCase):
         run.find_and_sweep_stage('story_1_hard')
         self.assertEqual(run.results[-1][0][0], 'unknown')
         self.assertEqual(run.batches, 1)
+
+
+class EventTicketTests(unittest.TestCase):
+    def check_counter(self, texts):
+        script = SimpleNamespace(device=Mock(image=object()),
+                                 config=SimpleNamespace(Optimization_OcrModelType='mobile'),
+                                 back_to_event=Mock(), open_story_page=Mock(return_value=True))
+        ocr = Mock(side_effect=[SimpleNamespace(ocr=Mock(return_value={'text': text})) for text in texts])
+        with patch.dict(namespace, Ocr=ocr):
+            value = namespace['event_tickets'](script, 'story_1_hard')
+        return value, script
+
+    def test_missing_map_counter_is_confirmed_on_event_home(self):
+        tickets, script = self.check_counter(['', '', '0/5'])
+        self.assertEqual(tickets, 0)
+        script.back_to_event.assert_called_once()
+        script.device.screenshot.assert_called_once()
+        script.open_story_page.assert_not_called()
+
+    def test_remaining_tickets_restore_story_page_for_sweeping(self):
+        tickets, script = self.check_counter(['', '', '17/5'])
+        self.assertEqual(tickets, 17)
+        script.open_story_page.assert_called_once_with('story_1_hard')
+
+    def test_unreadable_home_counter_stays_unknown(self):
+        tickets, script = self.check_counter(['', '', '', ''])
+        self.assertIsNone(tickets)
+        script.open_story_page.assert_called_once_with('story_1_hard')
+
+    def test_missing_slash_requires_second_explicit_fraction_reading(self):
+        tickets, script = self.check_counter(['05', '0/5'])
+        self.assertEqual(tickets, 0)
+        script.back_to_event.assert_not_called()
+
+    def test_counter_fragments_cannot_be_joined_into_zero(self):
+        tickets, script = self.check_counter(['0/', '5', '', '', ''])
+        self.assertIsNone(tickets)
 
 
 if __name__ == '__main__':

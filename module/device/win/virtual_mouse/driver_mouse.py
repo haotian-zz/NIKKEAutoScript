@@ -458,7 +458,11 @@ def shared_mouse():
     global _shared_mouse
     with _shared_lock:
         if _shared_mouse is None:
-            _shared_mouse = VirtualMouse()
+            from module.device.win.virtual_mouse.rdp_mouse import RdpMouse, remote_session_id
+            if remote_session_id() is not None:
+                _shared_mouse = RdpMouse()
+            else:
+                _shared_mouse = VirtualMouse()
         return _shared_mouse
 
 
