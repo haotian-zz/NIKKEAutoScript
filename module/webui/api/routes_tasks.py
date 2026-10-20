@@ -11,6 +11,7 @@ from module.webui.process_manager import ProcessManager
 from module.webui.updater import updater
 from module.webui.setting import State
 from module.webui.api.service_tasks import TaskService
+from module.execution.store import ExecutionStore
 
 
 def queue_data(name):
@@ -44,9 +45,19 @@ def queue_data(name):
         command = func.command
         return {'command': command, 'next_run': str(func.next_run), 'name_i18n': lang.t(f'Task.{command}.name')}
 
+    current, retry_jobs = ExecutionStore().queue(name)
     running = pending[:1] if manager.alive else []
-    pending = pending[1:] if manager.alive else pending
-    return QueueInfo([item(task) for task in running], [item(task) for task in pending],
+    if manager.alive and current:
+        running_items = [{'command': current, 'next_run': str(now), 'name_i18n': lang.t(f'Task.{current}.name')}]
+        pending = [task for task in pending if task.command != current]
+    else:
+        running_items = [item(task) for task in running]
+        pending = pending[1:] if manager.alive else pending
+    retry_items = [{'command': job['command'], 'next_run': job['created_at'],
+                    'name_i18n': lang.t(f'Task.{job["command"]}.name')} for job in retry_jobs]
+    pending_items = retry_items + [item(task) for task in pending
+                                   if task.command not in {job['command'] for job in retry_jobs}]
+    return QueueInfo(running_items, pending_items,
                      [item(task) for task in waiting]).dict()
 
 

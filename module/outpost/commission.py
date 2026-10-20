@@ -1,5 +1,7 @@
 import re
 
+from module.execution.context import plan_steps, report, step
+from module.base.watchdog import WaitGuard
 from module.base.langs import Langs
 from module.base.timer import Timer
 from module.base.utils import point2str
@@ -56,21 +58,45 @@ class Commission(UI):
         return number
 
     def receive(self):
+        guard = WaitGuard(self.device, '派遣公告栏领取', timeout=60)
+        ocr_timer = Timer(3).start()
+        claimed = False
+        claim_clicked = False
         logger.hr('Receive commission', 2)
         confirm_timer = Timer(3, count=5)
         click_timer = Timer(0.3)
 
         while 1:
             self.device.screenshot()
+            guard.check()
 
             if self.handle_reward(interval=1):
+                logger.info('Commission: reward popup received')
+                claimed = True
                 click_timer.reset()
                 continue
 
             # 全部领取
-            if click_timer.reached() and self.appear_then_click(CLAIM, threshold=20, interval=1):
+            if not claim_clicked and click_timer.reached() and self.appear_then_click(
+                CLAIM, threshold=20, interval=1
+            ):
+                claim_clicked = True
+                logger.info('Commission: clicked collect all')
                 click_timer.reset()
                 continue
+
+            if not claim_clicked and ocr_timer.reached() and self.appear(COMMISSION_CHECK, offset=10):
+                ocr_timer.reset()
+                location = self.appear_text('全部领取', threshold=0.9)
+                if location and location[1] > 850:
+                    x, y = map(int, location)
+                    pixel = self.device.image[max(0, y - 15):y + 15, max(0, x - 50):x + 50]
+                    # Enabled claim buttons have a blue fill; disabled labels must not be spammed.
+                    if pixel.size and (pixel[:, :, 2].astype(float) - pixel[:, :, 0]).mean() > 30:
+                        claim_clicked = True
+                        logger.info('Commission: clicked collect all via recognized label')
+                        self.device.click_xy(x, y)
+                        continue
 
             # 领取完成弹出的提示
             if self.appear(CLAIM_DONE_NOTICE, offset=30):
@@ -88,9 +114,14 @@ class Commission(UI):
                         break
                     # 没次数/进行中
                     if self.appear(DISPATCH_DONE, threshold=10):
-                        raise NoOpportunity
+                        report('success', '派遣奖励已全部领取，派遣正在进行或今日已完成' if claimed else
+                               '派遣奖励已检查，无待领取项目，派遣正在进行或今日已完成')
+                        return False
             else:
                 confirm_timer.clear()
+
+        report('success', '派遣公告栏奖励已领取' if claimed else '派遣公告栏已检查，暂无可领取奖励')
+        return True
 
     def select_favorite(self, skip_first_screenshot=True):
         logger.hr('Select favorite item', 2)
@@ -266,7 +297,9 @@ class Commission(UI):
                     continue
 
     def dispatch(self, skip_first_screenshot=True):
+        guard = WaitGuard(self.device, '派遣公告栏派出', timeout=60)
         logger.hr('Dispatch commission', 2)
+        dispatch_clicked = False
         click_timer = Timer(0.3)
 
         while 1:
@@ -275,12 +308,17 @@ class Commission(UI):
             else:
                 self.device.screenshot()
 
+            guard.check()
+
             # 派遣
             if (
-                click_timer.reached()
+                not dispatch_clicked
+                and click_timer.reached()
                 and self.appear(COMMISSION_CHECK, offset=10)
                 and self.appear_then_click(DISPATCH, offset=10, interval=1)
             ):
+                dispatch_clicked = True
+                logger.info('Commission: clicked dispatch all')
                 click_timer.reset()
                 continue
 
@@ -299,16 +337,13 @@ class Commission(UI):
 
     def run(self):
         logger.hr('Dispatch and claim commission')
+        items = [('commission.claim', '公告栏全部领取'), ('commission.dispatch', '公告栏派出')]
+        if self.config.CollectionItems_Enable and self.config.CollectionItems_Priority:
+            items.insert(1, ('commission.collection', '派遣收藏品'))
+        plan_steps(items)
         self.ui_ensure(page_commission)
-        try:
-            # 领取
-            self.receive()
-            # 处理收藏品
-            if self.config.CollectionItems_Enable and self.config.CollectionItems_Priority:
-                self.select_favorite()
-            # 派遣
-            self.dispatch()
-        except NoOpportunity:
-            logger.warning('Commission running or allready done')
-
+        step('commission.claim', '公告栏全部领取', self.receive, verified=True)
+        if self.config.CollectionItems_Enable and self.config.CollectionItems_Priority:
+            step('commission.collection', '派遣收藏品', self.select_favorite, verified=True)
+        step('commission.dispatch', '公告栏派出', self.dispatch, verified=True)
         self.config.task_delay(schedule=True)

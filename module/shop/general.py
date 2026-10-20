@@ -1,4 +1,5 @@
 import re
+from module.execution.context import report
 from functools import cached_property
 
 from module.base.button import Button
@@ -110,7 +111,9 @@ class GeneralShop(ShopBase):
             self.ensure_into_shop(GOTO_GENERAL_SHOP, GENERAL_SHOP_CHECK)
             self.process_purchase(self.general_shop_priority, True, True)
         except ShiftyShopReplaced:
+            report('skipped', '普通商店已被限时商店替换')
             logger.warning('General shop replaced by shifty shop')
         except NotEnoughMoneyError:
+            report('skipped', '普通商店余额不足，已跳过剩余商品')
             logger.error('The rest of money is not enough to buy this product')
             self.ensure_back(GENERAL_SHOP_CHECK)

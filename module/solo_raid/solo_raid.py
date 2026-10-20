@@ -1,3 +1,4 @@
+from module.execution.context import report
 from module.base.timer import Timer
 from module.logger import logger
 from module.simulation_room.assets import AUTO_BURST, AUTO_SHOOT, END_FIGHTING, PAUSE
@@ -71,6 +72,7 @@ class SoloRaid(SoloRaidChallenge):
             self.solo_raid()
         else:
             logger.warning('There are no free opportunities for normal mode')
+            report('success', '普通单人突击免费次数已用完')
 
     def solo_raid(self, skip_first_screenshot=True):
         """执行普通突击，入场失败时依次尝试已有编队，不修改角色组成。
@@ -198,8 +200,10 @@ class SoloRaid(SoloRaidChallenge):
             return self.solo_raid()
         else:
             logger.warning('There are no free opportunities for normal mode')
+            report('success', '普通单人突击免费次数已用完')
 
     def run(self):
+        from module.execution.context import report
         try:
             self.ui_ensure(page_main)
             # 普通
@@ -209,10 +213,11 @@ class SoloRaid(SoloRaidChallenge):
                 self.ui_ensure(page_main)
                 self.ensure_into_challenge()
         except SoloRaidIsUnavailable:
-            pass
+            report('unknown', '单人突击入口不可用', '请确认活动开放情况与入口识别', retryable=True)
         except NoOpportunityRemain:
-            pass
+            report('success', '单人突击当前模式免费次数已用完')
         except SoloRaidTeamUnavailable:
+            report('blocked', '保存的队伍均无法继续入场', '本次突击进度已保留，请先配置其他可用队伍')
             logger.warning('Solo raid stopped: saved teams cannot enter; current raid progress is preserved')
 
         self.config.task_delay(schedule=True)

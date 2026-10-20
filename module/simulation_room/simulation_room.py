@@ -1,4 +1,5 @@
 from functools import cached_property
+from module.execution.context import report
 
 from module.base.timer import Timer
 from module.base.utils import _area_offset, crop, point2str
@@ -279,11 +280,14 @@ class SimulationRoom(UI):
                 self.ui_ensure(page_ark)
             self.ensure_into_simulation()
             self._run()
+            report('success', '已完成配置范围内的模拟室')
         except GamePageUnknownError:
+            report('blocked', '存在未结束的模拟室进度', '请先结束当前模拟，或检查配置后再试')
             logger.error('The simulation has already been started')
             logger.critical('Please end the current simulation and restart it')
             self.handle_failed()
         except OperationFailed:
+            report('blocked', '模拟室战斗未通过', '可调整队伍或降低难度后再试')
             logger.warning('failed to overcome the current battle, will skip simulation task')
             self.handle_failed()
         self.config.task_delay(schedule=True)

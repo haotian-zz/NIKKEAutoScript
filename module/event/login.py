@@ -1,4 +1,5 @@
 from module.base.decorator import Config
+from module.execution.context import report
 from module.base.timer import Timer
 from module.event.assets import RECEIVE
 from module.event.base import EventBase
@@ -91,3 +92,4 @@ class EventLogin(EventBase):
     def login_stamp(self):
         logger.hr('START EVENT LOGIN STAMP', 2)
         logger.info('Small event, skip loginstamp')
+        report('skipped', '本活动没有独立签到')

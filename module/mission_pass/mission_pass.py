@@ -2,6 +2,7 @@ import copy
 
 import cv2
 
+from module.execution.context import report
 from module.base.button import shift_button
 from module.base.langs import Langs
 from module.base.timer import Timer
@@ -223,4 +224,5 @@ class MissionPass(UI):
                 logger.info('ALL MISSION PASS DONE')
                 break
 
+        report('success', '已检查所有可见 PASS，无剩余可领取奖励')
         self.config.task_delay(schedule=True)

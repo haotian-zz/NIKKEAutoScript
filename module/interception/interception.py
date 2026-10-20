@@ -6,6 +6,7 @@ from typing import List, Optional, Tuple
 
 import numpy as np
 
+from module.execution.context import report
 from module.base.timer import Timer
 from module.base.utils import load_image, point2str
 from module.config.utils import server_timezone
@@ -112,6 +113,7 @@ class Interception(UI):
                 break
 
             if entry_timeout.reached():
+                report('unknown', '异常拦截入口不可用', '请检查解锁进度；未解锁时可选择 Special 模式', retryable=True)
                 logger.warning('Anomaly interception unavailable: check unlock status or select Special mode')
                 return False
 
@@ -187,6 +189,7 @@ class Interception(UI):
                 and self.appear(BATTLE, threshold=25)
                 and not self.appear(BATTLE_QUICKLY, threshold=5)
             ):
+                report('blocked', '仅快速战斗已开启，但当前无法快速战斗')
                 logger.warning(f'Quick battle only: {self.config.Interception_QuickBattleOnly}, skip battle')
                 return
 
@@ -499,6 +502,7 @@ class Interception(UI):
         入口等待、无法识别次数和战斗总时长均有退出条件；不购买次数或修改编队。
         """
         if self.config.Client_Language != 'zh-CN':
+            report('blocked', '特殊目标模式目前仅支持简体中文', '请检查客户端语言配置')
             logger.warning('Special interception skipped: only the Simplified Chinese layout is supported')
             return False
         entry_timeout = Timer(30, count=30).start()
@@ -507,6 +511,7 @@ class Interception(UI):
             if self.appear(SPECIAL_INTERCEPTION_CHECK, offset=(10, 30)):
                 break
             if entry_timeout.reached():
+                report('unknown', '特殊目标入口超时', '请检查解锁进度或入口识别', retryable=True)
                 logger.warning('Special interception skipped: target page did not open within 30 seconds')
                 return False
             if self.appear(ARK_CHECK, offset=10) and self.appear_then_click(
@@ -523,6 +528,7 @@ class Interception(UI):
         while 1:
             self.device.screenshot()
             if battle_timeout.reached():
+                report('failed', '特殊目标战斗流程超时', retryable=True)
                 logger.warning('Special interception stopped: battle flow exceeded 12 minutes')
                 return False
             if self.appear_then_click(END_FIGHTING, offset=30, interval=2):
@@ -534,14 +540,17 @@ class Interception(UI):
             if not self.appear(SPECIAL_INTERCEPTION_CHECK, offset=(10, 30)) or not action_timer.reached():
                 continue
             if self.device.image.shape[:2] != (1280, 720):
+                report('blocked', '特殊目标模式的客户端分辨率不符', '需要 720×1280 客户区')
                 logger.warning('Special interception skipped: unexpected client resolution')
                 return False
             remaining = self.special_opportunities()
             if remaining is None:
+                report('unknown', '拦截免费次数未能确认，未继续入场', retryable=True)
                 logger.warning('Special interception skipped: free opportunity counter could not be verified')
                 return False
             logger.info(f'Special interception free opportunities remaining: {remaining}/3')
             if remaining == 0:
+                report('success', '特殊目标免费次数已用完（0/3）')
                 return True
 
             # 此处只检查已确认面板内按钮的启用颜色，禁用态为灰色。
@@ -550,12 +559,14 @@ class Interception(UI):
                 logger.info('Special interception: quick battle')
                 self.device.click_xy(530, 1105)
             elif self.config.Interception_QuickBattleOnly:
+                report('blocked', '快速战斗不可用', '请先完成首次战斗，或关闭仅快速战斗选项')
                 logger.warning('Special interception skipped: quick battle is unavailable')
                 return False
             elif self.appear(BATTLE, threshold=25):
                 logger.info('Special interception: enter battle with the current team')
                 self.device.click_xy(530, 1190)
             else:
+                report('unknown', '没有识别到可用的免费战斗按钮', retryable=True)
                 logger.warning('Special interception skipped: no enabled free battle button')
                 return False
             action_timer.reset()
@@ -568,7 +579,7 @@ class Interception(UI):
             else:
                 self._run()
         except NoOpportunity:
-            pass
+            report('success', '异常拦截免费次数已用完')
         self.config.task_delay(schedule=True)
 
 

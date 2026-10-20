@@ -29,6 +29,7 @@ class ProcessManager:
 
     def __init__(self, config_name: str = "nkas") -> None:
         self.config_name = config_name
+        self._lifecycle_lock = threading.RLock()
         self._renderable_queue: queue.Queue[Tuple[int, ConsoleRenderable]] = State.manager.Queue()
         # Replay buffer entries are (levelno, renderable).  Retention is per
         # level class so a debug flood cannot push info/warn/error lines out
@@ -54,10 +55,19 @@ class ProcessManager:
         self.thd_preview_handler: threading.Thread = None
 
     def start(self, func, ev: threading.Event = None) -> None:
+        with self._lifecycle_lock:
+            self._start(func, ev)
+
+    def _start(self, func, ev: threading.Event = None) -> None:
         if not self.alive:
+            from module.execution.store import ExecutionStore
+            ExecutionStore().interrupt(self.config_name, '上一次执行进程已退出，操作结果尚未确认',
+                                       include_queued=False)
             self.preview_source = None
             if func is None:
                 func = get_config_mod(self.config_name)
+            self._retry_worker = func == 'execution_retry'
+            self._stopping = False
             self._process = Process(
                 target=ProcessManager.run_process,
                 args=(
@@ -110,6 +120,10 @@ class ProcessManager:
                 self.latest_preview = (time.time(), item)
 
     def stop(self) -> None:
+        with self._lifecycle_lock:
+            self._stop()
+
+    def _stop(self) -> None:
         try:
             lock = self._process_locks[self.config_name]
         except KeyError:
@@ -117,6 +131,7 @@ class ProcessManager:
             self._process_locks[self.config_name] = lock
 
         with lock:
+            self._stopping = True
             if self.alive:
                 self._terminate_worker_children()
                 self._process.kill()
@@ -124,6 +139,8 @@ class ProcessManager:
                     (logging.INFO, f"[{self.config_name}] exited. Reason: Manual stop\n")
                 )
                 self._run_stop_cleanup()
+            from module.execution.store import ExecutionStore
+            ExecutionStore().interrupt(self.config_name)
             if self.thd_log_queue_handler is not None:
                 self.thd_log_queue_handler.join(timeout=1)
                 if self.thd_log_queue_handler.is_alive():
@@ -357,6 +374,14 @@ class ProcessManager:
             self._trim_renderables()
             self._publish_log(log)
         logger.info("End of log queue handler loop")
+        if getattr(self, '_retry_worker', False) and not getattr(self, '_stopping', False):
+            from module.execution.store import ExecutionStore
+            if self._process.exitcode not in (0, None):
+                ExecutionStore().interrupt(self.config_name, '执行进程异常退出，其余补做已停止')
+            elif ExecutionStore().has_retry(self.config_name):
+                # A request may have arrived after the one-shot worker drained its last job.
+                self.thd_log_queue_handler = None
+                self.start('execution_retry')
 
     def _trim_renderables(self) -> None:
         # Evict the oldest entry of whichever level class is over its limit;
@@ -484,7 +509,11 @@ class ProcessManager:
         NikkeConfig.stop_event = e
         try:
             # Run nkas
-            if func == "nkas":
+            if func == 'execution_retry':
+                from main import NikkeAutoScript
+                NikkeAutoScript.stop_event = e
+                NikkeAutoScript(config_name=config_name).loop_retries()
+            elif func == "nkas":
                 from main import NikkeAutoScript
 
                 NikkeAutoScript.stop_event = e
@@ -508,6 +537,8 @@ class ProcessManager:
         except Exception as e:
             logger.exception(e)
         finally:
+            from module.execution.store import ExecutionStore
+            ExecutionStore().interrupt(config_name, worker_pid=os.getpid(), include_queued=False)
             # 单次工具或初始化失败也可能持有句柄；退出时兜底清理，被 kill 时由系统回收。
             if os.name == 'nt':
                 try:

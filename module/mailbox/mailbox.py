@@ -1,3 +1,4 @@
+from module.execution.context import report
 from module.base.timer import Timer
 from module.logger import logger
 from module.mailbox.assets import RECEIVE
@@ -38,4 +39,5 @@ class Mailbox(UI):
             self.check()
         else:
             logger.info('The mailbox has no letters that need to be checked.')
+        report('success', '已检查邮箱并处理可领取邮件')
         self.config.task_delay(schedule=True)

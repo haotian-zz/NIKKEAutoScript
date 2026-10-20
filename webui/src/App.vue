@@ -22,6 +22,7 @@ import LinksView from './views/LinksView.vue'
 import LogsView from './views/LogsView.vue'
 import ManageView from './views/ManageView.vue'
 import OverviewView from './views/OverviewView.vue'
+import ExecutionsView from './views/ExecutionsView.vue'
 import ScheduleView from './views/ScheduleView.vue'
 import SettingsView from './views/SettingsView.vue'
 import TaskView from './views/TaskView.vue'
@@ -145,6 +146,7 @@ onBeforeUnmount(() => {
       </div>
       <DashboardView v-if="isDashboard" />
       <OverviewView v-else-if="isWorkspace && selectedPage === 'overview'" />
+      <ExecutionsView v-else-if="isWorkspace && selectedPage === 'executions'" />
       <ScheduleView v-else-if="isWorkspace && selectedPage === 'schedule'" />
       <TaskView v-else-if="isWorkspace" />
       <ManageView v-else-if="isManage" />

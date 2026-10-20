@@ -2,6 +2,7 @@ import os
 import time
 from datetime import datetime
 
+from module.execution.context import report
 from module.base.timer import Timer
 from module.base.utils import point2str
 from module.daily_recruit.assets import *
@@ -335,18 +336,21 @@ class DailyRecruit(UI):
         if self.config.DailyRecruit_EventFreeRecruit:
             try:
                 self.event_free_recruit()
+                report('success', '已处理活动免费招募')
             except EndEventFree:
-                pass
+                report('skipped', '当前没有可用的活动免费招募')
         # 150钻单抽
         if self.config.DailyRecruit_Ordinary150GemRecruit:
             try:
                 self.ordinary_150gem_recruit()
+                report('success', '已处理配置的宝石招募')
             except NotEnoughOrdinaryTimes:
-                pass
+                report('skipped', '宝石折扣招募当前不可用')
         # 友情点单抽
         if self.config.DailyRecruit_SocialPointRecruit:
             try:
                 self.social_point_recruit()
+                report('success', '已完成配置的友情点招募')
             except NotEnoughSocialPoint:
-                pass
+                report('blocked', '友情点不足，未完成配置招募')
         self.config.task_delay(schedule=True)

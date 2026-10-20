@@ -1,3 +1,4 @@
+from module.execution.context import report
 from module.base.timer import Timer
 from module.destruction.assets import *
 from module.logger import logger
@@ -134,4 +135,5 @@ class Destruction(UI):
         self.destroy_free()
         if self.config.Destruction_UseGem:
             self.destroy_gem()
+        report('success', '已处理配置范围内的歼灭次数')
         self.config.task_delay(schedule=True)

@@ -26,6 +26,7 @@ from module.exception import (
     ScreenshotError,
 )
 from module.logger import logger
+from module.execution.context import report
 from module.notify import handle_notify
 
 sys.stdout.reconfigure(encoding='utf-8')
@@ -64,14 +65,21 @@ class NikkeAutoScript:
         report_statistics(config_name=self.config_name)
 
     @cached_property
+    def execution(self):
+        from module.execution.recorder import ExecutionRecorder
+        return ExecutionRecorder(self.config_name)
+
+    @cached_property
     def config(self):
         try:
             config = NikkeConfig(config_name=self.config_name)
             return config
         except RequestHumanTakeover:
+            report('blocked', '需要手动处理游戏状态', '请查看本次详情及游戏画面')
             logger.critical('Request human takeover')
             exit(1)
         except Exception as e:
+            report('failed', '执行过程中发生异常', type(e).__name__, retryable=True)
             logger.exception(e)
             exit(1)
 
@@ -89,6 +97,7 @@ class NikkeAutoScript:
 
             return device
         except RequestHumanTakeover:
+            report('blocked', '需要手动处理游戏状态', '请查看本次详情及游戏画面')
             self._post_action()
             logger.critical('Request human takeover')
             if self.config.Notification_WhenDailyTaskCrashed:
@@ -100,6 +109,7 @@ class NikkeAutoScript:
                 )
             exit(1)
         except AccountError:
+            report('blocked', '游戏登录状态需要处理', '重新登录后再重试')
             self._post_action()
             logger.critical('Game offline, please relogin or input account')
             if self.config.Notification_WhenDailyTaskCrashed:
@@ -111,6 +121,7 @@ class NikkeAutoScript:
                 )
             exit(1)
         except ScreenResolutionNotEnough:
+            report('blocked', '桌面分辨率不足', '请检查显示器和游戏窗口设置')
             self._post_action()
             logger.critical('Screen resolution not enough')
             if self.config.Notification_WhenDailyTaskCrashed:
@@ -122,6 +133,7 @@ class NikkeAutoScript:
                 )
             exit(1)
         except Exception as e:
+            report('failed', '执行过程中发生异常', type(e).__name__, retryable=True)
             self._post_action()
             logger.exception(e)
             if self.config.Notification_WhenDailyTaskCrashed:
@@ -185,6 +197,7 @@ class NikkeAutoScript:
             self.device.sleep(10)
             return False
         except GamePageUnknownError:
+            report('failed', '无法识别当前游戏页面', '检查游戏网络和画面状态后重试', retryable=True)
             logger.info('Game server may be under maintenance or network may be broken, check server status now')
             # self.device.app_stop()
             logger.critical('Game page unknown')
@@ -200,6 +213,7 @@ class NikkeAutoScript:
             self._post_action()
             exit(1)
         except GameServerUnderMaintenance as e:
+            report('blocked', '游戏服务器正在维护', '维护结束后再重试')
             logger.error(e)
             self.device.app_stop()
             if self.config.Notification_WhenDailyTaskCrashed:
@@ -212,6 +226,7 @@ class NikkeAutoScript:
             self._post_action()
             exit(1)
         except CaptchaRequired:
+            report('blocked', '需要手动处理游戏验证码')
             logger.critical('Captcha required, please handle manually')
             if self.config.Notification_WhenDailyTaskCrashed:
                 handle_notify(
@@ -223,6 +238,7 @@ class NikkeAutoScript:
             self._post_action()
             exit(1)
         except RequestHumanTakeover:
+            report('blocked', '需要手动处理游戏状态', '请查看本次详情及游戏画面')
             logger.critical('Request human takeover')
             if self.config.Notification_WhenDailyTaskCrashed:
                 handle_notify(
@@ -234,6 +250,7 @@ class NikkeAutoScript:
             self._post_action()
             exit(1)
         except AccountError:
+            report('blocked', '游戏登录状态需要处理', '重新登录后再重试')
             logger.critical('Game offline, please relogin or input account')
             if self.config.Notification_WhenDailyTaskCrashed:
                 handle_notify(
@@ -245,6 +262,7 @@ class NikkeAutoScript:
             self._post_action()
             exit(1)
         except Exception as e:
+            report('failed', '执行过程中发生异常', type(e).__name__, retryable=True)
             logger.exception(e)
             image_path = self.save_error_log()
             if self.config.Notification_WhenDailyTaskCrashed:
@@ -572,6 +590,8 @@ class NikkeAutoScript:
         self.driver_release()
         self.config.start_watching()
         while 1:
+            if self.execution.store.has_retry(self.config_name):
+                return False
             if datetime.now() > future:
                 return True
             if self.stop_event is not None:
@@ -771,6 +791,9 @@ class NikkeAutoScript:
             str: Name of the next task.
         """
         while 1:
+            retry = self.execution.retry(self.config)
+            if retry:
+                return retry
             task = self.config.get_next()
             self.config.task = task
             self.config.bind(task)
@@ -781,6 +804,7 @@ class NikkeAutoScript:
                 release_resources(next_task=task.command)
 
             if task.next_run > datetime.now():
+                self.execution.idle()
                 self.serial_report_due(task.next_run)
                 # 未到执行时间，进入排队等待：Web UI 显示"等待中"
                 self.serial_report_waiting()
@@ -809,7 +833,10 @@ class NikkeAutoScript:
         try:
             self._loop()
         finally:
-            self.driver_release()
+            try:
+                self.execution.stop()
+            finally:
+                self.driver_release()
 
     def run_once(self, command, skip_first_screenshot=False):
         try:
@@ -818,9 +845,61 @@ class NikkeAutoScript:
                 if not self.serial_wait_turn(command) or not self.driver_wait_turn(command):
                     del_cached_property(self, 'config')
                     continue
-                return self.run(command, skip_first_screenshot=skip_first_screenshot)
+                return self.run_recorded(command, skip_first_screenshot, single=True)
         finally:
+            self.execution.idle()
+            self.execution.stop()
             self.driver_release()
+
+    def loop_retries(self):
+        """A stopped instance resumes only explicitly selected jobs, then stops again."""
+        logger.set_file_logger(self.config_name)
+        try:
+            while self.execution.store.has_retry(self.config_name) or self.execution.job:
+                if self.stop_event is not None and self.stop_event.is_set():
+                    break
+                task = self.execution.retry(self.config)
+                if not task:
+                    continue
+                self.serial_report_due(datetime.now())
+                if not self.serial_wait_turn(task) or not self.driver_wait_turn(task):
+                    del_cached_property(self, 'config')
+                    continue
+                self.run_recorded(inflection.underscore(task), skip_first_screenshot=(task == 'Restart'))
+                del_cached_property(self, 'config')
+        finally:
+            try:
+                self.execution.stop()
+            finally:
+                self.driver_release()
+
+    def run_recorded(self, command, skip_first_screenshot=False, single=False):
+        task = inflection.camelize(command)
+        attempt = self.execution.begin(task, self.config, single=single)
+        success, error = None, None
+        try:
+            if not single and not self.is_independent_task(task):
+                self.device.config = self.config
+                self.device.stuck_record_clear()
+                self.device.click_record_clear()
+                from module.base.watchdog import WaitGuard
+                limit = 1800 if task in ('Event', 'Event2', 'SimulationRoom') else 900
+                self.device._execution_guard = WaitGuard(self.device, f'{task}总执行时限',
+                                                        timeout=limit, warn_after=120)
+            success = self.run(command, skip_first_screenshot=skip_first_screenshot)
+            if success and task == 'Restart':
+                report('success', '游戏启动 / 重启流程已完成')
+            return success
+        except BaseException as exc:
+            error = exc
+            raise
+        finally:
+            device = self.__dict__.get('device')
+            if device is not None and '_execution_guard' in device.__dict__:
+                del device._execution_guard
+            screenshot = self.execution.screenshot(attempt, device)
+            attempt.finish(success, error, screenshot)
+            self.execution.end_retry()
 
     def _loop(self):
         while 1:
@@ -858,18 +937,10 @@ class NikkeAutoScript:
                 del_cached_property(self, 'config')
                 continue
             # 妮游社等独立任务不需要device，不需要操作游戏
-            if not self.is_independent_task(task):
-                # Init device and change server
-                _ = self.device
-                self.device.config = self.config
-
-                # Run
-                logger.info(f'Scheduler: Start task `{task}`')
-                self.device.stuck_record_clear()
-                self.device.click_record_clear()
+            logger.info(f'Scheduler: Start task `{task}`')
 
             logger.hr(task, level=0)
-            success = self.run(inflection.underscore(task), skip_first_screenshot=(task == 'Restart'))
+            success = self.run_recorded(inflection.underscore(task), skip_first_screenshot=(task == 'Restart'))
             logger.info(f'Scheduler: End task `{task}`')
             self.is_first_task = False
 

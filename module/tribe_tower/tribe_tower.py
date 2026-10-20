@@ -1,4 +1,5 @@
 from functools import cached_property
+from module.execution.context import report
 
 from module.base.timer import Timer
 from module.base.utils import point2str
@@ -50,6 +51,7 @@ class TribeTower(UI):
             try:
                 self.ensure_into_tribe_tower()
             except NoOpportunityRemain:
+                report('success', '当前企业塔没有剩余挑战次数')
                 logger.warning('The current tribe tower has no remaining opportunities')
                 self.ensure_back()
                 self.available_company.remove(self.available_company[0])
@@ -193,9 +195,11 @@ class TribeTower(UI):
 
         except OperationFailed:
             if not self.config.Overcome_OnlyToCompleteDailyMission:
+                report('blocked', '企业塔当前层战斗未通过', '可调整队伍和练度后再试；尚未确定具体失败原因')
                 logger.warning('failed to overcome the current stage, will try the other tribe tower')
                 self.available_company.remove(self.available_company[0])
             else:
+                report('success', '已按配置完成企业塔入场任务')
                 self.available_company.clear()
             self.ensure_back()
             return

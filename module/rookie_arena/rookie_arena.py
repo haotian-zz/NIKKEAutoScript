@@ -1,6 +1,7 @@
 import time
 from functools import cached_property
 
+from module.execution.context import report
 from module.base.arena import ArenaBase
 from module.base.timer import Timer
 from module.base.utils import (
@@ -251,9 +252,11 @@ class RookieArena(UI, ArenaBase):
 
             self.ensure_into_rookie_arena()
         except RookieArenaIsUnavailable:
+            report('skipped', '新人竞技场正在等待新赛季')
             logger.warning('Waiting for the next season')
             pass
         except RookieArenaTimesReached:
+            report('success', '新人竞技场已达到配置挑战次数')
             logger.warning('Reach the number of battle times')
             pass
         self.config.task_delay(schedule=True)

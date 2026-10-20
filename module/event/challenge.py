@@ -1,4 +1,5 @@
 from module.base.timer import Timer
+from module.execution.context import report
 from module.base.utils import get_button_by_location
 from module.challenge.assets import *
 from module.event.assets import *
@@ -85,6 +86,7 @@ class EventChallenge(EventBase):
                 break
 
             if self.appear(CHALLENGE_STAGE_CHECK, offset=10) and stage_timeout.reached():
+                report('blocked', '活动挑战无法入场', '请检查活动专用编队和关卡前置条件')
                 logger.warning('Event challenge skipped: battle did not start; check the challenge team')
                 self.appear_then_click(CHALLENGE_CANCEL, offset=10, interval=1)
                 self.back_to_event()
@@ -119,6 +121,7 @@ class EventChallenge(EventBase):
                 continue
 
             if self.appear(OPERATION_FAILED, offset=10):
+                report('blocked', '活动挑战战斗未通过', '可调整活动队伍后再试')
                 logger.error('Challenge stage fight failed')
                 raise RequestHumanTakeover
 

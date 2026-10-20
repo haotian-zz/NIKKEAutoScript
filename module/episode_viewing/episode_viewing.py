@@ -1,3 +1,4 @@
+from module.execution.context import report
 from module.base.timer import Timer
 from module.daemon.assets import *
 from module.episode_viewing.assets import *
@@ -67,7 +68,9 @@ class EpisodeViewing(UI):
 
         try:
             self.view()
+            report('success', '鉴赏会已完成')
         except Exception as e:
+            report('failed', '鉴赏会异常结束', type(e).__name__, retryable=True)
             logger.error(e)
 
         self.config.task_delay(schedule=True)

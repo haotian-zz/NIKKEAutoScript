@@ -1,5 +1,6 @@
 import cv2
 
+from module.execution.context import report
 from module.base.timer import Timer
 from module.handler.assets import CONFIRM_B
 from module.logger import logger
@@ -100,6 +101,7 @@ class Reward(UI):
                 continue
 
             if self.appear(NO_REWARDS, offset=(5, 5), threshold=0.95, static=False):
+                report('success', '特竞点数暂无可领取奖励')
                 raise NoRewards
 
             elif self.appear(NO_REWARDS_2, offset=(5, 5), threshold=0.95, static=False):
@@ -110,9 +112,11 @@ class Reward(UI):
 
             if self.handle_reward(interval=1):
                 logger.info('Special Arena Point have been received')
+                report('success', '特竞点数已领取')
                 raise NoRewards
 
             if confirm_timer.reached():
+                report('unknown', '特竞点数领取结果未确认', retryable=True)
                 raise NoRewards
 
         return True
@@ -215,10 +219,11 @@ class Reward(UI):
                 break
 
     def run(self, internal_call=False):
+        from module.execution.context import report, step
         # self.device.image = cv2.imread('t1.png')
         # self.appear_text('全部领取')
         self.ui_ensure(page_reward)
-        self.receive_reward()
+        step('reward.defense', '前哨基地防御收益', self.receive_reward, verified=True)
         # 友情点
         collect_social = self.config.Reward_CollectSocialPoint
         collect_special = self.config.Reward_CollectSpecialArenaPoint
@@ -234,18 +239,26 @@ class Reward(UI):
             self.ui_ensure(page_main)
             self.temporary(MAIN_GOTO_FRIEND)
             # ----
-            self.receive_social_point()
+            step('reward.social', '友情点领取检查', self.receive_social_point, verified=True)
         # pjjc奖励
         if collect_special:
             self.ui_ensure(page_arena)
-            try:
-                self.receive_special_arena_point()
-            except NoRewards:
-                self.ensure_back()
+            def collect_points():
+                try:
+                    self.receive_special_arena_point()
+                    report('success', '特竞点数已检查，无剩余可领取奖励')
+                except NoRewards:
+                    self.ensure_back()
+            step('reward.special', '特殊竞技场点数', collect_points)
         # 方舟排名奖励
         if collect_ranking:
             self.ui_ensure(page_ark)
-            self.receive_ranking()
+            def collect_rank():
+                if self.receive_ranking():
+                    report('success', '排名奖励已检查，无剩余可领取奖励')
+                else:
+                    report('failed', '排名奖励入口或领取超时', retryable=True)
+            step('reward.ranking', '方舟排名奖励', collect_rank)
 
         if not internal_call:
             self.config.task_delay(schedule=True)

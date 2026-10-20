@@ -1,4 +1,5 @@
 import logging
+from module.execution.context import report
 import os
 import re
 from typing import Dict, List, Optional, Tuple
@@ -474,6 +475,7 @@ class WarehouseStats(UI):
             groups = load_item_groups(item_map_path)
             items = flatten_groups(groups)
             if not items:
+                report('skipped', '没有配置待识别物品')
                 logger.warning('WarehouseStats: No items configured, skip scan.')
                 return
 
@@ -491,14 +493,19 @@ class WarehouseStats(UI):
                     items_to_write.append(item)
 
             if not items_to_write:
+                report('failed', '没有识别到有效库存，保留原统计', retryable=True)
                 logger.warning(
                     f'WarehouseStats: Scan result is empty (recognized=0), keep existing csv unchanged: {csv_path}'
                 )
                 return
 
             rows = write_inventory_csv(csv_path, items_to_write)
+            missing = [item.get('name', item.get('id', '')) for item in items if item.get('id') not in results]
+            report('partial' if missing else 'success', f'库存识别 {len(items_to_write)}/{len(items)} 项',
+                   '未识别：' + '、'.join(str(item) for item in missing) if missing else '', retryable=bool(missing))
             logger.info(f'WarehouseStats: Saved {rows} rows to csv: {csv_path}')
         except WarehouseStatsScanError:
+            report('failed', '库存扫描失败', retryable=True)
             logger.error('WarehouseStats Scan failed.')
 
         self.config.task_delay(schedule=True)

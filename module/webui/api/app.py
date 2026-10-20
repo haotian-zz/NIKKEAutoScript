@@ -1,5 +1,6 @@
 """Route registration and static SPA mount."""
 
+import os
 from pathlib import Path
 
 from starlette.responses import HTMLResponse
@@ -8,13 +9,14 @@ from starlette.staticfiles import StaticFiles
 
 from module.logger import logger
 from module.webui.security_entry import entry_info, regenerate_entry
+from . import routes_executions
 from . import (routes_bla, routes_calendar, routes_config, routes_console, routes_cookie_sync, routes_deploy, routes_device,
                routes_instances, routes_logs, routes_maintenance, routes_notify, routes_preview, routes_proxy,
                routes_schedule, routes_search, routes_serial, routes_stats, routes_system, routes_tasks, routes_tools, ws)
 
 
 def create_spa_mount():
-    dist = Path(__file__).resolve().parents[3] / 'webui' / 'dist'
+    dist = Path(os.environ.get('NKAS_WEBUI_DIST') or Path(__file__).resolve().parents[3] / 'webui' / 'dist')
     if dist.is_dir() and (dist / 'index.html').is_file():
         return Mount('/app', app=StaticFiles(directory=str(dist), html=True), name='spa')
     logger.warning(f'SPA build output not found: {dist}')
@@ -91,6 +93,11 @@ def mount_api(app):
         Route('/api/{name:str}/config', routes_config.config, methods=['GET']),
         Route('/api/{name:str}/config', routes_config.patch_config, methods=['PATCH', 'POST']),
         Route('/api/{name:str}/queue', routes_tasks.queue, methods=['GET']),
+        Route('/api/{name:str}/executions', routes_executions.executions, methods=['GET']),
+        Route('/api/{name:str}/executions/{run_id:str}', routes_executions.detail, methods=['GET']),
+        Route('/api/{name:str}/executions/{run_id:str}/retry', routes_executions.retry, methods=['POST']),
+        Route('/api/{name:str}/executions/attempt/{attempt_id:str}/screenshot', routes_executions.screenshot,
+              methods=['GET']),
         Route('/api/{name:str}/schedule', routes_schedule.schedule, methods=['GET']),
         Route('/api/{name:str}/schedule/save', routes_schedule.save_schedule, methods=['POST']),
         Route('/api/{name:str}/schedule/reset', routes_schedule.reset_schedule, methods=['POST']),

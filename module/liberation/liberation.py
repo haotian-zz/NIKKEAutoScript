@@ -1,3 +1,4 @@
+from module.execution.context import report
 from module.base.timer import Timer
 from module.liberation.assets import *
 from module.ui.assets import GOTO_BACK, TEAM_GOTO_LIBERATION
@@ -86,4 +87,5 @@ class Liberation(UI):
     def run(self):
         self.ui_ensure(page_team, skip_first_screenshot=True)
         self._run()
+        report('success', '已检查解放任务并处理当前可领取奖励')
         self.config.task_delay(schedule=True)

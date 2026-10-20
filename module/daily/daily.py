@@ -1,3 +1,4 @@
+from module.execution.context import report
 from module.base.decorator import run_once
 from module.base.timer import Timer
 from module.base.utils import crop, find_center, mask_area, point2str
@@ -279,4 +280,5 @@ class Daily(UI):
         self.ui_ensure(page_daily)
         # 每日任务结算
         self.receive()
+        report('success', '已检查并领取当前可领取的日常 / 周常奖励')
         self.config.task_delay(schedule=True)

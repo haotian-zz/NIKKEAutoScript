@@ -1,23 +1,26 @@
-from functools import cached_property
+import re
 
-from module.base.button import Button, filter_buttons_in_area, merge_buttons
-from module.base.decorator import Config
+import cv2
+
+from module.base.button import Button
 from module.base.timer import Timer
-from module.base.utils import crop, sort_buttons_by_location
+from module.base.watchdog import WaitGuard
+from module.base.utils import crop
 from module.conversation.assets import ANSWER_CHECK
 from module.event.assets import *
 from module.event.base import EventBase, EventSelectError
 from module.event.challenge import CHALLENGE_QUICKLY_DISABLE
+from module.execution.context import report
+from module.exception import GameStuckError
 from module.logger import logger
-from module.simulation_room.assets import END_FIGHTING, FIGHT, FIGHT_QUICKLY
-from module.tribe_tower.assets import NEXT_STAGE
+from module.ocr.ocr import Ocr
+from module.simulation_room.assets import AUTO_BURST, AUTO_SHOOT, END_FIGHTING, FIGHT, FIGHT_QUICKLY
+from module.tribe_tower.assets import NEXT_STAGE, OPERATION_FAILED
 from module.ui.assets import (
     FIGHT_CLOSE,
     FIGHT_QUICKLY_CHECK,
     FIGHT_QUICKLY_FIGHT,
     FIGHT_QUICKLY_MAX,
-    FIGHT_QUICKLY_MIN,
-    SKIP,
 )
 
 
@@ -32,30 +35,14 @@ class EventStory(EventBase):
         return stages[story]
 
     def STORY_STAGE_11(self, story):
-        stages = {
-            'story_1_normal': self.event_assets.STORY_1_NORMAL_STAGE_11,
-            'story_1_normal_clear': self.event_assets.STORY_1_NORMAL_STAGE_11_CLEAR,
-            'story_1_hard': self.event_assets.STORY_1_HARD_STAGE_11,
-            'story_1_hard_clear': self.event_assets.STORY_1_HARD_STAGE_11_CLEAR,
-            'story_2_normal': self.event_assets.STORY_2_NORMAL_STAGE_11,
-            'story_2_normal_clear': self.event_assets.STORY_2_NORMAL_STAGE_11_CLEAR,
-            'story_2_hard': self.event_assets.STORY_2_HARD_STAGE_11,
-            'story_2_hard_clear': self.event_assets.STORY_2_HARD_STAGE_11_CLEAR,
-        }
-        return stages[story]
+        clear = story.endswith('_clear')
+        key = story[:-6] if clear else story
+        return self.stage_assets(key)[-2][2 if clear else 1]
 
     def STORY_STAGE_12(self, story):
-        stages = {
-            'story_1_normal': self.event_assets.STORY_1_NORMAL_STAGE_12,
-            'story_1_normal_clear': self.event_assets.STORY_1_NORMAL_STAGE_12_CLEAR,
-            'story_1_hard': self.event_assets.STORY_1_HARD_STAGE_12,
-            'story_1_hard_clear': self.event_assets.STORY_1_HARD_STAGE_12_CLEAR,
-            'story_2_normal': self.event_assets.STORY_2_NORMAL_STAGE_12,
-            'story_2_normal_clear': self.event_assets.STORY_2_NORMAL_STAGE_12_CLEAR,
-            'story_2_hard': self.event_assets.STORY_2_HARD_STAGE_12,
-            'story_2_hard_clear': self.event_assets.STORY_2_HARD_STAGE_12_CLEAR,
-        }
-        return stages[story]
+        clear = story.endswith('_clear')
+        key = story[:-6] if clear else story
+        return self.stage_assets(key)[-1][2 if clear else 1]
 
     def get_story_stage_pending_buttons(self, story: str) -> list:
         """
@@ -81,6 +68,7 @@ class EventStory(EventBase):
         return buttons
 
     def find_pending_stage_by_grid(self, open_story):
+        guard = WaitGuard(self.device, '活动待通关关卡搜索', timeout=120)
         finder = self.pending_finder_for(open_story)
         if finder is None:
             logger.warning(f'No pending finder configured for {open_story}')
@@ -101,8 +89,6 @@ class EventStory(EventBase):
             for row in row_indices
             for column in column_indices
         ]
-        shift_x = 0
-        shift_y = 0
         height, width = self.device.image.shape[:2]
 
         logger.info(
@@ -122,12 +108,11 @@ class EventStory(EventBase):
             ):
                 logger.warning('Story push done, stage 12 cleared')
                 return 'done'
-            point = base_x + shift_x, base_y + shift_y
+            point = base_x, base_y
             if not 0 <= point[0] < width or not 0 <= point[1] < height:
                 logger.warning(f'Grid pending point {index} out of screen after shift: {point}')
                 return 'aborted'
 
-            # 保存点击前中心点附近 30x30 图块，供恢复列表后计算地图偏移。
             anchor_area = point[0] - 15, point[1] - 15, point[0] + 15, point[1] + 15
             anchor = Button(area=anchor_area, color=(0, 0, 0), button=anchor_area, name=f'PENDING_GRID_ANCHOR_{index}')
             anchor.load_color(self.device.image)
@@ -139,6 +124,7 @@ class EventStory(EventBase):
             result = 'timeout'
             for _ in range(10):
                 self.device.screenshot()
+                guard.check()
                 if self.appear(self.event_assets.STORY_STAGE_CHECK, offset=30):
                     if not self.appear(FIGHT_QUICKLY, threshold=20):
                         logger.info(f'Grid pending stage found at {point}')
@@ -156,6 +142,7 @@ class EventStory(EventBase):
                 # 点到可快速战斗的普通关卡时，关闭弹窗后继续扫描。
                 while 1:
                     self.device.screenshot()
+                    guard.check()
                     if self.appear_then_click(FIGHT_CLOSE, offset=30, interval=1):
                         continue
                     if not self.appear(FIGHT_CLOSE, offset=30):
@@ -164,349 +151,147 @@ class EventStory(EventBase):
                 logger.info(f'Grid pending point {index}: {result}, wait for dialog to close')
                 while 1:
                     self.device.screenshot()
+                    guard.check()
                     if not self.appear(STORY_STAGE_NOT_UNLOCKED, offset=30) and not self.appear(
                         STORY_STAGE_REPEAT_FORBIDDEN, offset=30
                     ):
                         logger.info(f'Grid pending point {index}: {result}, dialog closed')
                         break
 
-            # 在原点击点周围搜索锚点图块，并将所得位移应用到后续中心点。
-            # search_area = point[0] - 120, point[1] - 120, point[0] + 120, point[1] + 120
-            # if not anchor.match(crop(self.device.image, search_area), threshold=0.9, static=False):
-            #     logger.warning(f'Grid pending point {index}: unable to match 30x30 anchor after dialog')
-            #     return 'aborted'
-            # matched_x = search_area[0] + anchor.location[0]
-            # matched_y = search_area[1] + anchor.location[1]
-            # shift_x += matched_x - point[0]
-            # shift_y += matched_y - point[1]
-            # logger.info(f'Grid pending point {index}: screen shift=({shift_x}, {shift_y})')
-
         logger.info('Grid pending finder exhausted all points')
         return 'exhausted'
 
-    @cached_property
-    def team_nikke_locations(self):
-        """
-        nikke队伍坐标列表倒序
-        """
-        return [(610, 360), (485, 360), (360, 360), (235, 360), (115, 360)]
+    def story_modes(self):
+        if self.event.type == 2:
+            return ['story_1_normal', 'story_1_hard']
+        return ['story_1_normal', 'story_2_normal', 'story_2_hard']
 
-    @Config.when(EVENT_TYPE=(1, 3))
-    def story(self, skip_first_screenshot=True):
-        logger.hr('START EVENT STORY', 2)
-        click_timer = Timer(0.3)
+    def page_cleared(self, story):
+        last = self.stage_assets(story)[-1]
+        return self.appear(last[1], offset=80, threshold=0.9) and self.appear(last[2], offset=80, threshold=0.9)
 
-        logger.info('Finding opened event story')
-        open_story = 'story_1_normal'
-        # 判断并进入最新的关卡列表
-        while 1:
-            if skip_first_screenshot:
-                skip_first_screenshot = False
-            else:
-                self.device.screenshot()
+    def stage_assets(self, story):
+        prefix = story.upper() + '_STAGE_'
+        stages = []
+        for name in dir(self.event_assets):
+            match = re.fullmatch(re.escape(prefix) + r'(\d+)', name)
+            clear = getattr(self.event_assets, name + '_CLEAR', None)
+            if match and clear is not None:
+                stages.append((int(match[1]), getattr(self.event_assets, name), clear))
+        if len(stages) < 2:
+            raise EventSelectError('Event requires final and penultimate stage assets')
+        return sorted(stages)
 
-            # 检查story2是否开启，未开启则进入1
-            if self.appear(self.event_assets.EVENT_GOTO_STORY_1, offset=10) and self.appear(
-                self.event_assets.EVENT_GOTO_STORY_2_LOCKED, offset=10
-            ):
-                logger.info('Find opened event story 1')
-                if self.config.EventInfo_StoryPart == 'Story_2':
-                    logger.error('The event stage/difficulty select wrong')
-                    self.back_to_event()
-                    return
-
-                # 进入story1
-                while 1:
-                    if skip_first_screenshot:
-                        skip_first_screenshot = False
-                    else:
-                        self.device.screenshot()
-
-                    if click_timer.reached() and self.appear_then_click(
-                        self.event_assets.EVENT_GOTO_STORY_1, offset=10, interval=5
-                    ):
-                        click_timer.reset()
-                        continue
-
-                    # story1主页
-                    if click_timer.reached() and self.appear_then_click(
-                        self.event_assets.STORY_1_CHECK, offset=(10, 10), interval=3
-                    ):
-                        click_timer.reset()
-                        continue
-
-                    # story1列表页面
-                    if not self.appear(self.event_assets.EVENT_GOTO_STORY_1, offset=10) and self.appear(
-                        self.event_assets.STORY_1_NORMAL, threshold=20
-                    ):
-                        click_timer.reset()
-                        break
-                logger.info('Open event story 1')
-                break
-
-            # 检查story2是否开启，开启则进入2
-            if (
-                self.appear(self.event_assets.EVENT_GOTO_STORY_1, offset=10)
-                and not self.appear(self.event_assets.EVENT_GOTO_STORY_2_LOCKED, offset=10)
-            ) or self.appear(self.event_assets.EVENT_GOTO_STORY_2, offset=10):
-                logger.info('Find opened event story 2')
-                if self.config.EventInfo_StoryPart == 'Story_1':
-                    logger.error('The event stage/difficulty select wrong')
-                    self.back_to_event()
-                    return
-
-                # 进入story2，story2更新后需要重新截图
-                while 1:
-                    if skip_first_screenshot:
-                        skip_first_screenshot = False
-                    else:
-                        self.device.screenshot()
-
-                    if click_timer.reached() and self.appear_then_click(
-                        self.event_assets.EVENT_GOTO_STORY_2, offset=10, interval=5
-                    ):
-                        click_timer.reset()
-                        continue
-
-                    # story2主页
-                    if click_timer.reached() and self.appear_then_click(
-                        self.event_assets.STORY_2_CHECK, offset=10, interval=3
-                    ):
-                        click_timer.reset()
-                        continue
-
-                    # story2困难解锁
-                    if click_timer.reached() and self.appear_then_click(
-                        self.event_assets.STORY_2_HARD_UNLOCK, offset=10, interval=1
-                    ):
-                        open_story = 'story_2_hard'
-                        click_timer.reset()
-                        continue
-
-                    # story2普通难度列表页面
-                    if not self.appear(self.event_assets.EVENT_GOTO_STORY_2, offset=10) and self.appear(
-                        self.event_assets.STORY_2_NORMAL, threshold=10
-                    ):
-                        click_timer.reset()
-                        break
-
-                    # story2困难难度列表页面
-                    if not self.appear(self.event_assets.EVENT_GOTO_STORY_2, offset=10) and self.appear(
-                        self.event_assets.STORY_2_HARD, threshold=10
-                    ):
-                        click_timer.reset()
-                        break
-                self.device.sleep(2)
-                logger.info('Open event story 2')
-
-                self.device.screenshot()
-                # 困难难度关闭
-                if self.appear(self.event_assets.STORY_2_NORMAL, threshold=10) and self.appear(
-                    self.event_assets.STORY_2_HARD_LOCKED, offset=10
-                ):
-                    logger.info('Find difficulty normal opened')
-                    if self.config.EventInfo_StoryDifficulty == 'Hard':
-                        logger.error('The event stage/difficulty select wrong')
-                        self.back_to_event()
-                        return
-                    open_story = 'story_2_normal'
-                    logger.info('Open event story 2 normal')
-                    break
-
-                # 困难难度开启，当前页面是普通
-                if self.appear(self.event_assets.STORY_2_NORMAL, threshold=10) and not self.appear(
-                    self.event_assets.STORY_2_HARD_LOCKED, offset=10
-                ):
-                    open_story = 'story_2_hard'
-
-                # 困难难度开启，当前页面是困难
-                if self.appear(self.event_assets.STORY_2_HARD, threshold=10):
-                    open_story = 'story_2_hard'
-
-                if open_story == 'story_2_hard':
-                    logger.info('Find difficulty hard opened')
-                    if self.config.EventInfo_StoryDifficulty == 'Normal':
-                        logger.error('The event stage/difficulty select wrong')
-                        self.back_to_event()
-                        return
-
-                    while 1:
-                        if skip_first_screenshot:
-                            skip_first_screenshot = False
-                        else:
-                            self.device.screenshot()
-
-                        # story2困难难度切换
-                        if click_timer.reached() and self.appear_then_click(
-                            self.event_assets.STORY_2_HARD_HIDDEN, threshold=10
-                        ):
-                            click_timer.reset()
-                            continue
-
-                        # story2困难难度列表页面
-                        if self.appear(self.event_assets.STORY_2_HARD, threshold=10):
-                            click_timer.reset()
-                            break
-
-                    logger.info('Open event story 2 hard')
-                    break
-
-        # 关卡处理
-        self.device.sleep(2)
-        self.device.screenshot()
-        # 推图
-        if self.config.StoryStage_AutoPush:
-            logger.info(f'Start checking push stage for {open_story}')
-            self.find_and_push_stage(open_story)
-
-        # 扫荡，检查倒数第二关
-        if self.config.StoryStage_Sweep:
-            logger.info(f'Start sweeping: {open_story}')
-            # self.ensure_sroll_to_bottom(x1=(680, 800), x2=(680, 460), count=3)
-            self.find_and_sweep_stage(open_story)
-
-        # 回到活动主页
+    def open_story_page(self, story):
+        """A bounded attempt; unavailable pages fall back without abandoning the event."""
+        part = int(story.split('_')[1])
+        hard = story.endswith('hard')
         self.back_to_event()
-
-    @Config.when(EVENT_TYPE=2)
-    def story(self, skip_first_screenshot=True):
-        logger.hr('START EVENT STORY', 2)
-
-        open_story = 'story_1_normal'
-        while 1:
-            if skip_first_screenshot:
-                skip_first_screenshot = False
-            else:
-                self.device.screenshot()
-
-            # 进入关卡列表
-            while 1:
-                if skip_first_screenshot:
-                    skip_first_screenshot = False
-                else:
-                    self.device.screenshot()
-
-                # story主页
-                if self.appear_then_click(self.event_assets.STORY_1_CHECK, offset=(10, 10), interval=3):
-                    continue
-
-                # story困难解锁，困难更新后需要重新截图
-                if self.appear_then_click(self.event_assets.STORY_1_HARD_UNLOCK, offset=10, interval=1):
-                    continue
-
-                # 设备太慢可能会打开关卡弹窗，关掉
-                if self.appear(self.event_assets.STORY_STAGE_CHECK, offset=10) and self.appear_then_click(
-                    FIGHT_CLOSE, offset=10, interval=1
-                ):
-                    continue
-
-                # story普通难度列表页面
-                if not self.appear_then_click(
-                    self.event_assets.STORY_1_CHECK, offset=(10, 10), interval=3
-                ) and self.appear(self.event_assets.STORY_1_NORMAL, threshold=20):
-                    break
-
-                # story困难难度列表页面，困难更新后需要重新截图
-                if not self.appear_then_click(
-                    self.event_assets.STORY_1_CHECK, offset=(10, 10), interval=3
-                ) and self.appear(self.event_assets.STORY_1_HARD, threshold=10):
-                    break
-
-            self.device.sleep(1)
+        guard = WaitGuard(self.device, f'进入{story}', timeout=45, warn_after=20)
+        selection = Timer(12).start()
+        while True:
             self.device.screenshot()
-            if self.config.EventInfo_StoryDifficulty == 'Normal':
-                self.device.click(self.event_assets.STORY_1_NORMAL)
-                self.device.sleep(1)
-                self.device.screenshot()
-                open_story = 'story_1_normal'
-                logger.info('Open configured event story normal')
-                break
-
-            # 困难难度关闭
-            if self.appear(self.event_assets.STORY_1_NORMAL, threshold=20) and self.appear(
-                self.event_assets.STORY_1_HARD_LOCKED, offset=10
+            guard.check()
+            if self.appear(self.event_assets.STORY_STAGE_CHECK, offset=30):
+                self.appear_then_click(FIGHT_CLOSE, offset=30, interval=1)
+                continue
+            if self.appear(self.STORY_PART_CHECK(story), threshold=10) and self.appear(
+                self.STORY_PART_CHECK(story), offset=30
             ):
-                logger.info('Find difficulty normal opened')
-                if self.config.EventInfo_StoryDifficulty == 'Hard':
-                    logger.error('The event stage/difficulty select wrong')
-                    self.back_to_event()
-                    return
-                open_story = 'story_1_normal'
-                logger.info('Open event story normal')
-                break
-
-            # 困难难度开启，当前页面是普通
-            if self.appear(self.event_assets.STORY_1_NORMAL, threshold=20) and not self.appear(
-                self.event_assets.STORY_1_HARD_LOCKED, offset=10
-            ):
-                open_story = 'story_1_hard'
-
-            # 困难难度开启，当前页面是困难
-            if self.appear(self.event_assets.STORY_1_HARD, threshold=10):
-                open_story = 'story_1_hard'
-
-            if open_story == 'story_1_hard':
-                logger.info('Find difficulty hard opened')
-                if self.config.EventInfo_StoryDifficulty == 'Normal':
-                    logger.error('The event stage/difficulty select wrong')
-                    self.back_to_event()
-                    return
-
-                hard_timeout = Timer(20, count=20).start()
-                while 1:
-                    if skip_first_screenshot:
-                        skip_first_screenshot = False
-                    else:
-                        self.device.screenshot()
-
-                    if hard_timeout.reached():
-                        logger.warning('Event hard mode unavailable: normal story completion may be required')
-                        raise EventSelectError
-
-                    # story困难难度切换
-                    if self.appear_then_click(self.event_assets.STORY_1_HARD_HIDDEN, threshold=10):
+                logger.info(f'Event page opened: {story}')
+                return True
+            if self.event.type != 2:
+                locked = getattr(self.event_assets, f'EVENT_GOTO_STORY_{part}_LOCKED', None)
+                if locked is not None and self.appear(locked, offset=10):
+                    logger.info(f'Event page locked: {story}')
+                    return False
+                goto = getattr(self.event_assets, f'EVENT_GOTO_STORY_{part}', None)
+                if goto is not None and self.appear_then_click(goto, offset=10, interval=3):
+                    selection.reset()
+                    continue
+            # STORY_CHECK may coincide with EVENT_CHECK for small events.
+            normal = getattr(self.event_assets, f'STORY_{part}_NORMAL')
+            active_normal = self.appear(normal, threshold=10) and self.appear(normal, offset=30)
+            active_hard = self.appear(getattr(self.event_assets, f'STORY_{part}_HARD'), threshold=10)
+            if active_normal or active_hard:
+                if not hard:
+                    if self.appear_then_click(normal, offset=30, interval=2):
                         continue
+                else:
+                    locked = getattr(self.event_assets, f'STORY_{part}_HARD_LOCKED', None)
+                    if locked is not None and self.appear(locked, offset=10):
+                        logger.info(f'Hard locked; fall back from {story}')
+                        return False
+                    if selection.reached():
+                        logger.info(f'Cannot switch to {story}; fall back to previous page')
+                        return False
+                    button = getattr(self.event_assets, f'STORY_{part}_HARD_HIDDEN', None)
+                    if button is not None and self.appear_then_click(button, threshold=10, interval=2):
+                        continue
+                    self.appear_then_click(getattr(self.event_assets, f'STORY_{part}_HARD'),
+                                           offset=30, interval=3)
+                continue
+            unlock = getattr(self.event_assets, f'STORY_{part}_HARD_UNLOCK', None)
+            if unlock is not None and self.appear_then_click(unlock, offset=10, interval=1):
+                continue
+            self.appear_then_click(getattr(self.event_assets, f'STORY_{part}_CHECK'), offset=10, interval=3)
 
-                    # story困难难度列表页面
-                    if self.appear(self.event_assets.STORY_1_HARD, threshold=10):
-                        break
-
-                logger.info('Open event story hard')
+    def story(self, skip_first_screenshot=True):
+        logger.hr('EVENT PROGRESSION AND FREE TICKETS', 2)
+        modes = self.story_modes()
+        if not self.config.StoryStage_AutoPush:
+            part = getattr(self.config, 'EventInfo_StoryPart', 'Story_1').lower()
+            difficulty = getattr(self.config, 'EventInfo_StoryDifficulty', 'Hard').lower()
+            target = f'{part}_{difficulty}'
+            if target in modes:
+                modes = modes[:modes.index(target) + 1]
+        current = None
+        for mode in reversed(modes):
+            if self.open_story_page(mode):
+                current = mode
                 break
-
-        self.device.sleep(2)
-        self.device.screenshot()
-        # 推图
-        if self.config.StoryStage_AutoPush:
-            logger.info(f'Start checking push stage for {open_story}')
-            self.find_and_push_stage(open_story)
-
-        # 扫荡，检查倒数第二关
-        if self.config.StoryStage_Sweep:
-            logger.info(f'Start sweeping: {open_story}')
-            # self.ensure_sroll_to_bottom(x1=(680, 800), x2=(680, 460), count=3)
-            self.find_and_sweep_stage(open_story)
-
-        # 回到活动主页
+        if current is None:
+            raise EventSelectError('No event story page can be entered')
+        while True:
+            self.device.screenshot()
+            if self.config.StoryStage_AutoPush:
+                result = self.find_and_push_stage(current)
+                if result == 'blocked':
+                    break
+                if result == 'tickets':
+                    report('success', f'{current} 已推进，免费票已用完；下次继续未通关关卡')
+                    break
+            self.device.screenshot()
+            cleared = self.page_cleared(current)
+            index = modes.index(current)
+            if self.config.StoryStage_AutoPush and cleared and index + 1 < len(modes):
+                next_mode = modes[index + 1]
+                if self.open_story_page(next_mode):
+                    current = next_mode
+                    continue
+                logger.info(f'{current} cleared; {next_mode} unavailable, use free tickets on current page')
+                report('success', f'{current} 已全通，{next_mode} 尚不能进入，回当前页刷剩余票')
+                if not self.open_story_page(current):
+                    raise EventSelectError('Unable to return to cleared event page')
+            if self.config.StoryStage_Sweep:
+                self.find_and_sweep_stage(current)
+            elif cleared:
+                report('success', f'{current} 全关卡已通关；未启用扫荡')
+            break
         self.back_to_event()
 
     def find_and_push_stage(self, open_story):
+        guard = WaitGuard(self.device, f'{open_story}推图', timeout=300, warn_after=60)
+        prepared = False
         finder = self.pending_finder_for(open_story)
         grid_mode = finder is not None and finder.get('mode') == 'grid'
         pending_buttons = [] if grid_mode else self.get_story_stage_pending_buttons(open_story)
-        has_pending_stage = grid_mode
-        if not grid_mode and pending_buttons:
-            for button in pending_buttons:
-                if self.appear_with_flip(button, offset=30, threshold=0.9, color_threshold=20, static=False):
-                    has_pending_stage = True
-                    break
         # 如果最后一关没有clear（与推图循环内的推完判定保持一致：两个模板同时出现才算已通关）
         if (
             not (
                 self.appear(self.STORY_STAGE_12(open_story), offset=80, threshold=0.9)
                 and self.appear(self.STORY_STAGE_12(f'{open_story}_clear'), offset=80, threshold=0.9)
             )
-            and has_pending_stage
         ):
             if grid_mode:
                 logger.info('Grid pending finder enabled, start pushing loop')
@@ -516,6 +301,14 @@ class EventStory(EventBase):
             # 判断有票和组队状态
             while 1:
                 self.device.screenshot()
+                guard.check()
+
+                if self.appear(OPERATION_FAILED, offset=10):
+                    report('blocked', f'{open_story} 战斗未通过', '检查角色战力和编队后再继续推图')
+                    self.appear_then_click(END_FIGHTING, offset=30, interval=1)
+                    return 'blocked'
+                if self.appear_then_click_any([AUTO_SHOOT, AUTO_BURST], offset=10, threshold=0.9, interval=5):
+                    continue
 
                 # 打开关卡
                 if grid_mode:
@@ -533,7 +326,11 @@ class EventStory(EventBase):
                             grid_retry_timer.reset()
                             continue
                         if result == 'done':
-                            return
+                            report('success', f'{open_story} 全关卡已通关')
+                            return 'cleared'
+                        if result in ('exhausted', 'aborted'):
+                            report('unknown', '未找到可推进的关卡', '已停止网格搜索，请查看截图', retryable=True)
+                            raise GameStuckError('Event pending grid exhausted')
                 else:
                     was_clicked = False
                     for button in pending_buttons:
@@ -552,20 +349,15 @@ class EventStory(EventBase):
                     if was_clicked:
                         continue
 
-                # 组队
-                if self.appear(self.event_assets.STORY_STAGE_CHECK, offset=30) and self.appear(
-                    STAGE_TEAM_NOT_SELECT, offset=30
-                ):
-                    logger.info('Team up before story push')
-                    while 1:
-                        self.device.screenshot()
-
-                        if self.appear(TEAM_NIKKE_NOT_SELECT_5, offset=30):
-                            break
-                        if self.appear_then_click(STAGE_TEAM_NOT_SELECT, offset=30, interval=1):
-                            continue
-
-                    self.team_up()
+                # First clears always use auto formation, even when an old event team exists.
+                if self.appear(self.event_assets.STORY_STAGE_CHECK, offset=30) and not prepared:
+                    if self.appear(FIGHT_QUICKLY, threshold=20):
+                        self.appear_then_click(FIGHT_CLOSE, offset=30, interval=1)
+                        continue
+                    if self.config.StoryStage_AutoFormation:
+                        self.open_team()
+                        self.team_up(bonus=False)
+                    prepared = True
                     continue
 
                 # 没票退出
@@ -579,6 +371,7 @@ class EventStory(EventBase):
                     no_ticket = False
                     while 1:
                         self.device.screenshot()
+                        guard.check()
                         # 中途出现 FIGHT 或弹窗已关，说明不是没票，回外层继续遍历
                         if not self.appear(self.event_assets.STORY_STAGE_CHECK, offset=30) or self.appear(
                             FIGHT, threshold=20
@@ -592,13 +385,16 @@ class EventStory(EventBase):
                         # 关闭弹窗，点击未生效则重试
                         while 1:
                             self.device.screenshot()
+                            guard.check()
                             if self.appear_then_click(FIGHT_CLOSE, offset=10, interval=1):
                                 continue
                             if not self.appear(FIGHT_CLOSE, offset=10):
                                 break
                         # 没票直接退出
-                        self.back_to_event()
-                        return
+                        if self.event_tickets() == 0:
+                            return 'tickets'
+                        report('unknown', '入场按钮不可用，未确认免费票为零', retryable=True)
+                        raise GameStuckError('Event entry unavailable; ticket count not confirmed zero')
                 # 进入战斗
                 if (
                     self.appear(self.event_assets.STORY_STAGE_CHECK, offset=30)
@@ -621,6 +417,8 @@ class EventStory(EventBase):
                 if self.appear_then_click(NEXT_STAGE, offset=(100, 30), interval=1):
                     self.device.stuck_record_clear()
                     self.device.click_record_clear()
+                    prepared = False
+                    guard.progress()
                     continue
 
                 # 点击区域跳转
@@ -630,11 +428,13 @@ class EventStory(EventBase):
                 # 回到活动主页
                 if self.appear(self.event_assets.EVENT_CHECK, offset=(30, 30)):
                     logger.info('Returned to event page, restart story loop')
-                    return self.story()
+                    raise GameStuckError('Event returned home before confirming page completion')
 
                 # 战斗结束，但是没有找到下一关卡
                 if self.appear_then_click(END_FIGHTING, offset=30, interval=1):
-                    logger.info('Story push done, fighting ended')
+                    logger.info('Story battle ended')
+                    prepared = False
+                    guard.progress()
                     continue
 
                 # 关卡推完回到了关卡列表
@@ -642,153 +442,168 @@ class EventStory(EventBase):
                     self.STORY_STAGE_12(f'{open_story}_clear'), offset=80, threshold=0.9
                 ):
                     logger.warning('Story push done, stage 12 cleared')
-                    # self.back_to_event()
-                    return
+                    report('success', f'{open_story} 全关卡已通关')
+                    return 'cleared'
         else:
-            logger.info('No pending stage found or Stage 12 cleared, check sweep')
+            logger.info('Final stage already cleared')
+            report('success', f'{open_story} 全关卡已通关')
+            return 'cleared'
+
+
+    def event_tickets(self):
+        result = Ocr([(520, 305, 705, 350), (360, 20, 435, 68)], name='EVENT_FREE_TICKETS',
+                     model_type=self.config.Optimization_OcrModelType).ocr(self.device.image)
+        match = re.search(r'(\d+)\s*[/／]\s*5', result['text'])
+        return int(match[1]) if match else None
+
+    def open_team(self):
+        guard = WaitGuard(self.device, '活动打开编队', timeout=30, warn_after=15)
+        while True:
+            self.device.screenshot()
+            guard.check()
+            if self.appear(SAVE_TEAM, offset=30) and self.appear(TEAM_NIKKE_AUTO, offset=30):
+                return
+            if self.appear(self.event_assets.STORY_STAGE_CHECK, offset=30):
+                self.device.click_xy(620, 975)
+                self.device.sleep(0.5)
+
+    def team_slot_empty(self, index):
+        TEAM_NIKKE_NOT_SELECT.ensure_template()
+        x = 110 + 125 * index
+        image = crop(self.device.image, (x - 25, 338, x + 25, 390))
+        result = cv2.matchTemplate(image, TEAM_NIKKE_NOT_SELECT.image, cv2.TM_CCOEFF_NORMED)
+        return cv2.minMaxLoc(result)[1] >= 0.85
+
+    def sort_team(self, bonus):
+        label = '加成奖励' if bonus else '战斗力'
+        self.device.click_xy(550, 525)
+        self.device.sleep(0.3)
+        self.device.screenshot()
+        if not self.appear_text_then_click(label, threshold=0.9):
+            raise GameStuckError(f'Event team sort option unavailable: {label}')
+        self.device.click_xy(165, 580)
+        self.device.sleep(0.3)
+        self.device.screenshot()
+        # Downward arrow means highest first; enforce it instead of inheriting a user's previous direction.
+        arrow = self.device.image[518:536, 641:662]
+        gray = cv2.cvtColor(arrow, cv2.COLOR_RGB2GRAY)
+        bright = gray > 150
+        upper = int(bright[:9].sum())
+        lower = int(bright[9:].sum())
+        if lower > upper:
+            self.device.click_xy(650, 525)
+            self.device.sleep(0.3)
+
+    def team_up(self, bonus=False):
+        guard = WaitGuard(self.device, '活动加成编队' if bonus else '活动最强编队', timeout=90)
+        self.device.screenshot()
+        if not self.appear(SAVE_TEAM, offset=30):
+            raise GameStuckError('Event formation page not confirmed')
+        # This reset affects only the event squad. Auto formation on a full team need not replace it.
+        self.device.click_xy(309, 1205)
+        self.device.sleep(0.3)
+        self.device.screenshot()
+        if not all(self.team_slot_empty(i) for i in range(5)):
+            raise GameStuckError('Event team reset not confirmed')
+        if not bonus:
+            self.device.click(TEAM_NIKKE_AUTO)
+            self.device.sleep(0.5)
+        else:
+            self.sort_team(bonus=True)
+            use_bonus = True
+            for index in range(5):
+                guard.check()
+                self.device.screenshot()
+                # Selected cards are pinned before the remaining sorted roster.
+                column, row = index % 4, index // 4
+                x = (110, 277, 443, 610)[column]
+                y = 645 + row * 320
+                if use_bonus:
+                    result = Ocr((x - 65, y - 20, x + 65, y + 20), name='EVENT_TEAM_BONUS',
+                                 model_type=self.config.Optimization_OcrModelType).ocr(self.device.image)
+                    match = re.search(r'(\d+)\s*[%％]', result['text'])
+                    if not match or int(match[1]) == 0:
+                        use_bonus = False
+                        self.sort_team(bonus=False)
+                        self.device.screenshot()
+                    else:
+                        logger.info(f'Event bonus slot {index + 1}: +{match[1]}%')
+                self.device.click_xy(x, y + 90)
+                self.device.sleep(0.3)
+                self.device.screenshot()
+                if self.team_slot_empty(index):
+                    raise GameStuckError(f'Event team slot {index + 1} selection not confirmed')
+        while True:
+            self.device.screenshot()
+            guard.check()
+            if self.appear(self.event_assets.STORY_STAGE_CHECK, offset=30):
+                logger.info('Event team saved: bonus priority' if bonus else 'Event strongest team saved')
+                return
+            if any(self.team_slot_empty(i) for i in range(5)):
+                raise GameStuckError('Event team is not full')
+            self.appear_then_click(SAVE_TEAM, offset=30, interval=2)
 
     def find_and_sweep_stage(self, open_story):
-        if self.appear(self.STORY_STAGE_11(open_story), offset=80, threshold=0.9) and self.appear(
-            self.STORY_STAGE_11(f'{open_story}_clear'), offset=80, threshold=0.9
-        ):
-            max_clicks = 0
-            while 1:
-                self.device.screenshot()
-
-                # 战斗结束
-                if self.appear(END_FIGHTING, offset=30):
-                    while 1:
-                        self.device.screenshot()
-                        if not self.appear(END_FIGHTING_BONUS_CHECK, offset=30):
-                            break
-                        if self.appear_then_click(END_FIGHTING, offset=30, interval=1):
-                            continue
-                    break
-
-                # 关卡检查
-                if self.appear(self.STORY_STAGE_11(open_story), offset=80, threshold=0.9) and self.appear_then_click(
-                    self.STORY_STAGE_11(f'{open_story}'), offset=80, threshold=0.9
-                ):
-                    self.device.sleep(0.5)
-                    continue
-
-                # 快速战斗
-                if self.appear(self.event_assets.STORY_STAGE_CHECK, offset=30) and self.appear_then_click(
-                    FIGHT_QUICKLY, threshold=20, interval=1
-                ):
-                    continue
-
-                # 票max
-                if (
-                    max_clicks < 3
-                    and self.appear(FIGHT_QUICKLY_CHECK, offset=10)
-                    and self.appear_then_click(FIGHT_QUICKLY_MAX, offset=30, threshold=0.99, interval=1)
-                ):
-                    max_clicks += 1
-                    self.device.sleep(0.3)
-                    continue
-
-                # 进行战斗
-                if (
-                    self.appear(FIGHT_QUICKLY_CHECK, offset=10)
-                    and self.appear(FIGHT_QUICKLY_MIN, offset=30, threshold=0.99)
-                    and self.appear_then_click(FIGHT_QUICKLY_FIGHT, threshold=20, interval=1)
-                ):
-                    continue
-
-                # 没票
-                if (
-                    self.appear(self.event_assets.STORY_STAGE_CHECK, offset=10)
-                    and self.appear(CHALLENGE_QUICKLY_DISABLE, threshold=10)
-                    and self.appear_then_click(FIGHT_CLOSE, offset=10, interval=1)
-                ):
-                    break
-        else:
-            logger.info('Stage 11 not cleared')
+        guard = WaitGuard(self.device, f'{open_story}倒数第二关扫荡', timeout=120)
+        self.device.screenshot()
+        if self.event_tickets() == 0:
+            report('success', f'{open_story} 免费活动票已用完')
             return
-        logger.info('Stage 11 clear done')
-
-    def team_up(self):
-        logger.hr('Team up before story push', 2)
-
-        # 点击自动编队
-        while 1:
+        self.ensure_sroll_to_bottom(x1=(680, 1000), x2=(680, 480), count=3, delay=0.4)
+        self.device.screenshot()
+        stage, button, clear = self.stage_assets(open_story)[-2]
+        if not self.appear(clear, offset=80, threshold=0.9):
+            report('blocked', '倒数第二关尚未通关，保留票用于后续推图')
+            return
+        logger.info(f'Event repeat target: {open_story}, penultimate asset stage {stage}')
+        prepared, submitted, completed = False, False, False
+        max_clicks = 0
+        while True:
             self.device.screenshot()
-
-            # 第五个位置有妮姬
-            if not self.appear(TEAM_NIKKE_NOT_SELECT_5, offset=10, interval=1):
-                logger.info('Team up auto selected')
-                break
-            # 自动编队
-            if self.appear_then_click(TEAM_NIKKE_AUTO, offset=10, interval=1):
+            guard.check()
+            if self.appear(END_FIGHTING, offset=30):
+                completed = True
+                self.appear_then_click(END_FIGHTING, offset=30, interval=1)
                 continue
-
-        # 替换加成nikke
-        if self.appear(BOUNS_100_CHECK, offset=10):
-            logger.info('Team up 100% bouns nikke selected')
-        else:
-            # 滑动到第二行
-            self.ensure_sroll((360, 900), (360, 600), speed=30, count=1, delay=0.5)
-
-            # 找到所有的加成nikke
-            self.device.screenshot()
-            nikkes = TEMPLATE_BOUNS_PER.match_multi(self.device.image, similarity=0.75, name='BOUNS_PER')
-            # 合并重复的nikkke
-            nikkes = merge_buttons(nikkes, x_threshold=30, y_threshold=30)
-            # 过滤掉非列表区域的nikke
-            nikkes = filter_buttons_in_area(nikkes, y_range=(620, 1150))
-            # 按照坐标排序
-            nikkes = sort_buttons_by_location(nikkes)
-            logger.info(f'Find bouns nikkes: {len(nikkes)}')
-            # 如果有8个，去掉第一个
-            if len(nikkes) == 8:
-                nikkes = nikkes[1:]
-                logger.info('Delete first bouns nikke')
-
-            # 队伍某个位置已经放置了加成nikke的检查button
-            check_buttons = [
-                TEAM_NIKKE_BOUNS_CHECK_5,
-                TEAM_NIKKE_BOUNS_CHECK_4,
-                TEAM_NIKKE_BOUNS_CHECK_3,
-                TEAM_NIKKE_BOUNS_CHECK_2,
-                TEAM_NIKKE_BOUNS_CHECK_1,
-            ]
-            for nikke in nikkes:
-                self.device.screenshot()
-
-                # 100%加成
-                if self.appear(BOUNS_100_CHECK, offset=10):
-                    logger.info('Team up 100% bouns nikke selected')
-                    break
-
-                # 如果某个位置没有放置加成nikke，先取消这个nikke，再放置一个加成nikke
-                for index, button in enumerate(check_buttons):
-                    if not self.appear(button, offset=(10, 10)):
-                        # 取消该位置选择的nikke
-                        while 1:
-                            self.device.screenshot()
-
-                            if self.appear(TEAM_NIKKE_NOT_SELECT, offset=(500, 10), threshold=0.6):
-                                break
-                            # 要取消的nikke序号
-
-                            self.device.click_xy(
-                                self.team_nikke_locations[index][0], self.team_nikke_locations[index][1]
-                            )
-                            self.device.sleep(0.3)
-
-                        # 放置一个加成nikke
-                        self.device.click(nikke)
-                        self.device.sleep(0.3)
-                        break
-
-        # 储存队伍
-        while 1:
-            self.device.screenshot()
-
-            # 回到关卡弹出界面
             if self.appear(self.event_assets.STORY_STAGE_CHECK, offset=30):
-                break
-            # 保存队伍
-            if self.appear_then_click(SAVE_TEAM, offset=30, interval=1):
-                continue
+                if self.appear(CHALLENGE_QUICKLY_DISABLE, threshold=10):
+                    self.appear_then_click(FIGHT_CLOSE, offset=30, interval=1)
+                    if self.event_tickets() == 0:
+                        report('success', f'{open_story} 免费活动票已用完，刷票选择倒数第二关')
+                    else:
+                        report('unknown', '快速战斗不可用，未确认票数为零', retryable=True)
+                    return
+                if not prepared:
+                    label = Ocr((30, 680, 350, 750), name='EVENT_REPEAT_STAGE',
+                                model_type=self.config.Optimization_OcrModelType).ocr(self.device.image)['text']
+                    logger.info(f'Event repeat stage verified on panel: {label}')
+                    self.open_team()
+                    self.team_up(bonus=True)
+                    prepared = True
+                    continue
+                if self.appear_then_click(FIGHT_QUICKLY, threshold=20, interval=2):
+                    continue
+            if self.appear(FIGHT_QUICKLY_CHECK, offset=10):
+                if max_clicks < 2 and self.appear_then_click(FIGHT_QUICKLY_MAX, offset=30,
+                                                           threshold=0.99, interval=1):
+                    max_clicks += 1
+                    self.device.sleep(0.4)
+                    continue
+                if max_clicks and self.appear_then_click(FIGHT_QUICKLY_FIGHT, threshold=20, interval=2):
+                    submitted = True
+                    continue
+            if self.appear(self.STORY_PART_CHECK(open_story), threshold=10) and not self.appear(
+                self.event_assets.STORY_STAGE_CHECK, offset=30
+            ):
+                if submitted and completed:
+                    tickets = self.event_tickets()
+                    if tickets == 0:
+                        report('success', f'{open_story} 倒数第二关加成编队扫荡完成，免费票为零')
+                        return
+                    if tickets is None:
+                        report('unknown', '扫荡已结算，剩余票数未识别', retryable=True)
+                        return
+                    logger.info(f'Event sweep settled, {tickets} tickets left; continue same stage')
+                    submitted, completed, max_clicks = False, False, 0
+                    guard.progress()
+                self.appear_then_click(button, offset=80, threshold=0.9, interval=3)

@@ -1,5 +1,6 @@
 from functools import cached_property
 
+from module.execution.context import report
 from module.base.arena import ArenaBase
 from module.base.timer import Timer
 from module.base.utils import (
@@ -250,9 +251,11 @@ class SpecialArena(UI, ArenaBase):
 
             self.ensure_into_special_arena()
         except SpecialArenaIsUnavailable:
+            report('skipped', '特殊竞技场正在等待新赛季')
             logger.warning('Waiting for the next season')
             pass
         except SpecialArenaTimesReached:
+            report('success', '特殊竞技场已达到配置挑战次数')
             logger.warning('Reach the number of battle times')
             pass
         self.config.task_delay(schedule=True)

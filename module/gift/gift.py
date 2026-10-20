@@ -1,4 +1,5 @@
 from module.base.timer import Timer
+from module.execution.context import report
 from module.base.utils import point2str
 from module.gift.assets import *
 from module.handler.assets import ANNOUNCEMENT
@@ -21,6 +22,7 @@ class GiftBase(UI):
         if not self.appear(CASH_SHOP_CHECK, offset=(10, 10)):
             self.ui_ensure(page_main)
             if not self.ensure_into_shop():
+                report('failed', '礼包商店账单信息获取失败', retryable=True)
                 return
         try:
             if button == STEPUP:
@@ -28,12 +30,14 @@ class GiftBase(UI):
             else:
                 self.ensure_into_shop_general()
             self.receive_available_gift(button, check)
+            report('success', '已检查并领取当前可用免费礼包')
         except NetworkError:
+            report('failed', '无法连接礼包商店', '检查游戏网络后重试', retryable=True)
             logger.error('Cannot access the cash shop under the current network')
             logger.error("If you haven't logged into Google Play, please log in and try again.")
             self.ensure_back()
         except GiftNotFound:
-            pass
+            report('skipped', '当前没有开放的 STEPUP 免费礼包')
 
     def ensure_fetch_shop_popup_closed(self):
         while 1:

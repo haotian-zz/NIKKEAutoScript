@@ -1,6 +1,7 @@
 import importlib
 from functools import cached_property
 
+from module.base.watchdog import WaitGuard
 from module.base.timer import Timer
 from module.event.assets import *
 from module.logger import logger
@@ -90,6 +91,7 @@ class EventBase(UI):
         return finder.get(story)
 
     def back_to_event(self):
+        guard = WaitGuard(self.device, '返回活动主页')
         logger.info('Back to event')
         click_timer = Timer(0.3)
         event_timer = Timer(3, count=5)
@@ -97,6 +99,7 @@ class EventBase(UI):
         # 回到活动主页
         while 1:
             self.device.screenshot()
+            guard.check()
 
             if self.appear(self.event_assets.EVENT_CHECK, offset=(30, 30)):
                 if not event_timer.started():

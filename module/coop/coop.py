@@ -1,4 +1,5 @@
 from typing_extensions import deprecated
+from module.execution.context import report
 
 from module.base.langs import Langs
 from module.base.timer import Timer
@@ -291,8 +292,8 @@ class Coop(UI):
 
             self.ensure_into_coop_from_icon()
         except CoopIsUnavailable:
-            pass
+            report('unknown', '协同作战入口未确认', '可能未开放，也可能入口未识别；本次没有确认实战', retryable=True)
         except NoOpportunityRemain:
-            pass
+            report('success', '协同作战免费次数已用完')
 
         self.config.task_delay(schedule=True)

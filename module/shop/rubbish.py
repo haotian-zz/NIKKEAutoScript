@@ -1,6 +1,7 @@
 import re
 from functools import cached_property
 
+from module.execution.context import report
 from module.base.decorator import del_cached_property
 from module.base.timer import Timer
 from module.base.utils import exec_file
@@ -184,35 +185,35 @@ class RubbishShop(ShopBase):
         logger.info('[All Products Processed]')
 
     def run(self):
+        from module.execution.context import plan_steps, step
+
+        priorities = [
+            ('rubbish_shop_core_priority', '废铁核心兑换'),
+            ('rubbish_shop_bone_priority', '废铁骨头兑换'),
+        ]
+        plan_steps(priorities)
         self.ui_ensure(page_shop)
         self.ensure_into_shop(GOTO_RUBBISH_SHOP, RUBBISH_SHOP_CHECK)
 
-        # 商品列表
-        shop_priority_list = [
-            ('rubbish_shop_core_priority', RUBBISH_SHOP_CHECK),
-            ('rubbish_shop_bone_priority', RUBBISH_SHOP_CHECK),
-        ]
-
-        for priority_attr, check_btn in shop_priority_list:
+        def purchase(priority_attr):
             try:
                 priority = getattr(self, priority_attr)
-                # 检查货币是否足够
-                # if self.total_cost > self.currency:
-                #     logger.error(f'Not enough currency for {priority_attr}')
-                #     self.ensure_back(check_btn)
-                #     continue
+                if not len(priority):
+                    report('skipped', '未配置此类兑换商品')
+                    return
                 self.swipe_and_purchase(priority)
+                report('success', '已处理配置的兑换商品')
             except NotEnoughMoneyError:
-                logger.error(f'Not enough money to buy products in {priority_attr}')
-                self.ensure_back(check_btn)
-                continue
+                report('skipped', '废铁商店货币不足，已跳过相应商品')
+                self.ensure_back(RUBBISH_SHOP_CHECK)
             except PurchaseTimeTooLong:
-                logger.warning(f'Purchase timeout for {priority_attr}')
-                continue
-            except Exception as e:
-                logger.error(e)
-                continue
+                report('failed', '废铁商店购买超时', retryable=True)
+            except Exception as exc:
+                logger.exception(exc)
+                report('failed', '废铁商店处理异常', type(exc).__name__, retryable=True)
             finally:
                 del_cached_property(self, priority_attr)
 
+        for key, label in priorities:
+            step(key, label, purchase, key)
         self.config.task_delay(schedule=True)

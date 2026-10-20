@@ -1,4 +1,5 @@
 from typing import TYPE_CHECKING
+from module.execution.context import report
 
 from module.base.decorator import Config
 from module.base.timer import Timer
@@ -16,6 +17,7 @@ class EventExtend:
 
     @Config.when(EVENT_EXTEND=False)
     def event_extend(self: 'Event'):
+        report('skipped', '本活动没有额外内容')
         return
 
     @Config.when(EVENT_ID='event_20260423')

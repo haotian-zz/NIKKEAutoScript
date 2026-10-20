@@ -1,4 +1,5 @@
 from module.base.decorator import Config
+from module.execution.context import report
 from module.base.timer import Timer
 from module.event.base import EventBase
 from module.event.minigame.game import game
@@ -50,3 +51,4 @@ class EventGame(EventBase):
     def game(self):
         logger.hr('START EVENT GAME', 2)
         logger.info('Game not support in this event')
+        report('skipped', '本活动没有受支持的小游戏')

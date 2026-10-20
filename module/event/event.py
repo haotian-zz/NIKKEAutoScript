@@ -86,6 +86,21 @@ class Event(
                 skip_click_timer.reset()
 
     def run(self):
+        from module.execution.context import plan_steps, report, step
+        items = [('event.reward', '活动奖励'), ('event.extend', '活动额外内容')]
+        if self.config.Event_LoginStamp:
+            items.append(('event.login', '活动签到'))
+        if self.config.Event_Challenge:
+            items.append(('event.challenge', '活动挑战'))
+        if self.config.StoryStage_HardTicket and self.config.EventInfo_StoryDifficulty == 'Hard':
+            items.append(('event.tickets', '活动票购买'))
+        if self.config.StoryStage_AutoPush or self.config.StoryStage_Sweep:
+            items.append(('event.story', '活动推图 / 剩余票扫荡'))
+        if self.config.Event_Game:
+            items.append(('event.game', '活动小游戏'))
+        if self.config.Event_Shop:
+            items.append(('event.shop', '活动商店'))
+        plan_steps(items)
         # self.team_up()
         # image = cv2.imread('1.png')
         # cv2.cvtColor(image, cv2.COLOR_BGR2RGB, dst=image)
@@ -101,44 +116,38 @@ class Event(
 
             self.ensure_into_event()
             if self.config.Event_LoginStamp:
-                self.login_stamp()
+                step('event.login', '活动签到', self.login_stamp, verified=True)
             if self.config.Event_Challenge:
-                self.challenge()
+                step('event.challenge', '活动挑战', self.challenge, verified=True)
             # 提前买票
             if self.config.StoryStage_HardTicket and self.config.EventInfo_StoryDifficulty == 'Hard':
-                self.shop(TEMPLATE_SHOP_GEM)
+                step('event.tickets', '活动票购买', self.shop, TEMPLATE_SHOP_GEM)
                 self.back_to_event()
             if self.config.StoryStage_AutoPush or self.config.StoryStage_Sweep:
-                for index in range(2):
-                    try:
-                        self.story()
-                    except EventSelectError:
-                        logger.warning('Event story skipped: configured difficulty is unavailable')
-                        self.back_to_event()
-                        break
-                    if index == 0:
-                        self.back_to_event()
-                        self.device.sleep(3)
+                step('event.story', '活动推图 / 剩余票扫荡', self.story)
             # if self.config.Event_Coop:
             #     coop_reschedule = self.coop()
             if self.config.Event_Game:
-                self.game()
+                step('event.game', '活动小游戏', self.game)
 
-            self.reward()
+            step('event.reward', '活动奖励', self.reward, verified=True)
 
-            self.event_extend()
+            step('event.extend', '活动额外内容', self.event_extend)
 
             if self.config.Event_Shop:
-                self.shop()
+                step('event.shop', '活动商店', self.shop)
 
         except EventSelectError:
+            report('blocked', '活动关卡配置与当前进度不匹配', '请检查关卡和难度，完成必要的首次通关')
             logger.error('The event stage/difficulty select wrong')
         except EventUnavailableError:
+            report('skipped', '当前配置的活动已结束或不可用')
             logger.error('The event is no longer available')
         except ChallengeNotFoundError:
+            report('unknown', '活动挑战入口或关卡未识别', '请确认挑战开放情况与编队', retryable=True)
             logger.error('Challenge stage not found')
         except CoopIsUnavailable:
-            pass
+            report('unknown', '活动协同入口未确认', retryable=True)
 
         # 若协同未开启则调整延迟时间
         # if self.config.Event_Coop and coop_reschedule:

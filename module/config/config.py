@@ -335,6 +335,8 @@ class NikkeConfig(ConfigUpdater, ManualConfig, GeneratedConfig, ConfigWatcher):
         return deep_get(self.data, keys=keys, default=default)
 
     def task_delay(self, server_update=None, target=None, minute=None, schedule=None, task=None):
+        if getattr(self, 'execution_retry', False):
+            return
         def ensure_delta(delay):
             return timedelta(seconds=int(ensure_time(delay, precision=3) * 60))
         run = []

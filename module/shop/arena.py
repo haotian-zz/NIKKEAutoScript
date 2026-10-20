@@ -1,4 +1,5 @@
 import os
+from module.execution.context import report
 import re
 from functools import cached_property
 
@@ -105,9 +106,11 @@ class ArenaShop(ShopBase):
                 raise ProductQueueIsEmpty
             self.process_purchase(self.arena_shop_priority)
         except NotEnoughMoneyError:
+            report('skipped', '竞技场兑换券不足，已跳过剩余商品')
             logger.error('The rest of money is not enough to buy this product')
             self.ensure_back(ARENA_SHOP_CHECK)
         except ProductQueueIsEmpty:
+            report('skipped', '竞技场商店没有配置兑换商品')
             logger.warning('There are no products included in the queue option')
         except PurchaseTimeTooLong:
-            pass
+            report('failed', '竞技场商店购买超时', retryable=True)

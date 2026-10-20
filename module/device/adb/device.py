@@ -471,8 +471,15 @@ class Device(Screenshot, Control, AppControl):
             Returns:
                 np.ndarray:
         """
+        from module.handler.story_priority import skip_story_frame
+        for _ in range(4):
+            super().screenshot()
+            if not skip_story_frame(self):
+                break
+        guard = getattr(self, '_execution_guard', None)
+        if guard is not None:
+            guard.check()
         self.stuck_record_check()
-        super().screenshot()
         publish_preview_frame(self.image, source={
             'serial': self.serial,
             'display_id': self._virtual_display_id or 0,

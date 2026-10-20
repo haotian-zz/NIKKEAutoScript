@@ -339,19 +339,24 @@ class Conversation(UI):
             return True
 
     def run(self):
+        from module.execution.context import report
         self.ui_ensure(page_conversation, confirm_wait=2)
         if self.ensure_opportunity_remain():
             self._confirm_timer.reset().start()
             try:
                 self.communicate()
             except ChooseNextNIKKETooLong as e:
+                report('partial', '已执行部分咨询，剩余次数未确认', '未能继续找到可咨询角色', retryable=True)
                 logger.error(e)
             except NoOpportunitiesRemain as e:
+                report('success', '咨询次数已用完')
                 logger.error(e)
             except ConversationQueueIsEmpty as e:
+                report('blocked', '没有可咨询目标', '请检查收藏与咨询筛选条件')
                 logger.error(e)
             except ConversationFavouriteDone:
-                pass
+                report('success', '已完成当前收藏范围内的咨询')
         else:
             logger.info('There are no opportunities remaining')
+            report('success', '咨询剩余次数为零')
         self.config.task_delay(schedule=True)

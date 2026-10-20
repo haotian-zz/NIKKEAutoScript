@@ -1,4 +1,5 @@
 from module.base.decorator import run_once
+from module.base.watchdog import WaitGuard
 from module.base.timer import Timer
 from module.exception import GameNotRunningError, GamePageUnknownError, GameStart
 from module.handler.assets import *
@@ -109,6 +110,7 @@ class UI(InfoHandler):
         def rotation_check():
             self.device.get_orientation()
 
+        guard = WaitGuard(self.device, '识别当前页面', timeout=90)
         timeout = Timer(30, count=20).start()
 
         while 1:
@@ -118,6 +120,8 @@ class UI(InfoHandler):
                     self.device.screenshot()
             else:
                 self.device.screenshot()
+
+            guard.check()
 
             # End
             if timeout.reached():
@@ -207,6 +211,7 @@ class UI(InfoHandler):
 
             visited = new
 
+        guard = WaitGuard(self.device, f'导航到{destination}', timeout=90)
         logger.hr(f'UI goto {destination}')
         confirm_timer = Timer(confirm_wait, count=int(confirm_wait // 0.5)).start()
 
@@ -216,6 +221,8 @@ class UI(InfoHandler):
                 skip_first_screenshot = False
             else:
                 self.device.screenshot()
+
+            guard.check()
 
             # Destination page
             if self.appear(destination.check_button, offset=offset):
@@ -245,6 +252,8 @@ class UI(InfoHandler):
                     break
 
             if clicked:
+                continue
+            if self.ui_additional():
                 continue
 
     def ui_ensure(self, destination, confirm_wait=0, skip_first_screenshot=True):

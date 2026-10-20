@@ -53,6 +53,7 @@ function openField(task: any, field: any) {
     </div>
     <div class="rail-list">
       <div class="rail-top">
+        <button class="rail-item" :class="{ active: selectedPage === 'executions' }" @click="router.push(`/i/${selectedName}/executions`)"><span class="sicon"><AppIcon name="file-text" :size="16" /></span>执行记录</button>
         <button class="rail-item" :class="{ active: selectedPage === 'overview' }" @click="router.push(`/i/${selectedName}/overview`)"><span class="sicon"><AppIcon name="trend-up" :size="16" /></span>{{ t('任务总览') }}</button>
         <button class="rail-item" :class="{ active: selectedPage === 'schedule' }" @click="router.push(`/i/${selectedName}/schedule`)"><span class="sicon"><AppIcon name="calendar" :size="16" /></span>{{ t('调度设置') }}(BETA)</button>
       </div>

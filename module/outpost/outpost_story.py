@@ -1,3 +1,4 @@
+from module.execution.context import report
 from module.handler.assets import REWARD
 from module.logger import logger
 from module.outpost.assets import *
@@ -96,8 +97,10 @@ class OutpostStory(UI):
         try:
             self.story_view()
         except NoStoryRemaining:
+            report('success', '当前可用基地剧情已处理完毕')
             logger.warning('All story allready viewed')
         except NoTimesRemaining:
+            report('success', '基地剧情可用次数已用完')
             logger.warning('No times remaining for story')
 
         self.config.task_delay(schedule=True)

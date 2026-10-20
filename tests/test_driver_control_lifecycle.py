@@ -23,6 +23,10 @@ class Scheduler(NikkeAutoScript):
         self.failure_record = {}
         self.stop_event = Mock()
         self.stop_event.is_set.return_value = False
+        self.execution = Mock(job=None)
+        self.execution.store.has_retry.return_value = False
+        self.execution.retry.return_value = None
+        self.execution.screenshot.return_value = None
         self.test_config = SimpleNamespace(
             Client_Platform='win', PCClientInfo_ControlScheme='driver',
             INDEPENDENT_TASKS=['CheckIn'], INDEPENDENT_TASKS_UNDER=['check_in'],

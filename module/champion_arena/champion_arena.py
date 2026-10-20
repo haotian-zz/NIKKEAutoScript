@@ -1,6 +1,7 @@
 import random
 from functools import cached_property
 
+from module.execution.context import report
 from module.base.arena import ArenaBase
 from module.base.timer import Timer
 from module.champion_arena.assets import *
@@ -168,6 +169,7 @@ class ChampionArena(UI, ArenaBase):
         try:
             self.ensure_into_champion_arena()
             self.cheer()
+            report('success', '已检查冠军竞技场并处理当前可应援对局')
         except ChampionArenaIsUnavailable:
-            pass
+            report('skipped', '冠军竞技场当前没有可应援对局')
         self.config.task_delay(schedule=True)

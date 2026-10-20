@@ -1,6 +1,7 @@
 import re
 from functools import cached_property
 
+from module.execution.context import report
 from module.base.timer import Timer
 from module.base.utils import crop
 from module.event.assets import SHOP_MONEY_LACK
@@ -166,8 +167,10 @@ class BodyLabelShop(ShopBase):
             self.ensure_into_shop(GOTO_BODY_LABEL_SHOP, BODY_LABEL_SHOP_CHECK)
             self.process_body_label_purchase([CONSOLE_PRODUCTS[name] for name in selected], int(count_text))
         except NotEnoughMoneyError:
+            report('skipped', '躯体标签货币不足，已跳过剩余商品')
             logger.error('The rest of body labels is not enough to buy this product')
             self.ensure_back(BODY_LABEL_SHOP_CHECK)
         except PurchaseTimeTooLong as e:
+            report('failed', '躯体标签商店购买超时', retryable=True)
             logger.warning(f'BodyLabelShop: {e}')
             self.ensure_back(BODY_LABEL_SHOP_CHECK)

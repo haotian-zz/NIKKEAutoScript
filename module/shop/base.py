@@ -156,6 +156,8 @@ class ShopBase(UI):
                     except NotEnoughMoneyError:
                         # 余额不足只跳过当前商品，避免中断后续商品（含免费商品）的购买
                         logger.warning(f'Not enough money to buy {products.first_or_none().name}, skip')
+                        from module.execution.context import report
+                        report('skipped', f'{products.first_or_none().name}：货币不足，已跳过')
                         products = products.delete([products.first_or_none()])
                         logger.attr('PENDING PRODUCT LIST', [i.name for i in products])
                         self.ensure_back(SHOP_CHECK)

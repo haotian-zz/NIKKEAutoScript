@@ -57,8 +57,16 @@ class Device(AppControl, Automation):
         Returns:
             np.ndarray:
         """
+        from module.handler.story_priority import skip_story_frame
+        for _ in range(4):
+            super().screenshot()
+            self.image = self.current_window.image
+            if not skip_story_frame(self):
+                break
+        guard = getattr(self, '_execution_guard', None)
+        if guard is not None:
+            guard.check()
         self.stuck_record_check()
-        super().screenshot()
         self.image = self.current_window.image
         publish_preview_frame(self.image)
         return self.image
