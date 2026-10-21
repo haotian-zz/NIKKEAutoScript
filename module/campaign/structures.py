@@ -10,6 +10,7 @@ from module.campaign.navigation.movement_feedback import TargetTriggered
 from module.campaign.vision.enemy_ring import clickable_ring
 from module.campaign.vision.objects import detect_objects
 from module.campaign.vision.perception import minimap_masks, squad_arrow
+from module.campaign.vision.learned_recovery import recover_if_enabled
 from module.logger import logger
 
 
@@ -77,6 +78,9 @@ def recover_visible_structure(runner, field):
     平台 start/end 只是模型外观类别，不代表可逆或已经传送。游戏自身决定路径和交互；
     不编造电梯配对、地面坐标或成功结果。全部输入经正式会话，后续仍须实际备战及胜利确认。
     """
+    learned = recover_if_enabled(runner, field)
+    if learned is not None:
+        return learned
     session = runner.session
     first = detect_objects(field, ('ground_mechanism', 'elevator', 'barrier'))
     session.pause(.25)

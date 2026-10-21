@@ -29,6 +29,7 @@
 - [可见敌人清理与动作证据](../../doc/campaign-visible-story.zh-CN.md)
 
 - [自动推图流程与进度](../../doc/campaign-auto-flow.md)
+- [学习型设施原型与当前验收状态](../../doc/campaign-learned-prototype.md)
 - [移动坐标与反馈原理](../../doc/campaign-prototype-principles.md)
 - [标注及实机验收路径](../../doc/map-annotation.md)
 - [实验命令说明](tools/README.md)
