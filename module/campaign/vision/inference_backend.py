@@ -10,6 +10,7 @@ import sys
 import time
 
 import numpy as np
+import psutil
 
 
 _cuda_handles = []
@@ -140,23 +141,49 @@ def ensure_worker(repository, model_sha256):
                                     str(repository/'module/campaign/vision/detection.py'), '--models',
                                     str(repository/'module/campaign/vision/models')], cwd=str(repository),
                                    stdout=log, stderr=log, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
-    deadline = time.monotonic()+12.
-    while process.poll() is None and time.monotonic() < deadline:
-        if ready():
-            return process
-        time.sleep(.2)
-    if process.poll() is None:
-        process.terminate()
-    return None
+    started = False
+    try:
+        deadline = time.monotonic()+12.
+        while process.poll() is None and time.monotonic() < deadline:
+            if ready():
+                started = True
+                return process
+            time.sleep(.2)
+        return None
+    finally:
+        if not started:
+            stop_worker(process)
 
 
 def stop_worker(process):
-    """仅关闭本任务创建的只读worker，任务正常退出或异常时均等待其释放资源。"""
+    """关闭本任务创建的worker及其已观察子进程，并有界等待资源释放。
+
+    Windows虚拟环境启动器可能另外启动解释器，须在终止父进程前取得子进程身份；
+    仅处理该Popen仍存活时的后代，不按进程名、端口或其他实例枚举终止对象。
+    """
     if process is None or process.poll() is not None:
         return
+    try:
+        children = psutil.Process(process.pid).children(recursive=True)
+    except psutil.NoSuchProcess:
+        children = []
     process.terminate()
+    for child in reversed(children):
+        try:
+            child.terminate()
+        except psutil.NoSuchProcess:
+            pass
     try:
         process.wait(timeout=5.)
     except subprocess.TimeoutExpired:
         process.kill()
         process.wait(timeout=5.)
+    _, alive = psutil.wait_procs(children, timeout=5.)
+    for child in alive:
+        try:
+            child.kill()
+        except psutil.NoSuchProcess:
+            pass
+    _, remaining = psutil.wait_procs(alive, timeout=5.)
+    if remaining:
+        raise subprocess.TimeoutExpired('owned inference worker children', 10.)

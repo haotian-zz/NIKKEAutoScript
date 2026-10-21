@@ -2,16 +2,60 @@
 
 import hashlib
 import json
+from pathlib import Path
+import tempfile
 from unittest.mock import Mock, patch
 import unittest
 
 import numpy as np
 
-from module.campaign.vision.inference_backend import LocalInference
+from module.campaign.vision.inference_backend import LocalInference, ensure_worker, stop_worker
 
 
 class InferenceBackendTests(unittest.TestCase):
     """隔离服务替身验证生产客户端，不需要GPU或真实网络。"""
+
+    def test_owned_worker_shutdown_waits_for_venv_child_and_escalates_when_needed(self):
+        """启动器和子解释器分别等待退出，慢子进程可被终止；不扫描未知服务或其他实例。"""
+        process, child, parent = Mock(pid=123), Mock(), Mock()
+        process.poll.return_value = None
+        parent.children.return_value = [child]
+        with patch('module.campaign.vision.inference_backend.psutil.Process', return_value=parent) as lookup, \
+                patch('module.campaign.vision.inference_backend.psutil.wait_procs',
+                      side_effect=[([], [child]), ([child], [])]):
+            stop_worker(process)
+        lookup.assert_called_once_with(123)
+        parent.children.assert_called_once_with(recursive=True)
+        process.terminate.assert_called_once()
+        process.wait.assert_called_once_with(timeout=5.)
+        child.terminate.assert_called_once()
+        child.kill.assert_called_once()
+
+    def test_unowned_or_exited_worker_is_not_searched_or_terminated(self):
+        """复用服务的None句柄或已经结束的本次worker不触发全机进程枚举。"""
+        process = Mock();process.poll.return_value = 0
+        with patch('module.campaign.vision.inference_backend.psutil.Process') as lookup:
+            stop_worker(None)
+            stop_worker(process)
+        lookup.assert_not_called()
+        process.terminate.assert_not_called()
+
+    def test_worker_start_interruption_releases_the_created_process(self):
+        """冷启动等待被异常打断时也须清理刚创建的服务，不依赖拿到返回句柄后的finally。"""
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            for name in ('data/vision_runtime/venv/Scripts/python.exe',
+                         'module/campaign/vision/inference_worker.py'):
+                path = root/name;path.parent.mkdir(parents=True, exist_ok=True);path.touch()
+            process = Mock();process.poll.return_value = None
+            connection = Mock();connection.request.side_effect = OSError('not ready')
+            with patch('module.campaign.vision.inference_backend.http.client.HTTPConnection', return_value=connection), \
+                    patch('module.campaign.vision.inference_backend.subprocess.Popen', return_value=process), \
+                    patch('module.campaign.vision.inference_backend.time.sleep', side_effect=RuntimeError('cancelled')), \
+                    patch('module.campaign.vision.inference_backend.stop_worker') as stop:
+                with self.assertRaisesRegex(RuntimeError, 'cancelled'):
+                    ensure_worker(root, 'model')
+            stop.assert_called_once_with(process)
 
     def test_actor_camera_port_keeps_same_frame_and_model_contract(self):
         """人物框原型只改变固定回环端口，仍须匹配原图、权重和有效框，不返回地面点。"""
