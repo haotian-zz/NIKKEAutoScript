@@ -342,7 +342,7 @@ class CampaignExecutor:
                                      SETTLE_TAP_INTERVAL)
                 elif kind in ('entry', 'battle'):
                     # 每段战斗单独计时：准备弹窗、以及加载结束真正进入战斗时都重新计时。
-                    if kind == 'entry' or previous != 'battle':
+                    if kind != previous:
                         deadline, segment, reported = time.monotonic() + BATTLE_TIME_LIMIT, Stopwatch(), False
                 if settled is None and not reported and segment.seconds >= BATTLE_IDLE_REPORT:
                     reported = True
@@ -356,7 +356,10 @@ class CampaignExecutor:
                     f'重试 {retries} 次，累计操作 {self.session.target_inputs} 次，总耗时 {total}。')
         if settled == 'defeat':
             raise BattleFailed(f'当前关卡重试 {defeat_retries} 次仍战败，停止执行并请求人工接管。')
-        if goal is not None and goal.get('kind') == 'enemy':
+        if goal is not None and goal.get('kind') == 'story':
+            self.owner.story_wins.add(tuple(goal['stage']))
+            logger.info(f"地图战斗胜利：{goal['id']}；不更新未建立对应关系的底图敌人状态。")
+        elif goal is not None and goal.get('kind') == 'enemy':
             self.owner.state.enemies[goal['id']]['status'] = 'cleared'
             logger.info(f'战斗胜利：{goal_brief(goal)} 已标记为清除，移出候选集合。')
         else:

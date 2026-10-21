@@ -554,6 +554,17 @@ class SessionTests(unittest.TestCase):
                     self.session.battle_step()
                 self.session.tap.assert_not_called()
 
+    def test_entry_validator_blocks_start_but_allows_close(self):
+        """关卡身份尚未确认时不点快速战斗；关闭弹窗仍可使用相同的战斗入口。"""
+        self.session.tap = Mock()
+        self.session.entry_validator = Mock(return_value=False)
+        with patch('module.campaign.vision.battle.battle_state', return_value=dict(state='entry', quick=True)):
+            self.session.battle_step()
+            self.session.tap.assert_not_called()
+            self.session.battle_step(close_entry=True)
+        self.session.tap.assert_called_once_with(ENTRY_CLOSE_POINT, SETTLE_TAP_INTERVAL)
+        self.session.entry_validator.assert_called_once()
+
     def test_battle_step_taps_auto_at_most_once_per_battle(self):
         """AUTO 连续读成关闭也只点一次：开关是同一个按钮，重复点会把开着的自动射击关掉。"""
         self.session.tap = Mock()
@@ -950,6 +961,34 @@ class ExecutorTests(unittest.TestCase):
         self.assertTrue(self.session.reuse_squad)
         self.assertFalse(self.session.battle_mode)
         self.session.begin_target.assert_any_call('battle')
+
+    def test_entry_wait_does_not_renew_timeout_each_poll(self):
+        """准备弹窗持续不变时到期停止；轮询本身不能延长等待期限。"""
+        clock = [0.]
+
+        def entry(close_entry=False):
+            """每次假采样推进二十秒，超过六次即说明执行层错误续期。"""
+            clock[0] += 20.
+            if clock[0] > 120:
+                raise AssertionError('Entry polling renewed its timeout')
+            return dict(state='entry')
+
+        self.session.battle_step.side_effect = entry
+        with patch('module.campaign.execution.time.monotonic', lambda: clock[0]), \
+                patch('module.campaign.execution.BATTLE_TIME_LIMIT', 60):
+            with self.assertRaisesRegex(RuntimeError, '超过 60 秒'):
+                self.executor.battle(None)
+        self.assertLessEqual(self.session.battle_step.call_count, 5)
+
+    def test_story_victory_is_counted_without_map_enemy_id(self):
+        """主线战斗胜利单独记账，不能凭未知底图坐标清除任何敌人。"""
+        self.owner.story_wins = set()
+        self.owner.state.enemies['unrelated'] = {'status': 'pending'}
+        self.session.battle_step.side_effect = [dict(state='entry'), dict(state='victory')] + settle_gone_frames()
+        with patch('module.campaign.execution.Timer', instant_timer):
+            self.assertEqual(self.executor.battle(dict(kind='story', id='story-20-6', stage=[20, 6])), 'victory')
+        self.assertEqual(self.owner.story_wins, {(20, 6)})
+        self.assertEqual(self.owner.state.enemies['unrelated']['status'], 'pending')
 
     def test_continuous_stops_on_first_defeat_without_retrying(self):
         """持续模式首次确认战败即返回，不自动连败重打。"""

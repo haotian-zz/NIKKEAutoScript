@@ -12,6 +12,7 @@ from module.exception import GameStuckError, RequestHumanTakeover
 from module.execution.context import report
 from module.logger import logger
 from module.ocr.ocr import Ocr
+from module.simulation_room.assets import END_FIGHTING
 from module.ui.assets import MAIN_CHECK
 from module.ui.page import page_main
 from module.ui.ui import UI
@@ -36,6 +37,21 @@ class AutoPush(UI):
         match = re.search(r'(?:通关|CLEAR).*?([1-9]\d?)\s*[-－]\s*([1-9]\d?)', text, re.I)
         return tuple(map(int, match.groups())) if match else None
 
+    def recover_settlement(self):
+        """继续上次中断后遗留的竖屏结算，不将旧胜利计入本次推图。
+
+        仅点击现有 END_FIGHTING 模板确认的继续提示，最多等待二十秒；不启动或重试任何战斗。
+        """
+        guard = WaitGuard(self.device, '清理已有战斗结算', timeout=20, warn_after=8)
+        while True:
+            self.device.screenshot()
+            guard.check()
+            if not self.appear(END_FIGHTING, offset=30, threshold=.85):
+                return
+            if self.appear_then_click(END_FIGHTING, offset=30, threshold=.85, interval=1):
+                logger.info('推图入口已继续已有战斗结算；该结果不计入本次胜利。')
+            self.device.sleep(.5)
+
     def ensure_main_map(self):
         """经大厅的主线任务箭头进入地图，复位之前的镜头视野。
 
@@ -46,6 +62,7 @@ class AutoPush(UI):
         self.device.ensure_resolution(self.config.PCClient_ScreenNumber, 720, 1280,
                                       position=self.config.PCClient_GameWindowPosition, interval=.15, stable_time=1.)
         self.device.check_resolution(720, 1280)
+        self.recover_settlement()
         self.device.screenshot()
         self.ui_ensure(page_main)
         self.device.screenshot()
@@ -122,8 +139,9 @@ class AutoPush(UI):
     @staticmethod
     def cleared_count(campaign):
         """统计本段已通过胜利结算确认清除的敌人，不把移动成功当作通关。"""
-        return sum(enemy.get('status') == 'cleared'
-                   for enemy in getattr(getattr(campaign, 'state', None), 'enemies', {}).values())
+        return (len(getattr(campaign, 'story_wins', ()))
+                + sum(enemy.get('status') == 'cleared'
+                      for enemy in getattr(getattr(campaign, 'state', None), 'enemies', {}).values()))
 
     def renew_progress_guard(self):
         """只在真实胜利或主线目标前进后续期总时限，持续模式不因固定总时长中断。
@@ -159,9 +177,10 @@ class AutoPush(UI):
             return
         total_cleared, recovery, segment = 0, 0, 0
         require_advance = None
+        resume_map = False
         try:
             while True:
-                if not self.ensure_main_map():
+                if not resume_map and not self.ensure_main_map():
                     if total_cleared:
                         report('partial', f'本轮已确认清除 {total_cleared} 个敌人，当前入口需要处理')
                     return
@@ -183,6 +202,7 @@ class AutoPush(UI):
                 self.device.check_resolution(*Campaign.RESOLUTION)
                 campaign = Campaign(self.config, device=self.device)
                 campaign.continuous = continuous
+                campaign.story_first = True
                 if not self.select_chapter(campaign, target):
                     if total_cleared:
                         report('partial', f'本轮已确认清除 {total_cleared} 个敌人，章节入口需要处理')
@@ -200,7 +220,7 @@ class AutoPush(UI):
                 code = (result.get('reason') or (result.get('goal') or {}).get('reason')
                         or (result.get('evidence') or {}).get('kind'))
                 detail = str(error.__cause__ or error) if error is not None else ''
-                reason = {'tick_budget': '本段决策次数达到上限',
+                reason = result.get('message') or {'tick_budget': '本段决策次数达到上限',
                           'segment_timeout': '本段执行时间达到上限',
                           'scouting_incomplete': '前置道路无法确认',
                           'chapter_changed': '已进入下一主线章节',
@@ -211,15 +231,22 @@ class AutoPush(UI):
                 if continuous and code in ('tick_budget', 'segment_timeout') and cleared:
                     logger.info(f'{reason}，本段确认清除 {cleared} 个敌人，继续当前主线进度')
                     self.renew_progress_guard()
+                    resume_map = True
                     continue
-                if continuous and code in ('no_reachable_target', 'chapter_changed') and entry is not None:
+                if continuous and code == 'chapter_changed':
+                    self.renew_progress_guard()
+                    resume_map = True
+                    continue
+                if continuous and code == 'no_reachable_target' and entry is not None:
                     require_advance = entry
+                    resume_map = False
                     logger.info(f'{reason}，重新核对主线任务后决定是否继续')
                     continue
                 localized = code == 'localization_unavailable' or any(
                     word in detail for word in ('定位', '配准', '小地图'))
                 if localized and recovery < 2 and (recovery == 0 or cleared > 0):
                     recovery += 1
+                    resume_map = False
                     save_wait_image(self.device, f'AutoPush_recovery_{recovery}')
                     logger.warning(f'地图定位恢复 {recovery}/2：本段确认清除 {cleared} 个敌人，'
                                    f'经大厅重新进入当前主线；原因：{reason}')

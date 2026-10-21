@@ -8,6 +8,8 @@
 | 位置 | 职责 |
 | --- | --- |
 | `campaign.py` | 资源与游戏窗口准备、章节定位、正式任务入口 |
+| `scene_memory.py` | 保存红圈观察、跨镜头关联与实际遇敌记录；旧坐标不授予点击许可 |
+| `visible_story.py` | 可见敌人扫描、实际遇敌编号核对、剧情处理与连续清怪 |
 | `execution.py`、`session.py`、`window.py` | 有限执行与战斗接管、生产 Device 会话、停止与输入护栏 |
 | `goals.py`、`subgoals.py`、`scouting.py`、`run_state.py` | 目标选择、解封与电梯子目标、拖展开地图侦察敌人的路程排序、跨帧运行状态 |
 | `report.py` | 日志用词与行格式：内部标识翻成中文、坐标与状态摘要的统一写法 |
@@ -24,6 +26,7 @@
 ## 操作与验证
 
 - [独立推图实例与起始关卡设置](../../doc/campaign-instance.zh-CN.md)
+- [可见敌人清理与动作证据](../../doc/campaign-visible-story.zh-CN.md)
 
 - [自动推图流程与进度](../../doc/campaign-auto-flow.md)
 - [移动坐标与反馈原理](../../doc/campaign-prototype-principles.md)

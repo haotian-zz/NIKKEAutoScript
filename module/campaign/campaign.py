@@ -343,12 +343,13 @@ class Campaign(ModuleBase):
                      '并确认右下角章节角标没有被弹窗或特效遮挡，然后重新运行任务。')
         raise RequestHumanTakeover
 
-    def detect_current_chapter(self):
+    def detect_current_chapter(self, localize=True):
         """连续识别主线地图右下角的章节号与难度，确认后发布一帧章节快照。
 
         OCR 单帧结果会受动画和特效影响，要求连续三帧得到相同身份才确认；任一帧识别失败会把
         连续计数清零，30 秒内无法确认则判定为人工介入，通常是章节号被遮挡或不在主线地图。
         确认的同时做一次观测并推送预览，让界面在任务刚开始时就能看到定位结果。
+        localize 为 False 时仅确认 UI 身份，不加载地图配准器，供主线可见目标入口使用。
         """
         logger.hr('确认主线章节', level=2)
         self.current_chapter = self.current_difficulty = None
@@ -380,6 +381,9 @@ class Campaign(ModuleBase):
             if stable >= 3:
                 self.current_chapter, self.current_difficulty = identity
                 logger.info(f'当前主线章节：{identity[1].upper()} 第 {identity[0]} 章')
+                if not localize:
+                    self.last_snapshot = None
+                    return self.current_chapter
                 snapshot = self.observer.observe(image, identity, captured_at)
                 self.last_snapshot = snapshot
                 publish_preview_frame(self.device.image, interval=0, source=self.campaign_source(snapshot))
@@ -540,6 +544,24 @@ class Campaign(ModuleBase):
         """
         logger.hr(self.config.task.command, level=1)
         watch = Stopwatch()
+        if getattr(self, 'story_first', False):
+            from module.campaign.visible_story import run_visible_story
+            from module.campaign.session import InputBudgetExceeded
+            from module.campaign.execution import BattleFailed
+            from module.campaign.window import WindowChanged
+            try:
+                result = run_visible_story(self)
+            except (WindowChanged, InputBudgetExceeded, OSError, ValueError, RuntimeError, cv2.error) as exc:
+                self.last_result = {'state': 'needs_review',
+                                    'reason': 'battle_defeat' if isinstance(exc, BattleFailed)
+                                    else getattr(exc, 'reason', 'story_execution_error'), 'message': str(exc)}
+                raise RequestHumanTakeover(str(exc)) from exc
+            self.last_result = result
+            if result['state'] != 'fallback':
+                if result['state'] == 'needs_review':
+                    raise RequestHumanTakeover(result.get('message', '主线目标需要复核'))
+                return self.current_chapter
+            logger.info(f"主线可见目标流程转入地图导航：{result['message']}")
         self.ensure_resources()
         self.prepare_client()
         self.check_main_story_page()

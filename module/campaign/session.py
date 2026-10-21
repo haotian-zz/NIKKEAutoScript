@@ -202,6 +202,14 @@ class CampaignInput:
         def send(*args, **kwargs):
             """发送前校验窗口、弹窗与预算，发送后任一次驱动失败都立即停止。"""
             self.session.before_input()
+            evidence = getattr(self.session, 'evidence', None)
+            if evidence is not None:
+                snapshot = self.session.owner.last_snapshot or {}
+                context = {key: snapshot.get(key) for key in
+                           ('localization', 'squad', 'roi_to_map', 'map', 'registration') if key in snapshot}
+                evidence.before(name, getattr(self.session, 'input_frame', None),
+                                args=args, kwargs=kwargs, purpose=self.session.request['purpose'],
+                                identity=self.session.expected_identity, localization=context)
             # 闸门放行之后才算一次真手势：只有它可能让小队移动或镜头平移（见 reuse_reason）。
             self.session.gestures += 1
             result = value(*args, **kwargs)
@@ -265,8 +273,11 @@ class CampaignLocalizer:
 class CampaignSession(NavigationSession):
     """任务 Device 上的会话，复用 NavigationSession 的 plan、停稳与收尾，不创建采集器窗口。"""
 
-    def __init__(self, owner):
-        """绑定已确认的章节与切开图；这里只组装接口，首次 start 才取焦。"""
+    def __init__(self, owner, navigation=True):
+        """绑定章节与设备，首次 start 才取焦；可见主线入口不建立地图定位依赖。
+
+        navigation 为 False 时只允许复用窗口、输入、剧情与战斗接口，不调用道路规划方法。
+        """
         self.owner = owner
         self.expected_identity = (owner.current_chapter, owner.current_difficulty)
         self.request = {'chapter': owner.current_chapter, 'difficulty': owner.current_difficulty,
@@ -274,13 +285,15 @@ class CampaignSession(NavigationSession):
         self.index = 0
         self.folder = Path(__file__).resolve().parents[2] / 'log/campaign' / (
             f'{owner.current_difficulty}_{owner.current_chapter}')
-        self.localizer = CampaignLocalizer(owner.observer.matcher, owner.cut)
-        self.compact_matcher = owner.observer.matcher
-        self.package = owner.observer.package
+        self.localizer = CampaignLocalizer(owner.observer.matcher, owner.cut) if navigation else None
+        self.compact_matcher = owner.observer.matcher if navigation else None
+        self.package = owner.observer.package if navigation else None
         self.win = CampaignWindow(owner)
         self.win.stop_check = self.check_stop
         self.win.input_check = self.before_input
         self.win.pause = self.pause
+        self.win.frame_observer = self.observe_evidence
+        self.evidence = None
         self.raw_handler = self.win.handler
         self.win.handler = CampaignInput(self, self.raw_handler) if self.raw_handler is not None else None
         self.inputs = 0
@@ -319,6 +332,8 @@ class CampaignSession(NavigationSession):
         if self.win.handler is None:
             raise WindowChanged('主线移动需要已连接的鼠标操作通道。')
         self.folder.mkdir(parents=True, exist_ok=True)
+        from module.campaign.navigation.evidence import ActionEvidence
+        self.evidence = ActionEvidence(self.folder)
         if not self.win.focus():
             raise WindowChanged('无法读取游戏窗口位置。')
         self.check()
@@ -363,7 +378,8 @@ class CampaignSession(NavigationSession):
         """
         self.check()
         if not self.popup_handling:
-            self.identity(self.win.client())
+            self.input_frame = self.win.client()
+            self.identity(self.input_frame)
         if self.target_inputs >= TARGET_INPUT_BUDGET:
             raise InputBudgetExceeded(f'同一个目标已操作 {TARGET_INPUT_BUDGET} 次仍未完成，停止并交人工复核。')
         self.inputs += 1
@@ -456,6 +472,16 @@ class CampaignSession(NavigationSession):
         write_image(self.folder / 'last_field.png', field)
         publish_preview_frame(np.ascontiguousarray(field[:, :, ::-1]), interval=0,
                               source=self.owner.campaign_source(self.owner.last_snapshot))
+
+    def observe_evidence(self, field):
+        """将现有截图补到上一手势的证据中，不增加截图次数或影响输入判定。"""
+        if self.evidence is not None:
+            self.evidence.observed(field)
+
+    def record_evidence(self, event, field, **details):
+        """记录目标、备战或定位的关键新证据；详细截图仅保留在有界本机诊断目录。"""
+        if self.evidence is not None:
+            self.evidence.record(event, field, identity=self.expected_identity, **details)
 
     def emit(self, **values):
         """将共享闭环的进度写入任务日志，电梯和移动结果仍由执行层回写状态。
@@ -688,7 +714,8 @@ class CampaignSession(NavigationSession):
         每次点击的日志都带上当次识别分数与颜色判据的实际读数，便于对着现场截图复盘误判。
         """
         self.check()
-        state = battle.battle_state(self.win.client())
+        field = self.win.client()
+        state = battle.battle_state(field)
         # 继续与跳过在输入前复核分数，其余判据由状态识别提供；日志缺项显示为「—」。
         kind, scores = state['state'], state.get('scores')
         quick = battle.value_text(state.get('quick_ratio'))
@@ -697,6 +724,9 @@ class CampaignSession(NavigationSession):
             # 剧情或加载不能证明新一场战斗开始，不能恢复 AUTO 切换额度。
             self.auto_taps, self.auto_off_frames, self.auto_skip_logged = 0, 0, False
         if kind == 'entry':
+            validator = getattr(self, 'entry_validator', None)
+            if not close_entry and validator is not None and not validator(field):
+                return state
             if close_entry:
                 if self.tap(ENTRY_CLOSE_POINT, SETTLE_TAP_INTERVAL):
                     logger.info(f"战斗弹窗再次出现（弹窗按钮命中度 {battle.score_text(scores, 'entry')}，"

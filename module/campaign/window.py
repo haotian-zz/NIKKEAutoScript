@@ -98,8 +98,12 @@ class CampaignWindow:
             self.origin = origin
         elif origin != self.origin:
             raise WindowChanged(f'窗口被移动（{self.origin} → {origin}），点击换算已失效。')
-        if self.require_foreground and self.gui.GetForegroundWindow() != hwnd:
-            raise WindowChanged('游戏窗口不在前台，鼠标操作会被系统丢弃。')
+        if self.require_foreground:
+            foreground = self.gui.GetForegroundWindow()
+            if foreground != hwnd:
+                title = self.gui.GetWindowText(foreground) if foreground else ''
+                logger.warning(f'主线前台校验失败：游戏句柄 {hwnd}，前台句柄 {foreground}，标题 {title!r}。')
+                raise WindowChanged('游戏窗口不在前台，鼠标操作会被系统丢弃。')
 
     def client(self):
         """最新一帧客户区 BGR 截图。"""
@@ -109,7 +113,11 @@ class CampaignWindow:
         image = self.device.image
         if image is None or image.shape != (CLIENT_SIZE[1], CLIENT_SIZE[0], 3):
             raise WindowChanged('截图尺寸不是 1776×999，无法计算点击位置。')
-        return np.ascontiguousarray(image[:, :, ::-1])
+        field = np.ascontiguousarray(image[:, :, ::-1])
+        observer = getattr(self, 'frame_observer', None)
+        if observer is not None:
+            observer(field)
+        return field
 
     def capture(self, require_map=True):
         """展开小地图面板的 ROI 截图（BGR）。

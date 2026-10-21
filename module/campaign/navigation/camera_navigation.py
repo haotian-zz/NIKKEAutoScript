@@ -555,6 +555,9 @@ def compact_viewport(session, matcher, panel, road, valid):
     返回 dict(matrix, a, viewport, iou, status)，matrix 为面板→地图单应；失败抛 ValueError。
     """
     result = matcher.match_panel(panel, road, valid, np.array([panel.shape[1] / 2, panel.shape[0] / 2]))
+    record = getattr(session, 'record_evidence', None)
+    if record is not None:
+        record('compact_registration', panel, report=result, arrays={'road': road, 'valid': valid})
     matrix = np.asarray(result['roi_to_map'], float)
     return dict(matrix=matrix, a=float(result['a']), viewport=project(matrix, goto.GAZE),
                 iou=float(result['road_iou']), status=result['status'])
@@ -673,7 +676,7 @@ def plan_world_move_compact(session, observation, target, max_pans=12, batch_lim
     由生产会话按需展开并重试，不能用紧凑矩阵冒充展开基准或无限沿用链式跟踪。
     脚圈已匹配时，点击前的新帧由 confirm_ring_click 独立复核，不将复核失败交给展开恢复。
     """
-    from module.campaign.vision.matching import MapMatcher, register
+    from module.campaign.vision.matching import MapMatcher, register_rectified
     from module.campaign.vision.enemy_ring import MAX_CAMERA_STEP, match_target_ring, observe_rings
 
     session.last_plan_enemy_ring = False
@@ -699,6 +702,7 @@ def plan_world_move_compact(session, observation, target, max_pans=12, batch_lim
             session.emit(message=f"起始紧凑配准状态 {start['status']}，道路重合度 {start['iou']:.3f}，"
                              f"小队定位偏差 {offset:.1f} 地图像素，满足位置一致性要求")
     matrix, scale_a, road_prev = start['matrix'], start['a'], road
+    valid_prev = valid
     ring_previous = None
     ring_pan, ring_scale, ring_path = 0, scale_a, 0.
     ring_trusted = start['status'] == 'accepted'
@@ -780,13 +784,17 @@ def plan_world_move_compact(session, observation, target, max_pans=12, batch_lim
         session.preview(field)
         panel, road, valid = perception.compact_road_masks(field)
         chained = None
-        match = register(road_prev, road, valid)
-        if match is not None and match['iou'] >= .5 and match['area'] >= 80:
-            sx, sy = match['delta']
-            chained = matrix @ np.array([[1., 0., -sx], [0., 1., -sy], [0., 0., 1.]])
+        match = register_rectified(road_prev, road, valid_prev, valid, matrix, viewport - predicted)
+        if match is not None:
+            chained = match['matrix']
+            record = getattr(session, 'record_evidence', None)
+            if record is not None:
+                record('rectified_tracking', panel, report=match, prediction=(viewport - predicted).tolist(),
+                       arrays={'previous_road': road_prev, 'road': road,
+                               'previous_valid': valid_prev, 'valid': valid, 'previous_matrix': matrix})
         use_matrix, use_a, source = None, scale_a, 'chained'
         try:
-            candidate = compact_viewport(session, matcher, panel, road, valid)
+            candidate = None if chained is not None else compact_viewport(session, matcher, panel, road, valid)
         except ValueError:
             candidate = None
         if candidate is not None:
@@ -857,5 +865,6 @@ def plan_world_move_compact(session, observation, target, max_pans=12, batch_lim
                 raise ValueError('连续两次平移没有产生有效位移；未发送移动点击。')
         matrix, scale_a = use_matrix, use_a
         road_prev = road
+        valid_prev = valid
         session.camera_pans += 1
     raise AssertionError('Unreachable camera planning state')

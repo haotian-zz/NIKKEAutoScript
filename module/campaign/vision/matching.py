@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 from concurrent.futures import ThreadPoolExecutor
+from copy import deepcopy
 from pathlib import Path
 
 import cv2
@@ -17,7 +18,7 @@ import numpy as np
 ROI = (25, 96, 243, 307)
 SCALE = 0.25
 PAD = 180
-MATCH_VERSION = 6
+MATCH_VERSION = 7
 # match_panel 的接受判据：道路 IoU、粗搜首名与远处歧义候选的分差、同分候选的参数离散度。
 # 观察器要用同一组常量解释定位为何未被接受，写成常量而不是散在判据里的字面量，避免两边漂移。
 # 道路 IoU 取 0.70：小地图只露出一小块路、或该章配色与底图有固有差异时，正确位置实测落在
@@ -28,14 +29,11 @@ ACCEPT_COARSE_MARGIN = .10
 ACCEPT_PARAMETER_SPREAD_PX = 20
 # 已确认小队坐标对展开面板配准的约束半径，单位为章节底图像素。
 SQUAD_ANCHOR_RADIUS = 12.
-# match_panel 粗搜索的参数网格；同一个 MapMatcher 实例反复配准时尺度基本不变，先在最近
-# 接受的 (a, b) 附近做小网格热启动，命中即跳过全网格，未命中再退回完整扫描。
+# 新帧必须在完整参数域验证竞争位置；尺度相同不能证明道路图案仍然唯一。
 PARAMETER_GRID = sorted({(round(float(a), 2), round(float(b), 2))
                          for a in np.arange(.6, 2.21, .2) for b in np.arange(.65, 1.56, .15)}
                         | {(round(float(a), 2), round(float(b), 2))
                            for a in np.arange(1.9, 3.21, .1) for b in np.arange(.45, .851, .05)})
-# 热启动的小网格半径：a 步长 0.2、b 步长 0.15，各取 ±1 步；超出即视为尺度漂移，退回全扫。
-WARM_START_RADIUS = 1
 # 每个参数只读共享底图，OpenCV 相关计算会释放 GIL；限制并发，给 OCR 和其他任务留核。
 SEARCH_WORKERS = max(1, min(4, (os.cpu_count() or 1) // 2))
 
@@ -185,7 +183,7 @@ class MapMatcher:
         self.pad = 900
         self.large = cv2.copyMakeBorder(self.terrain, self.pad, self.pad, self.pad, self.pad,
                                        cv2.BORDER_CONSTANT, value=0)
-        self.warm_starts = {}
+        self.frame_cache = {}
 
     def match(self, image, review=None):
         """粗搜索尺度和位移后细化最佳候选，以 IoU、远处候选分差及参数分散度联合决定是否接受。"""
@@ -208,10 +206,8 @@ class MapMatcher:
     def match_panel(self, panel, road, valid, player, review=None, expected_position=None):
         """已裁剪小地图的道路搜索。
 
-        粗搜索优先在最近一次 accepted 配准的 (a, b) 附近做小网格热启动：热启动候选分达标的
-        参数若与缓存一致则复用当时的粗搜 margin，可继续给出 accepted；命中失败或候选分过低
-        退回全网格扫描，行为与无缓存一致。同一实例在移动闭环里反复配准，尺度几乎不变，
-        热启动能省九成以上的 matchTemplate。
+        新道路、有效域、圆环锚点或坐标约束必须重新全域搜索，不能继承历史分差。
+        每种面板形态只缓存最近一次完全相同输入的结果；返回深拷贝避免调用方污染缓存。
 
         expected_position 只接受小队未移动时已确认的底图坐标，player 必须是当前帧实测圆环，
         不能用视口中心替代。有此约束时全扫尺度参数，仅搜索圆环投影偏差不超过 12 像素的位置；
@@ -220,10 +216,16 @@ class MapMatcher:
         expected = None if expected_position is None else np.asarray(expected_position, float)
         if expected is not None and (expected.shape != (2,) or not np.isfinite(expected).all()):
             raise ValueError('小队定位约束必须是有限的二维底图坐标。')
-        coarse = []
-        # 候选分门槛取 0.6：粗搜网格 IoU 明显低于接受线（全分辨率细化后要求 ACCEPT_ROAD_IOU）的参数
-        # 不会成为最终候选，热启动时不值得为它们做完全网格。
-        warm_score_floor = .6
+        fingerprint = hashlib.sha256()
+        for array in (road, valid, np.asarray(player, dtype=np.float64),
+                      np.asarray([] if expected is None else expected, dtype=np.float64)):
+            fingerprint.update(str((array.shape, array.dtype.str)).encode())
+            fingerprint.update(np.ascontiguousarray(array).tobytes())
+        fingerprint.update(repr(PARAMETER_GRID).encode())
+        key = fingerprint.digest()
+        cached = getattr(self, 'frame_cache', {}).get(road.shape)
+        if review is None and cached is not None and cached[0] == key:
+            return deepcopy(cached[1])
 
         def restrict(surface, origin, scale):
             """只保留小队投影处于可信坐标半径内的平移分数，其余位置设为负值以禁止命中。"""
@@ -263,22 +265,7 @@ class MapMatcher:
             with ThreadPoolExecutor(max_workers=SEARCH_WORKERS) as pool:
                 return [result for result in pool.map(candidate, parameters) if result is not None]
 
-        # seed_matcher 等旁路构造的实例没有热启动字段；热启动只对持有完整画布的实例有意义。
-        warm_state = getattr(self, 'warm_starts', {}).get(road.shape) if expected is None else None
-        warm, warm_margin = warm_state if warm_state is not None else (None, None)
-        warm_hit = False
-        if warm is not None:
-            steps = sorted({b for _, b in PARAMETER_GRID})
-            neighborhood = {(a, b) for a, b in PARAMETER_GRID
-                            if abs(steps.index(b) - steps.index(warm[1])) <= WARM_START_RADIUS
-                            and abs(a - warm[0]) <= .21 * (WARM_START_RADIUS + 1) + 1e-9}
-            coarse = sweep(neighborhood)
-            # 热启动候选分明显低于接受线说明尺度漂移了，退回全网格而不是拿坏候选继续。
-            warm_hit = bool(coarse) and max(item['score'] for item in coarse) >= warm_score_floor
-            if not warm_hit:
-                coarse = sweep(PARAMETER_GRID)
-        else:
-            coarse = sweep(PARAMETER_GRID)
+        coarse = sweep(PARAMETER_GRID)
         if not coarse:
             raise ValueError('No usable registration candidates.')
         coarse.sort(key=lambda r: r['score'], reverse=True)
@@ -314,11 +301,6 @@ class MapMatcher:
         spread = max(np.linalg.norm(np.asarray(r['position']) - point) for r in candidates
                      if r['road_iou'] >= result['road_iou'] - .03)
         inside = np.all(point >= 0) and np.all(point <= np.asarray(self.terrain.shape[::-1]) - 1)
-        # margin 是「粗搜首名与远处歧义候选的分差」，热启动只扫了参数邻域、语义不完整；
-        # 但该分差主要由尺度参数决定，与平移无关，所以热启动命中的参数若正是上次全网格
-        # accepted 的参数，可以直接复用当时的 margin 得出 accepted，避免每帧都做全网格。
-        if warm_hit and warm == (result['a'], result['b']) and warm_margin is not None:
-            margin = warm_margin
         accepted = bool(inside and result['road_iou'] >= ACCEPT_ROAD_IOU and margin >= ACCEPT_COARSE_MARGIN
                         and spread <= ACCEPT_PARAMETER_SPREAD_PX)
         result.update(status='accepted' if accepted else 'needs_review', coarse_margin=float(margin),
@@ -326,10 +308,11 @@ class MapMatcher:
                       normalized_size=[1920, 1080], image_sha256=self.digest, match_version=MATCH_VERSION)
         if expected is not None:
             result.update(expected_position=expected.tolist(), anchor_error=float(np.linalg.norm(point - expected)))
-        # 只有全网格 accepted 才更新热启动：needs_review 的定位不可信，把它的参数喂给下一帧
-        # 会把漂移延续下去；accepted 复用同一参数直接命中，后续帧全部走小网格并复用 margin。
-        if expected is None and accepted and not warm_hit and hasattr(self, 'warm_starts'):
-            self.warm_starts[road.shape] = ((result['a'], result['b']), float(margin))
+        if not hasattr(self, 'frame_cache'):
+            self.frame_cache = {}
+        if road.shape not in self.frame_cache and len(self.frame_cache) >= 2:
+            self.frame_cache.pop(next(iter(self.frame_cache)))
+        self.frame_cache[road.shape] = (key, deepcopy(result))
         if review is not None:
             recovered = cv2.warpPerspective((self.terrain * 255).astype(np.uint8),
                                             np.linalg.inv(np.asarray(result['roi_to_map'])), panel.shape[1::-1])
@@ -342,29 +325,32 @@ class MapMatcher:
         return result
 
 
-def overlap(first, second, valid, shift):
+def overlap(first, second, valid, shift, second_valid=None):
     """在两帧共同有效域内计算平移后的道路交并比和并集面积。"""
     matrix = np.float32([[1, 0, -shift[0]], [0, 1, -shift[1]]])
     size = first.shape[::-1]
     moved = cv2.warpAffine(second, matrix, size, flags=cv2.INTER_NEAREST)
-    common = (valid > 0) & (cv2.warpAffine(valid, matrix, size, flags=cv2.INTER_NEAREST) > 0)
+    second_valid = valid if second_valid is None else second_valid
+    common = (valid > 0) & (cv2.warpAffine(second_valid, matrix, size, flags=cv2.INTER_NEAREST) > 0)
     a, b = first > 0, moved > 0
     union = int(((a | b) & common).sum())
     return float((a & b & common).sum() / max(1, union)), union
 
 
-def register(first, second, valid, prediction=(0, 0)):
+def register(first, second, valid, prediction=(0, 0), second_valid=None):
     """用预测位移、相位相关和零位移初始化 ECC，只接受道路重叠充分的平移。
 
-    Translation after grid-plane rectification; reject texture-only matches.
+    输入必须同属校正后的道路平面；两帧各自提供有效域，省略 second_valid 时沿用旧接口。
+    初值本身也参与重合验证，避免 ECC 不收敛时丢弃已被道路充分支持的位移。
     """
-    stationary_iou, stationary_area = overlap(first, second, valid, (0, 0))
+    second_valid = valid if second_valid is None else second_valid
+    stationary_iou, stationary_area = overlap(first, second, valid, (0, 0), second_valid)
     if stationary_iou >= 0.995 and stationary_area >= 80:
         return {'delta': [0.0, 0.0], 'iou': stationary_iou, 'area': stationary_area}
     if min(np.count_nonzero(first), np.count_nonzero(second)) < 150:
         return None
-    a = cv2.GaussianBlur(first.astype(np.float32) / 255, (7, 7), 0)
-    b = cv2.GaussianBlur(second.astype(np.float32) / 255, (7, 7), 0)
+    a = cv2.GaussianBlur(np.where(valid > 0, first, 0).astype(np.float32) / 255, (7, 7), 0)
+    b = cv2.GaussianBlur(np.where(second_valid > 0, second, 0).astype(np.float32) / 255, (7, 7), 0)
     phase, _ = cv2.phaseCorrelate(a, b)
     seeds = [prediction, phase, (0, 0)]
     best = None
@@ -372,17 +358,71 @@ def register(first, second, valid, prediction=(0, 0)):
         if max(abs(float(value)) for value in seed) > max(first.shape) * 0.65:
             continue
         matrix = np.float32([[1, 0, seed[0]], [0, 1, seed[1]]])
+        score, area = overlap(first, second, valid, seed, second_valid)
+        if area >= 80 and (best is None or score > best['iou']):
+            best = {'delta': list(map(float, seed)), 'iou': score, 'area': area}
         try:
             _, matrix = cv2.findTransformECC(
                 a, b, matrix, cv2.MOTION_TRANSLATION,
-                (cv2.TERM_CRITERIA_COUNT | cv2.TERM_CRITERIA_EPS, 100, 1e-5), valid, 5,
+                (cv2.TERM_CRITERIA_COUNT | cv2.TERM_CRITERIA_EPS, 100, 1e-5), second_valid, 5,
             )
         except cv2.error:
             continue
         delta = matrix[:, 2].astype(float)
-        score, area = overlap(first, second, valid, delta)
+        score, area = overlap(first, second, valid, delta, second_valid)
         if area < 80 or np.linalg.norm(delta) > max(first.shape) * 0.65:
             continue
         if best is None or score > best['iou']:
             best = {'delta': delta.tolist(), 'iou': score, 'area': area}
     return best if best and best['iou'] >= 0.86 else None
+
+
+def register_rectified(first, second, first_valid, second_valid, matrix, prediction=(0., 0.)):
+    """在上一可信地图平面校正两帧道路，以往返一致性和手势先验验证相对位移。
+
+    matrix 为前帧面板到章节底图的单应，prediction 为道路在该平面的预期位移（地图像素），
+    与相机视野运动方向相反。返回新矩阵仅表示连续跟踪，不证明全图绝对位置唯一。
+    拒绝透视奇点、狭长直路、低支持和明显偏离手势的解；失败返回 None，交全图重定位。
+    """
+    matrix, prediction = np.asarray(matrix, float), np.asarray(prediction, float)
+    if (matrix.shape != (3, 3) or prediction.shape != (2,)
+            or not np.isfinite(matrix).all() or not np.isfinite(prediction).all()
+            or first.shape != second.shape or first_valid.shape != first.shape or second_valid.shape != second.shape):
+        return None
+    height, width = first.shape
+    corners = np.array([[0., 0.], [width, 0.], [width, height], [0., height]])
+    depth = np.column_stack([corners, np.ones(4)]) @ matrix[2]
+    if not (np.all(depth > 1e-8) or np.all(depth < -1e-8)):
+        return None
+    projected = cv2.perspectiveTransform(corners[None], matrix)[0]
+    lower, upper = projected.min(axis=0), projected.max(axis=0)
+    extent = upper - lower
+    if not np.isfinite(extent).all() or min(extent) < 8 or max(extent) > 4000:
+        return None
+    scale = min(1., 600. / max(extent))
+    rectifier = np.array([[scale, 0., 64 - lower[0] * scale],
+                          [0., scale, 64 - lower[1] * scale], [0., 0., 1.]]) @ matrix
+    size = tuple(np.ceil(extent * scale + 128).astype(int))
+    a, b, av, bv = [cv2.warpPerspective(image, rectifier, size, flags=cv2.INTER_NEAREST)
+                    for image in (first, second, first_valid, second_valid)]
+    support = np.column_stack(np.nonzero((a > 0) & (av > 0)))
+    if len(support) < 150:
+        return None
+    eigenvalues = np.linalg.eigvalsh(np.cov(support.T))
+    if eigenvalues[0] < .02 * max(eigenvalues[-1], 1.):
+        return None
+    forward = register(a, b, av, prediction * scale, second_valid=bv)
+    if forward is None:
+        return None
+    delta = np.asarray(forward['delta']) / scale
+    if np.linalg.norm(delta - prediction) > max(10., .5 * np.linalg.norm(prediction)):
+        return None
+    backward = register(b, a, bv, -np.asarray(forward['delta']), second_valid=av)
+    if backward is None:
+        return None
+    error = float(np.linalg.norm(np.asarray(forward['delta']) + backward['delta']) / scale)
+    if error > 2.:
+        return None
+    updated = np.array([[1., 0., -delta[0]], [0., 1., -delta[1]], [0., 0., 1.]]) @ matrix
+    return dict(matrix=updated, delta=delta.tolist(), iou=forward['iou'], area=forward['area'],
+                round_trip_error=error)

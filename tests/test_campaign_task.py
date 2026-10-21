@@ -23,6 +23,16 @@ def load(name, **namespace):
 
 
 class CampaignStartTests(unittest.TestCase):
+
+    def test_existing_settlement_is_continued_without_counting_a_win(self):
+        """补做入口可清理旧结算；只点现有继续模板，不报告新胜利或开启战斗。"""
+        template = object()
+        fn = load('recover_settlement', WaitGuard=Mock(), END_FIGHTING=template, logger=Mock())
+        runner = SimpleNamespace(device=Mock(), appear=Mock(side_effect=[True, False]),
+                                 appear_then_click=Mock(return_value=True))
+        fn(runner)
+        runner.appear_then_click.assert_called_once_with(template, offset=30, threshold=.85, interval=1)
+        self.assertEqual(runner.device.screenshot.call_count, 2)
     """核对输入前的起点与组件保护，防止无效选择触发游戏操作。"""
     def test_missing_runtime_reports_blocked_before_game_actions(self):
         """缺少运行组件时报告待处理，保持设备无操作。"""
@@ -133,6 +143,7 @@ class CampaignStartTests(unittest.TestCase):
             [('tick_budget', 2), ('segment_timeout', 1), ('battle_defeat', 0)], [(20, 6)] * 3)
         fn(runner)
         self.assertEqual(factory.call_count, 3)
+        self.assertEqual(runner.ensure_main_map.call_count, 1)
         self.assertEqual(runner.renew_progress_guard.call_count, 2)
         self.assertTrue(all(c.args[1] is None for c in runner.select_chapter.call_args_list))
         self.assertEqual(reports[-1][0], 'partial')
@@ -162,6 +173,7 @@ class CampaignStartTests(unittest.TestCase):
             [('chapter_changed', 1), ('tick_budget', 0)], [(20, 31), (21, 1)])
         fn(runner)
         self.assertEqual(factory.call_count, 2)
+        self.assertEqual(runner.ensure_main_map.call_count, 1)
         self.assertEqual(runner.renew_progress_guard.call_count, 1)
         self.assertTrue(all(c.args[1] is None for c in runner.select_chapter.call_args_list))
 
