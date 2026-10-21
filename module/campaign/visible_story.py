@@ -22,6 +22,7 @@ from module.logger import logger
 
 QUEST_AREA = (1565, 88, 1710, 114)
 ENTRY_AREA = (570, 465, 1195, 625)
+ENTRY_TITLE_AREA = (620, 535, 970, 580)
 ENTRY_WAIT_SECONDS = 20.
 ENTRY_READ_SECONDS = 10.
 QUEST_JUMP_AREA = (1726, 80, 1769, 119)
@@ -71,16 +72,39 @@ def stage_order(stage):
     return (stage[0], stage[1], '' if len(stage) == 2 else stage[2], 0 if len(stage) == 2 else stage[3])
 
 
-def read_stage(field, reader, quest=False):
-    """任务栏裁出亮字后直接识别单行，备战标题使用普通 OCR；均只处理当前截图。
+def parse_entry_title(text):
+    """仅解析带完整STAGE或BOSS后缀的单行标题，保留完整字母分支编号。
 
-    固定任务行不再依赖通用文字检测器，避免细小数字被拆行或漏检；保留 0.9 分和完整任务格式。
+    B0SS只容忍标签中字母O的常见OCR混淆，不修改编号中的数字。不接受EX、缺失后缀、
+    残缺分支或额外文字；避免将宽区域OCR拼接的BOSS误当分支B，也不从期望任务补编号。
+    """
+    number = r'[1-9]\d?'
+    separator = r'[-－–]'
+    identity = rf'{number}\s*{separator}\s*{number}(?:\s*[A-Z]\s*{separator}\s*{number})?'
+    match = re.fullmatch(rf'\s*({identity})\s*(?:STAGE|B[O0]SS)\s*', text, re.I)
+    return parse_stage(match.group(1)) if match else None
+
+
+def read_stage(field, reader, quest=False):
+    """任务栏与备战标题优先识别固定单行，仅处理当前截图，不用任务号替代实际备战。
+
+    备战单行须完整STAGE/BOSS锚点及0.9分；低分、版式不符或歧义时保留旧宽区域OCR，
+    关卡解析仍拒绝残缺分支。任务栏保持原0.9分和通关动词约束，EX独立核对路径不变。
     """
     if field.shape != (999, 1776, 3):
         raise ValueError('主线关卡核对需要 1776×999 BGR 客户区。')
     x1, y1, x2, y2 = QUEST_AREA if quest else ENTRY_AREA
     crop = field[y1:y2, x1:x2]
     if not quest:
+        left, top, right, bottom = ENTRY_TITLE_AREA
+        title = cv2.resize(field[top:bottom, left:right], None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
+        results = reader.paddleocr.recognize([title])
+        if len(results) == 1:
+            text, score = results[0].get('rec_text', ''), float(results[0].get('rec_score', 0.))
+            stage = parse_entry_title(text) if np.isfinite(score) and score >= .9 else None
+            logger.info(f'备战标题单行识别：{text!r}，分数 {score:.3f}')
+            if stage is not None:
+                return stage
         crop = cv2.resize(crop, None, fx=2, fy=2)
         return parse_stage(reader.ocr(crop, direct_ocr=True, threshold=.9)['text'])
     hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)

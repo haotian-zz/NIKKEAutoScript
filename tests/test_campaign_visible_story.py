@@ -80,6 +80,28 @@ class VisibleStoryTests(unittest.TestCase):
             reader.paddleocr.recognize.return_value = [dict(rec_text=text, rec_score=score)]
             self.assertIsNone(self.ns['read_stage'](self.field, reader, quest=True))
 
+    def test_entry_title_requires_complete_anchor_and_preserves_branches(self):
+        """Boss标签不当分支B，普通分支仍保留全号，EX/残缺/多编号均拒绝。"""
+        parse = self.ns['parse_entry_title']
+        for text, expected in [('20-31BOSS', (20, 31)), ('20-31 B0SS', (20, 31)),
+                               ('20-23STAGE', (20, 23)), ('20-6B-1STAGE', (20, 6, 'B', 1))]:
+            self.assertEqual(parse(text), expected)
+        for text in ('20-31', '20-6BSTAGE', '20-6B-STAGE', 'EX STAGE', 'EX 20-6 STAGE',
+                     '20-6STAGE20-7', '20-31BOSS extra', '0-31BOSS'):
+            self.assertIsNone(parse(text), text)
+
+    def test_entry_title_fast_path_keeps_score_gate_and_legacy_fallback(self):
+        """完整高分标题直接返回；低分和非有限分值不能绕过旧识别与开战身份保护。"""
+        reader = Mock()
+        reader.paddleocr.recognize.return_value = [dict(rec_text='20-31B0SS', rec_score=.97)]
+        self.assertEqual(self.ns['read_stage'](self.field, reader), (20, 31))
+        reader.ocr.assert_not_called()
+        reader.ocr.return_value = dict(text='20-25STAGE')
+        for score in (.89, float('nan')):
+            reader.paddleocr.recognize.return_value = [dict(rec_text='20-31B0SS', rec_score=score)]
+            self.assertEqual(self.ns['read_stage'](self.field, reader), (20, 25))
+        self.assertEqual(reader.ocr.call_count, 2)
+
     def test_entry_requires_two_matching_frames(self):
         """第一帧正确不放行；第二帧仍为预期关卡才允许战斗。"""
         self.ns['read_stage'] = Mock(return_value=(20, 6))
