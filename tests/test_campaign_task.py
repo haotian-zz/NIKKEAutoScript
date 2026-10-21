@@ -337,10 +337,22 @@ class CampaignStartTests(unittest.TestCase):
         """主线文字需包含完整关卡，其他任务文字不能作为依据。"""
         for text, expected in [('通关【20-6】', (20, 6)), ('CLEAR 20-6', (20, 6)),
                                ('通关 20', None), ('MOST BEAUTIFUL MAID: END', None)]:
-            ocr = Mock(return_value=SimpleNamespace(ocr=lambda _: {'text': text}))
+            ocr = Mock(return_value=SimpleNamespace(ocr=lambda _, **kwargs: {'text': text}))
             fn = load('quest_stage', re=re, Ocr=ocr)
             runner = SimpleNamespace(config=SimpleNamespace(Optimization_OcrModelType='mobile'), device=Mock())
             self.assertEqual(fn(runner), expected)
+
+    def test_sortie_instruction_is_distinct_from_a_numbered_stage(self):
+        """完整出击指令独立保存，活动或残缺文字不得虚构下一关，也不接受弱分文本。"""
+        for text, accepted in [('前往地面【出击】', True), ('前往地面【出擊】', True),
+                               ('前往地面', False), ('领取地面出击奖励', False), ('通关【21-1】', False)]:
+            reader = Mock()
+            reader.ocr.return_value = dict(text=text)
+            fn = load('quest_stage', re=re, Ocr=Mock(return_value=reader))
+            runner = SimpleNamespace(config=SimpleNamespace(Optimization_OcrModelType='mobile'), device=Mock())
+            fn(runner)
+            self.assertEqual(runner.lobby_sortie_instruction, accepted)
+            reader.ocr.assert_called_once_with(runner.device.image, threshold=.9)
 
 
 if __name__ == '__main__':

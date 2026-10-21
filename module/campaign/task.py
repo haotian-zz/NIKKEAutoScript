@@ -37,9 +37,14 @@ def chapter_number(value):
 class AutoPush(UI):
     """复用主线引导和上游执行器，保留解锁限制、有限执行与日常竖屏约定。"""
     def quest_stage(self):
-        """从竖屏右上角主线任务读取具体关卡，不把活动任务或章节号当作关卡。"""
+        """从竖屏主线读取具体关卡，并独立保留已核对的非数字前往地面出击指令。
+
+        OCR仅保留0.9以上文字；出击须为完整指令，不将其虚构成下一关编号。
+        """
         text = Ocr((390, 65, 710, 185), name='CAMPAIGN_MAIN_QUEST',
-                   model_type=self.config.Optimization_OcrModelType).ocr(self.device.image)['text']
+                   model_type=self.config.Optimization_OcrModelType).ocr(self.device.image, threshold=.9)['text']
+        self.lobby_sortie_instruction = bool(re.fullmatch(r'前往地面(?:【出[击擊]】|\[出[击擊]\])',
+                                                         re.sub(r'\s+', '', text)))
         match = re.search(r'(?:通关|CLEAR).*?([1-9]\d?)\s*[-－]\s*([1-9]\d?)', text, re.I)
         return tuple(map(int, match.groups())) if match else None
 
@@ -76,14 +81,32 @@ class AutoPush(UI):
         self.ui_ensure(page_main)
         self.device.screenshot()
         current = self.quest_stage()
-        if current is None:
+        sortie = getattr(self, 'lobby_sortie_instruction', False)
+        if current is None and not sortie:
             report('blocked', '无法确认当前主线任务引导', '请确认主线任务引导可见后重试，已保存当前画面')
             return False
         self.entry_stage = current
-        logger.info(f'通过主线任务 {current[0]}-{current[1]} 进入地图')
-        self.device.click_xy(674, 126)
+        point = (674, 126)
+        if sortie:
+            from module.campaign.visible_story import quest_jump_point
+            point = quest_jump_point(cv2.cvtColor(self.device.image, cv2.COLOR_RGB2BGR), (660, 108, 710, 149))
+            self.device.sleep(.3)
+            self.device.screenshot()
+            if (point is None or not self.appear(MAIN_CHECK, offset=30) or self.quest_stage() is not None
+                    or not self.lobby_sortie_instruction):
+                report('blocked', '前往地面出击指令未连续确认', '未发送任务点击，旧章待办保留')
+                return False
+            fresh_point = quest_jump_point(cv2.cvtColor(self.device.image, cv2.COLOR_RGB2BGR), (660, 108, 710, 149))
+            if fresh_point is None or sum((a-b)**2 for a, b in zip(point, fresh_point)) > 25.:
+                report('blocked', '大厅任务箭头未连续确认', '未发送任务点击，旧章待办保留')
+                return False
+            point = fresh_point
+            logger.info('通过已连续核验的前往地面出击指令进入地图，不假定下一章或关卡编号')
+        else:
+            logger.info(f'通过主线任务 {current[0]}-{current[1]} 进入地图')
+        self.device.click_xy(*point)
         guard = WaitGuard(self.device, '进入主线地图', timeout=90, warn_after=30)
-        timer = Timer(2).start()
+        timer = Timer(8 if sortie else 2).start()
         while True:
             self.device.screenshot()
             guard.check()
@@ -91,7 +114,15 @@ class AutoPush(UI):
                        model_type=self.config.Optimization_OcrModelType).ocr(self.device.image)['text']
             if 'NORMAL' in text.upper():
                 return True
+            if sortie:
+                from module.ui.page import page_campaign_select, page_surface
+                if self.appear(page_campaign_select.check_button, offset=30):
+                    self.ui_ensure(page_surface)
+                    continue
             if timer.reached() and self.appear(MAIN_CHECK, offset=30):
+                if sortie:
+                    report('blocked', '出击任务单次点击后仍停在大厅', '不重复点击，保留当前任务及旧章待办')
+                    return False
                 self.device.click_xy(674, 126)
                 timer.reset()
             self.ui_additional()
@@ -246,13 +277,15 @@ class AutoPush(UI):
                 entry = getattr(self, 'entry_stage', None)
                 if require_story_return is not None:
                     origin_chapter, previous = require_story_return
-                    if (entry is None or previous is not None and entry <= previous
-                            or previous is None and entry[0] <= origin_chapter):
+                    sortie = getattr(self, 'lobby_sortie_instruction', False)
+                    if (not sortie and (entry is None or previous is not None and entry <= previous
+                            or previous is None and entry[0] <= origin_chapter)):
                         save_wait_image(self.device, 'AutoPush_story_return_unconfirmed')
                         report('partial' if total_cleared else 'blocked', '返回大厅后的主线任务尚未确认推进',
                                '保留旧章待办；未以点击任务箭头作为进展，也不重复返回大厅')
                         return
-                    logger.info(f'大厅已确认返回任务后的新主线目标：{entry}；旧章待办保留')
+                    logger.info(f'大厅已确认返回任务后的新主线目标：{entry if entry is not None else "前往地面出击"}；'
+                                '旧章待办保留')
                     self.renew_progress_guard()
                     require_story_return = None
                 if require_advance is not None:

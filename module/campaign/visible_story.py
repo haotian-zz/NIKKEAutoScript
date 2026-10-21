@@ -154,13 +154,16 @@ def read_ex_entry(field, reader):
     return bool(re.search(r'(?<![A-Z])EX\s*STAGE(?![A-Z])', text, re.I))
 
 
-def quest_jump_point(field):
+def quest_jump_point(field, area=QUEST_JUMP_AREA):
     """在主线任务行右侧核对蓝底白色右箭头；仅返回实测控件中心，不提供固定落点兜底。
 
-    客户区固定为1776×999；白色连通块须为8～26px右箭头，归一化轮廓与通用几何交并比至少0.75。
+    默认区域用于1776×999地图，area可明确提供720×1280大厅任务区域；越界区域直接拒绝。
+    白色连通块须为8～26px右箭头，归一化轮廓与通用几何交并比至少0.75。
     调用方还须连续核对当前主线文字；本控件只用于请求游戏定位任务，不能证明目标身份或清怪完成。
     """
-    x1, y1, x2, y2 = QUEST_JUMP_AREA
+    x1, y1, x2, y2 = area
+    if not (0 <= x1 < x2 <= field.shape[1] and 0 <= y1 < y2 <= field.shape[0]):
+        return None
     hsv = cv2.cvtColor(field[y1:y2, x1:x2], cv2.COLOR_BGR2HSV)
     if np.mean(cv2.inRange(hsv, (85, 100, 100), (118, 255, 255)) > 0) < .25:
         return None
