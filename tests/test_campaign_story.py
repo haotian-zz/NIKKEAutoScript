@@ -4,6 +4,9 @@ from pathlib import Path
 from types import SimpleNamespace
 import sys
 import unittest
+import math
+import cv2
+import numpy as np
 from unittest.mock import Mock, patch
 
 
@@ -27,7 +30,8 @@ class StoryPriorityTests(unittest.TestCase):
         self.device = SimpleNamespace(image=SimpleNamespace(shape=(999, 1776, 3)), click=Mock(),
                                       click_xy=Mock(), config=SimpleNamespace(Optimization_OcrModelType='mobile'))
         self.fn = method('module/handler/story_priority.py', 'skip_story_frame',
-                         time=SimpleNamespace(monotonic=lambda: 10), logger=Mock(), cv2=Mock())
+                         time=SimpleNamespace(monotonic=lambda: 10), logger=Mock(), cv2=Mock(),
+                         portrait_story_menu=Mock(return_value=False))
         self.modules = patch.dict(sys.modules, {
             'module.ui.assets': SimpleNamespace(SKIP=self.skip),
             'module.campaign.vision.battle': SimpleNamespace(story_skip=self.story_skip),
@@ -61,6 +65,29 @@ class StoryPriorityTests(unittest.TestCase):
         self.assertTrue(self.fn(self.device))
         self.device.click_xy.assert_called_once_with(848, 460)
         self.assertEqual(self.device._story_skip_pending, 0)
+
+    def test_glowing_portrait_requires_four_words_and_two_frames(self):
+        """低模板提案不能单独点击，四词核验还须连续两帧同一实际控件。"""
+        self.device.image.shape = (1280, 720, 3)
+        self.skip.match.side_effect = [False, True, False, True]
+        self.skip.button = (616, 22, 671, 41)
+        self.fn.__globals__['portrait_story_menu'].return_value = True
+        self.assertTrue(self.fn(self.device))
+        self.device.click.assert_not_called()
+        self.assertTrue(self.fn(self.device))
+        self.device.click.assert_called_once_with(self.skip)
+
+    def test_portrait_menu_rejects_partial_words_and_low_or_invalid_scores(self):
+        """缺失菜单、低分或NaN不能把普通顶部控件当作剧情跳过。"""
+        fn = method('module/handler/story_priority.py', 'portrait_story_menu', math=math, cv2=cv2)
+        image = np.zeros((1280, 720, 3), np.uint8)
+        reader = Mock()
+        rows = [dict(rec_text=word, rec_score=.99) for word in ('HIDE', 'AUTO', 'LOG', 'SKIP')]
+        reader.paddleocr.recognize.return_value = rows
+        self.assertTrue(fn(image, reader))
+        for text, score in [('SKI', .99), ('SKIP', .94), ('SKIP', float('nan'))]:
+            rows[-1] = dict(rec_text=text, rec_score=score)
+            self.assertFalse(fn(image, reader))
 
     def test_unrelated_or_expired_confirmation_is_never_clicked(self):
         """购买等普通确认框及过期跳过上下文都不发送输入。"""

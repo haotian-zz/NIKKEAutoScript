@@ -1,10 +1,32 @@
 """在任务读取画面前处理剧情跳过，兼容日常竖屏与主线横屏。"""
 
 import time
+import math
 
 import cv2
 
 from module.logger import logger
+
+
+def portrait_story_menu(image, reader):
+    """以四个完整菜单词复核720×1280剧情页，补足发光SKIP的低模板分数。
+
+    只在低分模板已提出右上角按钮时调用；四行固定字区均须匹配HIDE/AUTO/LOG/SKIP
+    且分数至少0.95。没有用文字识别结果直接生成点击坐标，按钮仍来自当帧模板提案。
+    """
+    if image.shape != (1280, 720, 3):
+        return False
+    areas = ((286, 19, 347, 45), (396, 19, 463, 45), (510, 19, 560, 45), (614, 19, 675, 45))
+    crops = [cv2.resize(image[top:bottom, left:right, ::-1], None, fx=3, fy=3,
+                        interpolation=cv2.INTER_CUBIC) for left, top, right, bottom in areas]
+    results = reader.paddleocr.recognize(crops)
+    if len(results) != 4:
+        return False
+    for item, expected in zip(results, ('HIDE', 'AUTO', 'LOG', 'SKIP')):
+        score = float(item.get('rec_score', 0.))
+        if item.get('rec_text', '').strip().upper() != expected or not math.isfinite(score) or score < .95:
+            return False
+    return True
 
 
 def skip_story_frame(device):
@@ -47,6 +69,24 @@ def skip_story_frame(device):
     else:
         visible = SKIP.match(device.image, offset=(150, 10), threshold=0.9)
         point = None
+        if not visible and device.image.shape == (1280, 720, 3):
+            proposal = SKIP.match(device.image, offset=(150, 10), threshold=.7)
+            if proposal:
+                left, top, right, bottom = SKIP.button
+                candidate = ((left+right)/2., (top+bottom)/2.)
+                if 600 <= candidate[0] <= 700 and 10 <= candidate[1] <= 60:
+                    from module.ocr.ocr import Ocr
+                    reader = Ocr([], model_type=device.config.Optimization_OcrModelType,
+                                 name='PORTRAIT_STORY_MENU')
+                    if portrait_story_menu(device.image, reader):
+                        previous = getattr(device, '_story_portrait_candidate', None)
+                        device._story_portrait_candidate = (now, *candidate)
+                        if (previous is None or not 0 <= now-previous[0] <= 3.
+                                or (candidate[0]-previous[1])**2+(candidate[1]-previous[2])**2 > 25.):
+                            return True
+                        visible = True
+            if not visible:
+                device._story_portrait_candidate = None
     if visible:
         if now >= getattr(device, '_story_skip_after', 0):
             logger.info('Story priority: skip dialogue')
