@@ -109,7 +109,8 @@ def recover_visible_structure(runner, field, allow_unanchored=False):
     平台 start/end 只是模型外观类别，不代表可逆或已经传送。游戏自身决定路径和交互；
     不编造电梯配对、地面坐标或成功结果。全部输入经正式会话，后续仍须实际备战及胜利确认。
     allow_unanchored仅用于稳定任务标记下镜头避让无锚点的恢复：两帧唯一高分平台可交给
-    游戏原生寻路；没有小队位置时仍禁止拖镜头、按距离排序和尝试多个歧义设施。
+    游戏原生寻路；短时最多四帧，仍须相邻两帧通过。没有小队位置时仍禁止拖镜头、按
+    距离排序和尝试多个歧义设施，不因观测重试续期进展预算。
     """
     learned = recover_if_enabled(runner, field)
     if learned is not None:
@@ -123,8 +124,24 @@ def recover_visible_structure(runner, field, allow_unanchored=False):
     arrow = squad_arrow(fresh)
     second = structure_observations(fresh, arrow, allow_unanchored)
     candidates = stable_structures(first, second)
+    previous_field, observations = field, 2
+    if allow_unanchored and arrow is None and not candidates:
+        for _ in range(2):
+            previous_field, first = fresh, second
+            session.pause(.35)
+            fresh = runner.map_frame()
+            if goto.battle_popup_score(fresh) > .8:
+                return 'entry'
+            arrow = squad_arrow(fresh)
+            second = structure_observations(fresh, arrow, allow_unanchored)
+            observations += 1
+            candidates = stable_structures(first, second)
+            if candidates:
+                break
     session.record_evidence('structure_probe', fresh, objects=second, candidates=candidates,
-                            arrays=dict(field=fresh), inputs=runner.structure_inputs, pans=runner.structure_pans)
+                            previous_objects=first, observations=observations,
+                            arrays=dict(field=fresh, previous_field=previous_field),
+                            inputs=runner.structure_inputs, pans=runner.structure_pans)
     session.preview(fresh)
     if arrow is None and not allow_unanchored:
         raise StructureUnconfirmed('目标受阻，设施恢复未确认画面内小队位置；已保留原图，停止探索。')

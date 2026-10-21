@@ -120,6 +120,30 @@ class StructureTests(unittest.TestCase):
             self.runner.session.tap.assert_not_called()
             pan.assert_not_called()
 
+    def test_unanchored_transient_miss_still_requires_two_adjacent_confirmations(self):
+        """首帧平台短暂漏检时最多补两帧；两次连续高分后才发唯一输入。"""
+        target = fixture()
+        with patch.object(structure, 'detect_objects', side_effect=[[], [target], [target]]) as detect, \
+                patch.object(structure, 'squad_arrow', return_value=None), \
+                patch.object(structure.goto, 'battle_popup_score', return_value=0.), \
+                patch.object(structure, 'wait_structure_settle', return_value=self.field):
+            self.assertEqual(structure.recover_visible_structure(
+                self.runner, self.field, allow_unanchored=True), 'attempted')
+        self.assertEqual(detect.call_count, 3)
+        self.runner.session.tap.assert_called_once_with(target['position'])
+
+    def test_unanchored_permanent_miss_stops_after_four_observations(self):
+        """持续漏检不能把短时多帧观测变成无限等待，更不能据此猜点击点。"""
+        with patch.object(structure, 'detect_objects', return_value=[]) as detect, \
+                patch.object(structure, 'squad_arrow', return_value=None), \
+                patch.object(structure.goto, 'battle_popup_score', return_value=0.), \
+                patch.object(structure, 'pan_scene') as pan:
+            with self.assertRaises(structure.StructureUnconfirmed):
+                structure.recover_visible_structure(self.runner, self.field, allow_unanchored=True)
+        self.assertEqual(detect.call_count, 4)
+        self.runner.session.tap.assert_not_called()
+        pan.assert_not_called()
+
     def test_exhausted_budget_stops_and_does_not_click_again(self):
         """两次设施和四次视角均已用完时，明确停止而不继续同一设施。"""
         self.runner.structure_inputs, self.runner.structure_pans = 2, 4
