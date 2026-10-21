@@ -53,6 +53,7 @@ class AutoPush(UI):
         if current is None:
             report('blocked', '无法确认当前主线任务引导', '请确认主线任务引导可见后重试，已保存当前画面')
             return False
+        self.entry_stage = current
         logger.info(f'通过主线任务 {current[0]}-{current[1]} 进入地图')
         self.device.click_xy(674, 126)
         guard = WaitGuard(self.device, '进入主线地图', timeout=90, warn_after=30)
@@ -124,12 +125,21 @@ class AutoPush(UI):
         return sum(enemy.get('status') == 'cleared'
                    for enemy in getattr(getattr(campaign, 'state', None), 'enemies', {}).values())
 
-    def run(self):
-        """执行主线推图，定位失败后最多两次经大厅复位镜头并继续当前进度。
+    def renew_progress_guard(self):
+        """只在真实胜利或主线目标前进后续期总时限，持续模式不因固定总时长中断。
 
-        每次重新进入均核对用户选择的章节，当前进度模式沿用最新主线进度。
-        首次恢复仍无新清除结果时停止；战败、窗口变化等情况不自动恢复。
-        全部段的确认清除数合并进简报，结束后恢复日常竖屏并仅延后本任务。
+        单目标操作预算、剧情跳过时限与每段执行预算仍各自生效；镜头移动不算进展。
+        """
+        guard = getattr(self.device, '_execution_guard', None)
+        if guard is not None:
+            guard.progress()
+
+    def run(self):
+        """执行单轮或从当前主线持续推进，保留定位恢复、失败终止与竖屏收尾。
+
+        持续模式只在一段有确认胜利，或主线目标前进后继续下一段，不把预算当作永久终点。
+        无目标时仅重新核对一次大厅任务；目标未变即停止。定位最多恢复两次，首次恢复
+        后仍无新胜利则停止；战败、单目标预算耗尽和未知状态不会作为续跑理由。
         """
         if self.config.Client_Platform != 'win' or self.config.CampaignMap_MapType != 'main':
             report('blocked', '当前推图仅支持 PC 主线地图', '请选择 PC 实例与主线地图')
@@ -138,53 +148,91 @@ class AutoPush(UI):
             self.config.task_delay(schedule=True)
             return
         try:
-            target = chapter_number(self.config.CampaignMap_Chapter)
+            mode = getattr(self.config, 'CampaignMap_RunMode', 'single')
+            if mode not in ('single', 'continuous'):
+                raise ValueError('请选择单轮推图或持续推图')
+            continuous = mode == 'continuous'
+            target = None if continuous else chapter_number(self.config.CampaignMap_Chapter)
         except ValueError as exc:
-            report('blocked', '开始章节无效', str(exc))
+            report('blocked', '推图设置无效', str(exc))
             self.config.task_delay(schedule=True)
             return
-        total_cleared = 0
+        total_cleared, recovery, segment = 0, 0, 0
+        require_advance = None
         try:
-            for recovery in range(3):
+            while True:
                 if not self.ensure_main_map():
                     if total_cleared:
                         report('partial', f'本轮已确认清除 {total_cleared} 个敌人，当前入口需要处理')
                     return
+                entry = getattr(self, 'entry_stage', None)
+                if require_advance is not None:
+                    if entry is None or entry <= require_advance:
+                        save_wait_image(self.device, 'AutoPush_no_progress')
+                        report('partial' if total_cleared else 'blocked',
+                               f'本轮已确认清除 {total_cleared} 个敌人，持续推图已停止',
+                               f'没有可继续的地图目标，主线任务仍为 {require_advance[0]}-{require_advance[1]}')
+                        return
+                    logger.info(f'主线目标已前进：{require_advance} → {entry}，继续推图')
+                    self.renew_progress_guard()
+                    require_advance = None
                 self.device.target_resolution = Campaign.RESOLUTION
                 self.device.ensure_resolution(self.config.PCClient_ScreenNumber, *Campaign.RESOLUTION,
                                               position=self.config.PCClient_GameWindowPosition)
                 self.device.check_resolution(*Campaign.RESOLUTION)
                 campaign = Campaign(self.config, device=self.device)
+                campaign.continuous = continuous
                 if not self.select_chapter(campaign, target):
                     if total_cleared:
                         report('partial', f'本轮已确认清除 {total_cleared} 个敌人，章节入口需要处理')
                     return
+                segment += 1
+                logger.info(f'推图第 {segment} 段开始；模式 {mode}，累计确认清除 {total_cleared} 个敌人')
+                error = None
                 try:
                     campaign.run()
                 except RequestHumanTakeover as exc:
-                    cleared = self.cleared_count(campaign)
-                    total_cleared += cleared
-                    result = getattr(campaign, 'last_result', {}) or {}
-                    code = result.get('reason') or (result.get('goal') or {}).get('reason')
-                    detail = str(exc.__cause__ or exc)
-                    reason = {'tick_budget': '本轮执行次数达到上限',
-                              'scouting_incomplete': '前置道路无法确认'}.get(
-                        code, GOAL_REASONS.get(code) or detail
-                        or '请查看日志与截图，确认当前地图、道路或战斗状态')
-                    localized = code == 'localization_unavailable' or any(
-                        word in detail for word in ('定位', '配准', '小地图'))
-                    if localized and recovery < 2 and (recovery == 0 or cleared > 0):
-                        save_wait_image(self.device, f'AutoPush_recovery_{recovery + 1}')
-                        logger.warning(f'地图定位恢复 {recovery + 1}/2：本段确认清除 {cleared} 个敌人，'
-                                       f'经大厅重新进入当前主线；原因：{reason}')
-                        continue
-                    report('partial' if total_cleared else 'blocked',
+                    error = exc
+                cleared = self.cleared_count(campaign)
+                total_cleared += cleared
+                result = getattr(campaign, 'last_result', {}) or {}
+                code = (result.get('reason') or (result.get('goal') or {}).get('reason')
+                        or (result.get('evidence') or {}).get('kind'))
+                detail = str(error.__cause__ or error) if error is not None else ''
+                reason = {'tick_budget': '本段决策次数达到上限',
+                          'segment_timeout': '本段执行时间达到上限',
+                          'scouting_incomplete': '前置道路无法确认',
+                          'chapter_changed': '已进入下一主线章节',
+                          'ex_stage_skipped': '遇到 EX 关卡，已关闭弹窗，本模式不接管 EX 战斗',
+                          'collectible_indicator': '遇到收集品提示，需要处理后继续'}.get(
+                    code, GOAL_REASONS.get(code) or detail
+                    or '请查看日志与截图，确认当前地图、道路或战斗状态')
+                if continuous and code in ('tick_budget', 'segment_timeout') and cleared:
+                    logger.info(f'{reason}，本段确认清除 {cleared} 个敌人，继续当前主线进度')
+                    self.renew_progress_guard()
+                    continue
+                if continuous and code in ('no_reachable_target', 'chapter_changed') and entry is not None:
+                    require_advance = entry
+                    logger.info(f'{reason}，重新核对主线任务后决定是否继续')
+                    continue
+                localized = code == 'localization_unavailable' or any(
+                    word in detail for word in ('定位', '配准', '小地图'))
+                if localized and recovery < 2 and (recovery == 0 or cleared > 0):
+                    recovery += 1
+                    save_wait_image(self.device, f'AutoPush_recovery_{recovery}')
+                    logger.warning(f'地图定位恢复 {recovery}/2：本段确认清除 {cleared} 个敌人，'
+                                   f'经大厅重新进入当前主线；原因：{reason}')
+                    if cleared:
+                        self.renew_progress_guard()
+                    continue
+                if error is not None:
+                    report('partial' if total_cleared else 'failed' if code == 'battle_defeat' else 'blocked',
                            f'本轮已确认清除 {total_cleared} 个敌人，推图已停止'
                            if total_cleared else '主线推图需要处理', reason)
                     return
-                total_cleared += self.cleared_count(campaign)
-                report('partial', f'本轮已确认清除 {total_cleared} 个敌人',
-                       '本轮有限执行已结束，请查看推图信息与日志确认后续进度')
+                report('partial' if total_cleared else 'blocked',
+                       f'本轮已确认清除 {total_cleared} 个敌人，推图已停止',
+                       reason if continuous else '本轮有限执行已结束，请查看推图信息与日志确认后续进度')
                 return
         except (RequestHumanTakeover, GameStuckError) as exc:
             report('failed' if isinstance(exc, GameStuckError) else 'partial' if total_cleared else 'blocked',

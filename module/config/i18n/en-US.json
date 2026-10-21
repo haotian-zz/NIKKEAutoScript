@@ -1585,6 +1585,12 @@
       "help": "Normal main story maps are currently supported.",
       "main": "Main story"
     },
+    "RunMode": {
+      "name": "Run mode",
+      "help": "Continuous mode follows current main story progress until blocked, defeated, or recovery fails. Story dialogue is skipped automatically.",
+      "single": "Single run",
+      "continuous": "Continuous (current progress)"
+    },
     "Chapter": {
       "name": "Starting chapter",
       "help": "Current progress follows the main quest. A selected chapter must be confirmed before combat; locked chapters stop with an explanation.",

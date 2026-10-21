@@ -4129,6 +4129,14 @@
           "main"
         ]
       },
+      "RunMode": {
+        "type": "select",
+        "value": "single",
+        "option": [
+          "single",
+          "continuous"
+        ]
+      },
       "Chapter": {
         "type": "select",
         "value": "current",

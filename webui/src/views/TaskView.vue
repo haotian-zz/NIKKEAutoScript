@@ -59,6 +59,16 @@ async function startCampaign() {
 
 const serialDeviceOptions = computed(() => serialDevices.value.map(device => ({ value: device.serial, label: `${device.serial} (${device.status})` })))
 
+/** 持续模式沿用当前主线进度，隐藏不参与执行的指定章节选项。 */
+function campaignFields(group: any) {
+  const fields = group.fields || []
+  if (selectedTask.value !== 'AutoPush') return fields
+  const mode = fields.find((field: any) => field.key === 'AutoPush.CampaignMap.RunMode')?.value
+  return mode === 'continuous'
+    ? fields.filter((field: any) => field.key !== 'AutoPush.CampaignMap.Chapter')
+    : fields
+}
+
 function groupId(group: any) { return `group-${group.key}` }
 function onSelectOpen(field: any) { if (field.key.endsWith('.ScreenNumber')) refreshMonitors(field) }
 function onViewScroll(event: Event) {
@@ -110,7 +120,7 @@ watch(selectedTask, task => { if (task === 'PCClient') loadClientProfiles() }, {
                 <div class="field-label"><div class="fname">{{ t('绑定到 Bot') }}</div><div class="fhelp">{{ t('绑定步骤：① 私聊机器人发送 #妮姬 账号 绑定，获取 10 分钟内有效、仅可使用一次的绑定链接；② 切到该账号所在实例，点本按钮并粘贴完整链接确认绑定；③ 若提示缺少 game_uid 或 Cookie 已失效，请先重新「一键登录」再绑定。') }}</div></div>
                 <div class="field-control"><button class="btn" :disabled="bindBusy" @click="openBind"><AppIcon name="external" :size="14" /> {{ t('绑定到 Bot') }}</button></div>
               </div>
-              <template v-for="field in group.fields" :key="field.key">
+              <template v-for="field in campaignFields(group)" :key="field.key">
                 <div v-if="field.key.endsWith('.PCClientInfo.LauncherPath')" class="field">
                   <div class="field-label"><div class="fname">{{ t('选择游戏客户端') }}</div><div class="fhelp">{{ t('列出本机检测到的可用游戏客户端，选择后会覆盖下方的启动器路径和游戏路径。') }}</div></div>
                   <div class="field-control">

@@ -51,18 +51,27 @@ class Device(AppControl, Automation):
                     # raise RequestHumanTakeover
 
     def screenshot(self):
-        """
-        截图
+        """取得可交给任务的画面，先关闭剧情，最多等待一分钟并支持用户停止。
 
-        Returns:
-            np.ndarray:
+        剧情按钮防抖时仍继续截图，避免旧的四帧上限把未关闭的剧情泄漏给导航。
+        只在检测到剧情后建立等待保护，正常截图不额外创建定时器或调用 OCR。
         """
         from module.handler.story_priority import skip_story_frame
-        for _ in range(4):
+        from module.base.watchdog import WaitGuard
+        story_guard = None
+        while True:
             super().screenshot()
             self.image = self.current_window.image
             if not skip_story_frame(self):
                 break
+            if story_guard is None:
+                story_guard = WaitGuard(self, '跳过剧情', timeout=60, warn_after=15)
+            story_guard.check()
+            stop = getattr(self.config, 'stop_event', None)
+            if stop is not None and stop.is_set():
+                from module.config.config import TaskEnd
+                raise TaskEnd
+            self.sleep(0.2)
         guard = getattr(self, '_execution_guard', None)
         if guard is not None:
             guard.check()

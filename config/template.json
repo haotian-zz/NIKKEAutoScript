@@ -943,6 +943,7 @@
     },
     "CampaignMap": {
       "MapType": "main",
+      "RunMode": "single",
       "Chapter": "current"
     },
     "Storage": {

@@ -175,6 +175,12 @@ def describe_snapshot(snapshot):
 class InputBudgetExceeded(RuntimeError):
     """单次执行超过时限或同一个目标的操作次数用尽；不可降级为普通目标失败后继续点击。"""
 
+    def __init__(self, message, reason='input_budget'):
+        """区分单段时间预算与单目标输入预算，后者不能因持续模式而重新开始。"""
+        super().__init__(message)
+        self.reason = reason
+
+
 
 class CampaignInput:
     """生产驱动代理：每次新手势先校验会话并扣预算，释放操作不受停止与失焦限制。
@@ -337,7 +343,8 @@ class CampaignSession(NavigationSession):
         """
         self.check_stop()
         if self.deadline is not None and time.monotonic() >= self.deadline:
-            raise InputBudgetExceeded(f'主线单次执行超过 {CHAPTER_TIME_LIMIT // 60} 分钟时限，停止并交人工复核。')
+            raise InputBudgetExceeded(f'主线单段执行超过 {CHAPTER_TIME_LIMIT // 60} 分钟时限。',
+                                      reason='segment_timeout')
         stuck = getattr(self.owner.device, 'stuck_timer', None)
         if isinstance(stuck, Timer) and stuck.current() > STUCK_CLEAR_SECONDS:
             self.owner.device.stuck_record_clear()
@@ -411,6 +418,17 @@ class CampaignSession(NavigationSession):
         """
         self.popup(field)
         self.check_collectible(field)
+
+    def next_chapter(self):
+        """持续模式每轮确认是否已换章，确认后由外层重新载入资源与坐标模型。
+
+        仅接受普通难度向后换章；读不到标识不猜测，交给既有观测与时限处理。
+        该检查不在每个鼠标手势执行，避免正常导航重复 OCR。
+        """
+        current = chapter_identity(self.win.client(), self.owner.chapter_ocr)
+        if current is not None and current[1] == self.expected_identity[1] and current[0] > self.expected_identity[0]:
+            return current[0]
+        return None
 
     def verify_identity(self, field):
         """核对章节、难度与弹窗；普通弹窗保留，EX 只关闭一次，任何用途都立即结束任务。

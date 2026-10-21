@@ -556,6 +556,9 @@ CampaignMap:
   MapType:
     value: main
     option: [ main ]
+  RunMode:
+    value: single
+    option: [ single, continuous ]
   Chapter:
     value: current
     option: [

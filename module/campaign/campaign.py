@@ -550,7 +550,7 @@ class Campaign(ModuleBase):
             raise RequestHumanTakeover
         logger.info(f'准备阶段结束（地图资源、游戏窗口、章节与小队定位）耗时 {watch}，'
                     f'进入推图闭环：地图 {chart.size}，小队起点 {points_text(snapshot["squad"])}')
-        from module.campaign.execution import CampaignExecutor
+        from module.campaign.execution import BattleFailed, CampaignExecutor
         from module.campaign.session import CampaignSession, InputBudgetExceeded
         from module.campaign.window import WindowChanged
 
@@ -563,6 +563,9 @@ class Campaign(ModuleBase):
         try:
             result = executor.run(snapshot)
         except (WindowChanged, InputBudgetExceeded, OSError, ValueError, RuntimeError, cv2.error) as exc:
+            self.last_result = {'state': 'needs_review',
+                                'reason': 'battle_defeat' if isinstance(exc, BattleFailed)
+                                else getattr(exc, 'reason', 'execution_error')}
             logger.error(f'主线执行停止：{exc}（任务总耗时 {watch}）')
             raise RequestHumanTakeover from exc
         self.last_result = result

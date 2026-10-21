@@ -278,12 +278,14 @@ class CampaignExecutor:
         按钮可点，而「画面像不像野外」正好会在点「进入战斗」之后的过场里为真，用它判断战斗结束
         等于把战斗丢回给推图流程。所以必须先取得胜负结算，再连续确认野外才交回控制权：
         胜利与升级附加页分别点继续，战败按 BATTLE_DEFEAT_RETRIES 决定重打还是返回。
+        持续推图首次战败即返回并停止，单轮模式保留原重试次数。
         战前、战后剧情由会话点击 SKIP；剧情、附加页或未识别画面清空野外确认计数。
         剧情跳过与继续提示均不作为胜利证据，剧情期间保留已确认的胜负及原有超时约束。
         一段战斗（进弹窗、重打后重新开打）单独计 BATTLE_TIME_LIMIT 秒，等不到结算就交人工：
         不无限等，也不盲目连点。战斗结束时给会话打开一次「沿用战斗前坐标」的许可，
         第一帧重新配准失败就用旧坐标继续推图。
         """
+        defeat_retries = 0 if getattr(self.owner, 'continuous', False) is True else BATTLE_DEFEAT_RETRIES
         self.session.begin_target('battle')
         self.session.battle_mode = True
         settled, close_entry, retries, polls = None, False, 0, 0
@@ -294,7 +296,7 @@ class CampaignExecutor:
         reported = False
         label_goal = '无关联目标' if goal is None else goal_brief(goal)
         logger.info(f'开始战斗接管：目标 {label_goal}，采样间隔 {BATTLE_POLL_SECONDS} 秒，'
-                    f'单段超时 {BATTLE_TIME_LIMIT} 秒，重试上限 {BATTLE_DEFEAT_RETRIES} 次。')
+                    f'单段超时 {BATTLE_TIME_LIMIT} 秒，重试上限 {defeat_retries} 次。')
         try:
             while 1:
                 if time.monotonic() >= deadline:
@@ -327,10 +329,10 @@ class CampaignExecutor:
                     # 只在「新的一次战败」上决定重打还是返回：同一张结算屏停留时沿用上一次的决定，
                     # 不会把额度连刷掉，点击没生效时也只是继续点同一个按钮。
                     if previous != 'defeat':
-                        if retries < BATTLE_DEFEAT_RETRIES:
+                        if retries < defeat_retries:
                             retries += 1
                             settled = None
-                            logger.warning(f'战斗失败：重试当前关卡（第 {retries}/{BATTLE_DEFEAT_RETRIES} 次），'
+                            logger.warning(f'战斗失败：重试当前关卡（第 {retries}/{defeat_retries} 次），'
                                            f'当前阶段耗时 {segment}，接管累计 {total}。')
                         else:
                             settled, close_entry = 'defeat', True
@@ -353,7 +355,7 @@ class CampaignExecutor:
         logger.info(f'战斗接管结束：{label(BATTLE_OUTCOMES, settled)}，采样 {polls} 次，'
                     f'重试 {retries} 次，累计操作 {self.session.target_inputs} 次，总耗时 {total}。')
         if settled == 'defeat':
-            raise BattleFailed(f'当前关卡重试 {BATTLE_DEFEAT_RETRIES} 次仍战败，停止执行并请求人工接管。')
+            raise BattleFailed(f'当前关卡重试 {defeat_retries} 次仍战败，停止执行并请求人工接管。')
         if goal is not None and goal.get('kind') == 'enemy':
             self.owner.state.enemies[goal['id']]['status'] = 'cleared'
             logger.info(f'战斗胜利：{goal_brief(goal)} 已标记为清除，移出候选集合。')
@@ -387,6 +389,10 @@ class CampaignExecutor:
                 try:
                     self.session.begin_target('collectible' if self.purpose == 'collectible' else 'position')
                     self.session.check()
+                    if getattr(self.owner, 'continuous', False) is True:
+                        following = self.session.next_chapter()
+                        if following is not None:
+                            return {'state': 'continue', 'reason': 'chapter_changed', 'chapter': following}
                     if index:
                         snapshot = self.session.snapshot()
                     else:

@@ -50,7 +50,7 @@ class CampaignStartTests(unittest.TestCase):
                   chapter_number=load('chapter_number', re=re), GOAL_REASONS={})
         runner = SimpleNamespace(config=SimpleNamespace(Client_Platform='win', CampaignMap_MapType='main', CampaignMap_Chapter='current',
                                  PCClient_ScreenNumber=1, PCClient_GameWindowPosition='center', task_delay=Mock()),
-                                 device=Mock(), runtime_ready=lambda: True, ensure_main_map=Mock(return_value=True),
+                                 device=Mock(), runtime_ready=lambda: True, renew_progress_guard=Mock(), ensure_main_map=Mock(return_value=True),
                                  select_chapter=Mock(return_value=True), cleared_count=load('cleared_count'))
         fn(runner)
         self.assertEqual(factory.call_count, 3)
@@ -73,7 +73,7 @@ class CampaignStartTests(unittest.TestCase):
                   save_wait_image=Mock(), logger=Mock(), report=Mock(), chapter_number=load('chapter_number', re=re), GOAL_REASONS={})
         runner = SimpleNamespace(config=SimpleNamespace(Client_Platform='win', CampaignMap_MapType='main', CampaignMap_Chapter='current',
                                  PCClient_ScreenNumber=1, PCClient_GameWindowPosition='center', task_delay=Mock()),
-                                 device=Mock(), runtime_ready=lambda: True, ensure_main_map=Mock(return_value=True),
+                                 device=Mock(), runtime_ready=lambda: True, renew_progress_guard=Mock(), ensure_main_map=Mock(return_value=True),
                                  select_chapter=Mock(return_value=True), cleared_count=load('cleared_count'))
         fn(runner)
         self.assertEqual(factory.call_count, 2)
@@ -92,12 +92,78 @@ class CampaignStartTests(unittest.TestCase):
         runner = SimpleNamespace(config=SimpleNamespace(Client_Platform='win', CampaignMap_MapType='main',
                                  CampaignMap_Chapter='current', PCClient_ScreenNumber=1,
                                  PCClient_GameWindowPosition='center', task_delay=Mock()), device=Mock(),
-                                 runtime_ready=lambda: True, ensure_main_map=Mock(return_value=True),
+                                 runtime_ready=lambda: True, renew_progress_guard=Mock(), ensure_main_map=Mock(return_value=True),
                                  select_chapter=Mock(return_value=True), cleared_count=load('cleared_count'))
         fn(runner)
         self.assertEqual(factory.call_count, 1)
         self.assertEqual(reports[-1][0], 'blocked')
         self.assertEqual(reports[-1][2], '没有可达的目标')
+
+    def continuous_runner(self, outcomes, stages):
+        """用确认胜利和主线任务序列驱动正式循环，避免依赖真实游戏状态。"""
+        takeover = type('Takeover', (Exception,), {})
+        campaigns = [SimpleNamespace(run=Mock(side_effect=takeover(reason)),
+                     last_result={'state': 'needs_review', 'reason': reason},
+                     state=SimpleNamespace(enemies={i: {'status': 'cleared'} for i in range(count)}))
+                     for reason, count in outcomes]
+        factory = Mock(side_effect=campaigns)
+        factory.RESOLUTION = (1776, 999)
+        reports = []
+        fn = load('run', Campaign=factory, RequestHumanTakeover=takeover, GameStuckError=RuntimeError,
+                  save_wait_image=Mock(), logger=Mock(), report=lambda *a: reports.append(a),
+                  chapter_number=load('chapter_number', re=re), GOAL_REASONS={})
+        runner = SimpleNamespace(config=SimpleNamespace(Client_Platform='win', CampaignMap_MapType='main',
+                                 CampaignMap_RunMode='continuous', CampaignMap_Chapter=19, PCClient_ScreenNumber=1,
+                                 PCClient_GameWindowPosition='center', task_delay=Mock()), device=Mock(),
+                                 runtime_ready=lambda: True, renew_progress_guard=Mock(),
+                                 select_chapter=Mock(return_value=True), cleared_count=load('cleared_count'))
+        entries = iter(stages)
+
+        def enter():
+            """只有重新进入时才更新主线任务，模拟大厅读取的独立证据。"""
+            runner.entry_stage = next(entries)
+            return True
+
+        runner.ensure_main_map = Mock(side_effect=enter)
+        return fn, runner, factory, reports
+
+    def test_continuous_renews_after_progress_and_stops_on_defeat(self):
+        """有胜利时越过单段决策与时间预算，战败后立即停止并累加清除数。"""
+        fn, runner, factory, reports = self.continuous_runner(
+            [('tick_budget', 2), ('segment_timeout', 1), ('battle_defeat', 0)], [(20, 6)] * 3)
+        fn(runner)
+        self.assertEqual(factory.call_count, 3)
+        self.assertEqual(runner.renew_progress_guard.call_count, 2)
+        self.assertTrue(all(c.args[1] is None for c in runner.select_chapter.call_args_list))
+        self.assertEqual(reports[-1][0], 'partial')
+        self.assertIn('3 个敌人', reports[-1][1])
+        self.assertEqual(reports[-1][2], 'battle_defeat')
+
+    def test_continuous_does_not_renew_empty_segment_or_target_budget(self):
+        """无胜利的段预算与单目标输入耗尽都不能作为持续重跑的理由。"""
+        for reason, count in [('tick_budget', 0), ('input_budget', 1)]:
+            fn, runner, factory, _ = self.continuous_runner([(reason, count)], [(20, 6)])
+            fn(runner)
+            self.assertEqual(factory.call_count, 1)
+            runner.renew_progress_guard.assert_not_called()
+
+    def test_continuous_empty_map_checks_quest_once_then_stops(self):
+        """无可达目标时只多核对一次大厅任务，任务没前进就结束。"""
+        fn, runner, factory, reports = self.continuous_runner([('no_reachable_target', 0)], [(20, 6)] * 2)
+        fn(runner)
+        self.assertEqual(factory.call_count, 1)
+        self.assertEqual(runner.ensure_main_map.call_count, 2)
+        self.assertIn('20-6', reports[-1][2])
+        runner.renew_progress_guard.assert_not_called()
+
+    def test_continuous_advances_to_new_main_chapter(self):
+        """主线目标跨章前进后继续最新进度，忽略保留的指定章节设置。"""
+        fn, runner, factory, _ = self.continuous_runner(
+            [('chapter_changed', 1), ('tick_budget', 0)], [(20, 31), (21, 1)])
+        fn(runner)
+        self.assertEqual(factory.call_count, 2)
+        self.assertEqual(runner.renew_progress_guard.call_count, 1)
+        self.assertTrue(all(c.args[1] is None for c in runner.select_chapter.call_args_list))
 
     def test_chapter_choice_accepts_current_or_supported_positive_number(self):
         """选择限定为当前进度或受支持章节，关卡编号和越界值不能触发输入。"""

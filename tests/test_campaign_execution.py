@@ -811,6 +811,14 @@ class ExecutorTests(unittest.TestCase):
         self.session = Mock()
         self.executor = CampaignExecutor(self.owner, self.session)
 
+    def test_continuous_chapter_transition_reloads_before_old_map_planning(self):
+        """换章确认优先于旧章坐标规划，跨章后交给外层重新初始化。"""
+        self.owner.continuous = True
+        self.session.next_chapter.return_value = 42
+        result = self.executor.run(snapshot_fixture(), ticks=1)
+        self.assertEqual(result, {'state': 'continue', 'reason': 'chapter_changed', 'chapter': 42})
+        self.owner.plan_tick.assert_not_called()
+
     def test_reachable_enemy_does_not_lose_localization_to_story_camera(self):
         """已有可达敌人时直接推进，避免额外切镜头后丢失小队定位。"""
         goal = dict(kind='enemy', id='enemy-1', position=[112, 96])
@@ -942,6 +950,20 @@ class ExecutorTests(unittest.TestCase):
         self.assertTrue(self.session.reuse_squad)
         self.assertFalse(self.session.battle_mode)
         self.session.begin_target.assert_any_call('battle')
+
+    def test_continuous_stops_on_first_defeat_without_retrying(self):
+        """持续模式首次确认战败即返回，不自动连败重打。"""
+        self.owner.continuous = True
+        goal = dict(kind='enemy', id='enemy-1', position=[112, 96])
+        self.owner.state.enemies['enemy-1'] = {'status': 'pending'}
+        self.session.battle_step.side_effect = [dict(state='defeat')] + settle_gone_frames()
+        with patch('module.campaign.execution.Timer', instant_timer):
+            with self.assertRaises(BattleFailed):
+                self.executor.battle(goal)
+        taps = [item.args[0] for item in self.session.tap.call_args_list]
+        self.assertNotIn(DEFEAT_RETRY_POINT, taps)
+        self.assertEqual(taps, [DEFEAT_BACK_POINT])
+        self.assertEqual(self.owner.state.enemies['enemy-1']['status'], 'pending')
 
     def test_battle_defeat_retries_in_place_then_returns_and_fails(self):
         """一次真实战败只计一次重打；结算屏停留不刷额度，用尽后点返回并抛 BattleFailed。"""
