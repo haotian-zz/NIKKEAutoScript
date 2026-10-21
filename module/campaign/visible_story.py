@@ -343,7 +343,8 @@ class VisibleStoryRunner:
             return fresh, []
         second = self.memory.observe(fresh)
         arrays = dict(field=fresh) if not any(item.get('kind') != 'ex' for item in second) else None
-        self.session.record_evidence('scene_scan', fresh, quest=self.quest, enemies=second, arrays=arrays)
+        self.session.record_evidence('scene_scan', fresh, quest=self.quest, enemies=second, arrays=arrays,
+                                     squad_overlap=getattr(self.memory.previous, 'squad_overlap_boxes', ()))
         return fresh, stable_candidates(first, second)
 
     def selectable(self, item):

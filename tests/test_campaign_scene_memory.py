@@ -8,13 +8,33 @@ import unittest
 from unittest.mock import patch
 
 import numpy as np
+import cv2
 
 from module.campaign.scene_memory import SceneEnemyMemory, ring_frame, stable_candidates
 from module.campaign.vision.detection import Detection
+from module.campaign.vision.enemy_ring import scene_ring_candidates
+from module.campaign.vision.perception import arrow_template
 
 
 class SceneMemoryTests(unittest.TestCase):
     """只有当前可见目标能产生点击候选，旧观察记录本身不能恢复输入许可。"""
+
+    def test_squad_overlap_is_not_an_enemy_but_missing_arrow_preserves_unknown_ring(self):
+        """真实箭头模板支持排除小队脚圈；箭头缺失时不臆造中心来排除真实敌人。"""
+        field = np.zeros((999, 1776, 3), np.uint8)
+        template = arrow_template()
+        h, w = template.shape
+        field[300:300+h, 800:800+w] = cv2.cvtColor(template, cv2.COLOR_GRAY2BGR)
+        arrow = Detection('scene_squad_arrow', .99, (800., 300., 800.+w, 300.+h))
+        own = Detection('scene_enemy_ring', .95, (760., 370., 880., 440.))
+        enemy = Detection('scene_enemy_ring', .95, (1000., 370., 1140., 440.))
+        with patch('module.campaign.vision.enemy_ring.detect_grid', return_value=[own, enemy, arrow]) as detect:
+            rings, excluded = scene_ring_candidates(field)
+        self.assertEqual(rings, [enemy])
+        self.assertEqual(excluded, (own.box,))
+        detect.assert_called_once()
+        with patch('module.campaign.vision.enemy_ring.detect_grid', return_value=[own, enemy]):
+            self.assertEqual(scene_ring_candidates(field), ([own, enemy], ()))
 
     def test_ambiguous_or_shifted_candidates_are_not_clickable(self):
         """红圈消失、镜头大幅移动及近邻歧义均不会产生稳定点击候选。"""
@@ -91,7 +111,7 @@ class SceneMemoryTests(unittest.TestCase):
         """模型脚圈与文字脚圈同处只计一只，已验证的 EX 不因下一帧 OCR 漏检变成普通目标。"""
         field = np.zeros((999, 1776, 3), np.uint8)
         ring = Detection('scene_enemy_ring', .99, (500., 500., 600., 550.))
-        with patch('module.campaign.scene_memory.detect_grid', return_value=[ring]), \
+        with patch('module.campaign.vision.enemy_ring.detect_grid', return_value=[ring]), \
                 patch('module.campaign.vision.ex_ring.scene_ex_rings', return_value=[ring]):
             frame = ring_frame(field, object())
         self.assertEqual(frame.kinds, ('ex',))

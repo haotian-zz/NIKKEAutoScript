@@ -39,6 +39,27 @@ def clickable_ring(box):
                    for left, top, right, bottom in HUD_RECTS)
 
 
+def scene_ring_candidates(image):
+    """同一次网格同时识别脚圈与箭头，拒绝覆盖已定位小队脚下点的歧义脚圈。
+
+    不增加推理切片，不按橙色直接认敌。唯一箭头仍须真实模板精定位；缺失或不唯一时
+    不使用固定画面中心伪造排除区域。重叠不等于已清除，后续语义入口仍须单独验证。
+    """
+    from module.campaign.navigation.controls import ARROW_GROUND_OFFSET
+    from module.campaign.vision.perception import refine_arrow
+    found = detect_grid(image, ('scene_enemy_ring', 'scene_squad_arrow'))
+    rings = [item for item in found if item.label == 'scene_enemy_ring'
+             and item.confidence >= RING_CONFIDENCE and clickable_ring(item.box)]
+    arrows = [refine_arrow(image, item) for item in found
+              if item.label == 'scene_squad_arrow' and clickable_ring(item.box)]
+    arrows = [point for point in arrows if point is not None]
+    if len(arrows) != 1:
+        return rings, ()
+    x, y = np.asarray(arrows[0]) + [0., ARROW_GROUND_OFFSET]
+    overlap = [item for item in rings if item.box[0] <= x <= item.box[2] and item.box[1] <= y <= item.box[3]]
+    return [item for item in rings if item not in overlap], tuple(item.box for item in overlap)
+
+
 @dataclass
 class RingFrame:
     """一次无小队移动的场景观测；只在单次镜头规划内复用，不跨目标或小地图重新锚定。
@@ -46,6 +67,7 @@ class RingFrame:
     centers/keys 为客户区像素，viewport/enemies/squad 为章节底图像素；两类坐标只比较各自的
     帧间变化。特征与检测来自同一客户区帧，matrix 必须由该帧的紧凑小地图配准得到。
     kinds 可选并与 centers 对齐；可信 EX 分类用于保留待清，未知类别不授予普通关卡身份。
+    squad_overlap_boxes 是客户区中覆盖可信小队落点的歧义框，仅用于诊断和纹理屏蔽。
     """
 
     centers: np.ndarray
@@ -55,6 +77,7 @@ class RingFrame:
     enemies: list
     squad: list
     kinds: tuple = ()
+    squad_overlap_boxes: tuple = ()
 
 
 def observe_rings(image, panel, matrix, viewport):
@@ -65,13 +88,13 @@ def observe_rings(image, panel, matrix, viewport):
     """
     if image.shape != (999, 1776, 3):
         raise ValueError('脚圈辅助要求 1776×999 客户区截图。')
-    rings = [item for item in detect_grid(image, ('scene_enemy_ring',))
-             if item.confidence >= RING_CONFIDENCE and clickable_ring(item.box)]
+    rings, overlap = scene_ring_candidates(image)
     centers = np.asarray([item.center for item in rings], float).reshape(-1, 2)
     mask = np.full(image.shape[:2], 255, np.uint8)
     for left, top, right, bottom in HUD_RECTS:
         mask[top:bottom, left:right] = 0
-    for x, y in np.rint(centers).astype(int):
+    animated = list(centers) + [(np.asarray(box[:2]) + box[2:]) / 2 for box in overlap]
+    for x, y in np.rint(animated).astype(int).reshape(-1, 2):
         cv2.rectangle(mask, (x - 65, max(0, y - 140)), (x + 65, y + 35), 0, -1)
     keys, descriptors = cv2.SIFT_create(nfeatures=6000).detectAndCompute(
         cv2.cvtColor(image, cv2.COLOR_BGR2GRAY), mask)
@@ -84,7 +107,7 @@ def observe_rings(image, panel, matrix, viewport):
         else:
             enemies.append((item.label, project(matrix, item.center)))
     return RingFrame(centers, np.asarray([key.pt for key in keys]),
-                     descriptors, np.asarray(viewport, float).copy(), enemies, squad)
+                     descriptors, np.asarray(viewport, float).copy(), enemies, squad, squad_overlap_boxes=overlap)
 
 
 def scene_registration(before, after):

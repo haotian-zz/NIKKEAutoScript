@@ -6,8 +6,7 @@ import time
 import cv2
 import numpy as np
 
-from module.campaign.vision.detection import detect_grid
-from module.campaign.vision.enemy_ring import HUD_RECTS, RING_CONFIDENCE, RingFrame, clickable_ring, scene_tracks
+from module.campaign.vision.enemy_ring import HUD_RECTS, RingFrame, scene_ring_candidates, scene_tracks
 
 
 def ring_frame(field, reader=None):
@@ -15,8 +14,12 @@ def ring_frame(field, reader=None):
 
     排除 HUD 和敌人动画区域后提取 SIFT，后续只用通过几何检验的双帧关联继承观察 ID。
     """
-    rings = [item for item in detect_grid(field, ('scene_enemy_ring',))
-             if item.confidence >= RING_CONFIDENCE and clickable_ring(item.box)]
+    rings, overlap = scene_ring_candidates(field)
+    from module.campaign.vision.boss_ring import scene_boss_rings
+    boss_rings = scene_boss_rings(field)
+    for item in boss_rings:
+        if not any(np.linalg.norm(np.asarray(item.center) - known.center) < 20. for known in rings):
+            rings.append(item)
     ex_rings = []
     if reader is not None:
         from module.campaign.vision.ex_ring import scene_ex_rings
@@ -28,13 +31,15 @@ def ring_frame(field, reader=None):
     mask = np.full(field.shape[:2], 255, np.uint8)
     for left, top, right, bottom in HUD_RECTS:
         mask[top:bottom, left:right] = 0
-    for x, y in np.rint(centers).astype(int):
+    animated = list(centers) + [(np.asarray(box[:2]) + box[2:]) / 2 for box in overlap]
+    for x, y in np.rint(animated).astype(int).reshape(-1, 2):
         cv2.rectangle(mask, (x - 65, max(0, y - 140)), (x + 65, y + 35), 0, -1)
     keys, descriptors = cv2.SIFT_create(nfeatures=4000).detectAndCompute(
         cv2.cvtColor(field, cv2.COLOR_BGR2GRAY), mask)
-    kinds = tuple('ex' if any(np.linalg.norm(point - ex.center) < 20. for ex in ex_rings) else 'unknown'
-                  for point in centers)
-    return RingFrame(centers, np.asarray([key.pt for key in keys]), descriptors, np.zeros(2), [], [], kinds)
+    kinds = tuple('ex' if any(np.linalg.norm(point-ex.center) < 20. for ex in ex_rings)
+                  else 'boss' if any(np.linalg.norm(point-boss.center) < 20. for boss in boss_rings)
+                  else 'unknown' for point in centers)
+    return RingFrame(centers, np.asarray([key.pt for key in keys]), descriptors, np.zeros(2), [], [], kinds, overlap)
 
 
 class SceneEnemyMemory:
