@@ -46,7 +46,8 @@ MINIMAP_MODES = {'compact': '紧凑', 'expanded': '展开'}
 # 光幕封锁的三态。
 BLOCK_STATUS = {'active': '仍存在', 'stale': '待确认', 'cleared': '已解除'}
 # 运行状态摘要里的敌人状态。
-ENEMY_STATUS = {'pending': '待清', 'cleared': '已清除', 'engaged': '交战中', 'unreachable': '暂时不可达'}
+ENEMY_STATUS = {'pending': '待清', 'cleared': '已清除', 'engaged': '交战中',
+                'unreachable': '暂时不可达', 'stalled': '移动停滞，原因待确认'}
 # 共享移动闭环的进度状态（navigation/*.py 的 emit 值）。
 MOVE_STATES = {'locating': '定位小队', 'planning': '规划落点', 'moving': '小队移动中',
                'panning': '平移画面', 'probing': '试探附近落点', 'verifying': '复核到点'}

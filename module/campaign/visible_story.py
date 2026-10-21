@@ -16,6 +16,7 @@ from module.campaign.sweep import ChapterSweep, SweepUnconfirmed
 from module.campaign.vision.perception import squad_arrow
 from module.campaign.vision.offscreen import squad_offscreen
 from module.campaign.vision.story_marker import story_markers
+from module.campaign.vision.native_motion import ClickProgress, NativeMotion
 from module.campaign.navigation.camera_navigation import pan_scene
 from module.logger import logger
 
@@ -185,6 +186,7 @@ class VisibleStoryRunner:
         self.blocked_views = 0
         self.structure_inputs = 0
         self.structure_pans = 0
+        self.entry_outcome = None
         self.journal = ClearanceJournal(owner.config.config_name)
         self.journal.begin(owner.current_chapter)
 
@@ -215,20 +217,39 @@ class VisibleStoryRunner:
         self.session.preview(self.session.win.client())
         raise StoryVerificationError('等待地图或备战超过三十秒；已保存画面并停止。', 'story_field_timeout')
 
-    def wait_entry(self):
-        """点击后最多等二十秒并跳过剧情；途中遇到任何普通战斗立即交给实际关卡核对。"""
-        deadline = time.monotonic() + ENTRY_WAIT_SECONDS
-        warned = False
-        while time.monotonic() < deadline:
-            field = self.map_frame(timeout=max(.1, deadline - time.monotonic()))
+    def wait_entry(self, before, arrow=None, target=None):
+        """观察游戏原生寻路；只有真实移动才续等，停滞与观测失败分开处理。
+
+        三次且跨2秒的可靠静止才返回False请求设施诊断。观测不足或持续移动超过总时限
+        均保留未确认并停止，不能将二十秒没弹窗写成道路不可达，也不在途中追加目标点击。
+        """
+        progress = ClickProgress(time.monotonic(), unknown_limit=ENTRY_WAIT_SECONDS)
+        motion = NativeMotion(before, arrow, None if target is None else target['click'])
+        previous_state = None
+        while True:
+            field = self.map_frame(timeout=max(.1, min(30., progress.started+60.-time.monotonic())))
             if goto.battle_popup_score(field) > .8:
+                self.entry_outcome = dict(state='entry')
                 return True
-            if not warned and deadline - time.monotonic() < ENTRY_WAIT_SECONDS / 2:
-                self.session.preview(field)
-                logger.info('敌人落点尚未进入备战，已保存等待画面；不重复发送同一落点。')
-                warned = True
-            self.session.pause(.3)
-        return False
+            observation = motion.observe(field, squad_arrow(field))
+            now = time.monotonic()
+            state = progress.update(now, observation)
+            self.entry_outcome = dict(observation, outcome=state, elapsed=round(now-progress.started, 2))
+            if observation['state'] != previous_state or state != 'waiting':
+                self.session.record_evidence('native_click_feedback', field, feedback=self.entry_outcome,
+                                             target=target, arrays=dict(field=field))
+                observed_text = {'moving': '小队移动中', 'stationary': '小队暂时静止',
+                                 'unknown': '小队或背景观测未确认'}[observation['state']]
+                result_text = {'waiting': '继续观察', 'stalled': '连续停滞，进入诊断',
+                               'movement_timeout': '达到本次移动总时限',
+                               'observation_unknown': '未获得可靠结果，停止追加输入'}[state]
+                logger.info(f'原生寻路反馈：{observed_text}，耗时{now-progress.started:.1f}秒；{result_text}。')
+                previous_state = observation['state']
+            if state == 'stalled':
+                return False
+            if state != 'waiting':
+                raise StoryVerificationError('原生寻路未确认到达；已保留观测，未发送后续目标。', 'native_'+state)
+            self.session.pause(.7)
 
     def close_entry(self):
         """仅关闭已识别的准备弹窗，最多五秒；所有分支始终禁止开始战斗。"""
@@ -335,7 +356,7 @@ class VisibleStoryRunner:
             self.manual_ex_seen = True
             return False
         return (item['id'] not in self.deferred
-                and item['status'] not in ('deferred', 'ex_skipped', 'unreachable', 'manual_required'))
+                and item['status'] not in ('deferred', 'ex_skipped', 'unreachable', 'stalled', 'manual_required'))
 
     def guide_quest(self, field):
         """无可选普通怪时，最多一次请求游戏定位当前任务，再从新帧扫描而不猜测敌人坐标。
@@ -504,8 +525,8 @@ class VisibleStoryRunner:
                 if survey['state'] == 'verified_empty':
                     return self.advance_chapter(survey['proof'])
                 fresh, candidates = survey['field'], survey['targets']
-            anchor = squad_arrow(fresh)
-            anchor = np.asarray(goto.VIEWPORT_PIXEL if anchor is None else anchor)
+            observed_arrow = squad_arrow(fresh)
+            anchor = np.asarray(goto.VIEWPORT_PIXEL if observed_arrow is None else observed_arrow)
             target = min(candidates, key=lambda item: (
                 stage_order(item['stage']) if item['stage'] is not None else (99, 99, '', 0),
                 float(np.linalg.norm(np.asarray(item['click']) - anchor))))
@@ -522,14 +543,14 @@ class VisibleStoryRunner:
                 if goto.battle_popup_score(pending) > .8:
                     self.fight_entry()
                 continue
-            if self.wait_entry():
+            if self.wait_entry(fresh, arrow=observed_arrow, target=target):
                 won = self.fight_entry(target)
                 if not won:
                     self.deferred.add(target['id'])
             else:
-                self.memory.identify(target['id'], None, 'unreachable')
+                self.memory.attempt(target['id'], 'stalled', self.entry_outcome)
                 self.blocked_views += 1
-                logger.info('敌人落点二十秒内未进入备战，记录暂不可达并扫描其他目标。')
+                logger.info('原生寻路已确认连续停滞，进入有界设施诊断；道路可达性保持未确认。')
                 self.deferred.add(target['id'])
         return dict(state='continue', reason='tick_budget')
 
@@ -538,13 +559,20 @@ def run_visible_story(owner):
     """在加载底图前运行清怪闭环；所有退出路径释放会话，未完成巡检不得声明本章清空。"""
     from module.campaign.execution import CampaignExecutor
     from module.campaign.session import CampaignSession
+    from module.campaign.vision.detection import configure_inference
     owner.story_wins = set()
     owner.prepare_client()
     owner.check_main_story_page()
     owner.detect_current_chapter(localize=False)
     session = CampaignSession(owner, navigation=False)
+    inference_worker = None
     try:
+        inference_worker = configure_inference(owner.config.config_name)
         session.start()
         return VisibleStoryRunner(owner, session, CampaignExecutor(owner, session)).run()
     finally:
-        session.close()
+        try:
+            session.close()
+        finally:
+            from module.campaign.vision.inference_backend import stop_worker
+            stop_worker(inference_worker)

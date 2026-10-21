@@ -126,12 +126,12 @@ class Detector:
     坐标系或类别错位的检测结果。
     """
 
-    def __init__(self, directory=MODEL_DIRECTORY):
+    def __init__(self, directory=MODEL_DIRECTORY, threads=4, providers=None, remote=False):
         """校验模型包并建立 ONNX 推理会话。
 
         模型哈希要与元数据一致，防止换了模型却没换阈值和类别表。
         onnxruntime 是可选依赖（requirements-yolo.txt），缺失时给出安装提示而不是 ImportError。
-        固定 CPU 执行、4 线程，推图过程中还要跑 OCR 和截图，不能让推理把核吃满；
+        默认CPU执行、4线程；实验可显式指定后端和线程，用同一前后处理比较实际效率。
         另外配一把锁，界面与任务线程共用同一会话时串行推理，避免线程数成倍放大。
         """
         directory = Path(directory)
@@ -161,9 +161,14 @@ class Detector:
         except ImportError as error:
             raise RuntimeError('Install requirements-yolo.txt to run campaign YOLO detection.') from error
         options = ort.SessionOptions()
-        options.intra_op_num_threads = 4
+        if type(threads) is not int or not 1 <= threads <= 8:
+            raise ValueError('Campaign detector threads must be between 1 and 8.')
+        options.intra_op_num_threads = threads
         options.inter_op_num_threads = 1
-        self.session = ort.InferenceSession(str(model), sess_options=options, providers=['CPUExecutionProvider'])
+        self.session = ort.InferenceSession(str(model), sess_options=options,
+                                            providers=providers or ['CPUExecutionProvider'])
+        from module.logger import logger
+        logger.info(f'推图检测后端：{self.session.get_providers()}，ORT {ort.__version__}，CPU线程 {threads}。')
         inputs, outputs = self.session.get_inputs(), self.session.get_outputs()
         if len(inputs) != 1 or inputs[0].shape != [1, 3, self.size, self.size] or inputs[0].type != 'tensor(float)':
             raise ValueError('Campaign YOLO input contract mismatch.')
@@ -171,6 +176,10 @@ class Detector:
             raise ValueError('Campaign YOLO must have one raw detection output.')
         self.input_name, self.output_name = inputs[0].name, outputs[0].name
         self.lock = threading.Lock()
+        self.remote = None
+        if remote:
+            from module.campaign.vision.inference_backend import LocalInference
+            self.remote = LocalInference(self.metadata['sha256'], self.labels)
 
     def scene_contract(self, scene):
         """校验模型包声明的全画面网格；边界余量和 NMS 阈值必须与本模块实现一致。"""
@@ -203,6 +212,10 @@ class Detector:
         guards 按左、上、右、下指出哪些边是切片内部边界，整图推理时应保持默认全真。
         """
         thresholds = self.thresholds if labels is None else self.selected(labels)
+        if self.remote is not None:
+            found = self.remote.predict(image, tuple(thresholds), guards)
+            if found is not None:
+                return [Detection(item['label'], item['confidence'], tuple(item['box'])) for item in found]
         tensor, scales, padding = letterbox(image, self.size)
         with self.lock:
             result = self.session.run([self.output_name], {self.input_name: tensor})[0]
@@ -216,7 +229,36 @@ def detector():
     建会话要读十几 MB 的模型并做一次初始化，每帧新建会把推图拖垮，所以缓存成单例；
     Detector 内部有锁，多线程共用这一个实例是安全的。
     """
-    return Detector()
+    return Detector(**_detector_profile)
+
+
+_detector_profile = {}
+
+
+def configure_inference(config_name):
+    """仅AutoPush读取已通过本机benchmark的私人配置，其他实例使用默认CPU。
+
+    不允许配置任意服务地址、依赖目录或模型文件。CUDA仅在私有环境已就绪时启用。
+    """
+    global _detector_profile
+    profile = {}
+    path = Path(__file__).resolve().parents[3] / 'data/campaign_detector.json'
+    if config_name == 'AutoPush' and path.exists():
+        settings = json.loads(path.read_text(encoding='utf8'))
+        metadata = json.loads((MODEL_DIRECTORY/'campaign.json').read_text(encoding='utf8'))
+        if settings.get('model_sha256') == metadata['sha256'] and settings.get('benchmark_passed') is True:
+            threads = settings.get('threads', 4)
+            if type(threads) is int and 1 <= threads <= 8:
+                profile = dict(threads=threads)
+                if settings.get('backend') == 'cuda':
+                    from module.campaign.vision.inference_backend import prepare_cuda
+                    if prepare_cuda(path.parent.parent):
+                        profile['providers'] = ['CUDAExecutionProvider', 'CPUExecutionProvider']
+    worker = None
+    if profile != _detector_profile:
+        _detector_profile = profile
+        detector.cache_clear()
+    return worker
 
 
 def scene_mask(image):
@@ -255,6 +297,11 @@ def detect_scene(image, labels=LEGACY_SCENE_LABELS):
 
     切片有重叠，同一目标会在相邻片里各出一次，所以补回偏移后要再做一次全局抑制。
     """
+    active = detector()
+    if getattr(active, 'remote', None) is not None:
+        found = active.remote.scene(image, labels, legacy=True)
+        if found is not None:
+            return [Detection(item['label'], item['confidence'], tuple(item['box'])) for item in found]
     detections = []
     for tile, offset in scene_tiles(image):
         for item in detector().predict(tile, labels):
@@ -291,6 +338,11 @@ def detect_grid(image, labels=GRID_LABELS):
 
     八片 640×640 覆盖整幅画面，逐片抑制后再全局抑制，与模型包的 scene 契约一致。
     """
+    active = detector()
+    if getattr(active, 'remote', None) is not None:
+        found = active.remote.scene(image, labels)
+        if found is not None:
+            return [Detection(item['label'], item['confidence'], tuple(item['box'])) for item in found]
     detections = []
     for tile, offset, guards in grid_tiles(image):
         for item in detector().predict(tile, labels, guards):

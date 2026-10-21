@@ -100,12 +100,20 @@ class SceneEnemyMemory:
         """
         for record in self.records.values():
             stage = record['stage']
-            if record['status'] == 'unreachable' and after_win:
+            if record['status'] in ('unreachable', 'stalled') and after_win:
                 record['status'] = 'pending'
             elif (record['status'] == 'deferred' and stage is not None and tuple(stage) not in victories
                   and quest is not None and stage[0] == quest[0] and stage[1] <= quest[1]):
                 record['status'] = 'pending'
         self.save()
+
+    def attempt(self, identifier, outcome, feedback):
+        """记录点击后的未完成结果，不抹去既有身份，也不伪造已经发生途中遇敌。"""
+        if identifier in self.records:
+            record = self.records[identifier]
+            record['status'] = outcome
+            record['attempts'] = (record.get('attempts', []) + [dict(outcome=outcome, feedback=feedback)])[-8:]
+            self.save()
 
     def victory(self, stage):
         """记录实际关卡胜利；不据此删除被点击的目标，因为战斗可能是途中遇敌。"""

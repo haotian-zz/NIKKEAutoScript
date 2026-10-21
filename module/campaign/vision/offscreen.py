@@ -1,7 +1,7 @@
 """小队离屏标记：白色圆环加一个朝外的小三角，出现即说明小队不在画面内，点圆心可把小队移回中央。
 
 不走 YOLO。环半径与三角形状固定，环内头像会变，所以只验证几何，不比对内容。
-亮背景会淹没三角，这种帧宁可漏报：标记会一直显示到小队回到画面，下一帧还有机会；
+固定小地图遮挡只从可见区域统计，尾巴被遮挡时仍拒绝。亮背景会淹没三角，这种帧宁可漏报；
 而圆形场景物一旦被误认，后续逻辑就会去点它。
 """
 
@@ -92,18 +92,41 @@ def longest_run(flags):
     return min(best, length), best_start % length
 
 
-def measure(mask, cx, cy):
-    """以整数圆心统计环带与环外一圈的亮像素；贴近画面边缘无法取样时返回 None。"""
+def measure(mask, cx, cy, valid=None):
+    """统计可见圆弧与完整尾巴；只排除已确认的小地图遮挡，不降低圆环完整性门槛。
+
+    至少65%环带可见，圆心和尾巴均须在遮挡外；可见扇区要求原有95%覆盖。
+    不能用遮挡掩码解释任意地面缺口，也不能在尾巴不可见时推测朝向。
+    """
     cx, cy = int(round(cx)), int(round(cy))
     if cx - REACH < 0 or cy - REACH < 0 or cx + REACH >= mask.shape[1] or cy + REACH >= mask.shape[0]:
         return None
     patch = mask[cy - REACH:cy + REACH + 1, cx - REACH:cx + REACH + 1]
+    visible = np.ones(patch.shape, bool) if valid is None else valid[
+        cy - REACH:cy + REACH + 1, cx - REACH:cx + REACH + 1]
+    if visible.all():
+        ring_hit, outer_hit = np.zeros(SECTORS, bool), np.zeros(SECTORS, bool)
+        ring_hit[SECTOR[RING & patch]] = True
+        outer_hit[SECTOR[OUTER & patch]] = True
+        run, start = longest_run(outer_hit)
+        return dict(fill=float(patch[RING].mean()), coverage=float(ring_hit.mean()),
+                    outer_coverage=float(outer_hit.mean()), tail_run=run, tail_start=start)
+    seen = RING & visible
+    if not visible[REACH, REACH] or seen.sum() < .65 * RING.sum():
+        return None
+    sector_size = np.bincount(SECTOR[RING], minlength=SECTORS)
+    sector_seen = np.bincount(SECTOR[seen], minlength=SECTORS)
+    visible_sectors = sector_seen >= .5 * sector_size
     ring_hit = np.zeros(SECTORS, bool)
-    ring_hit[SECTOR[RING & patch]] = True
+    ring_hit[SECTOR[seen & patch]] = True
     outer_hit = np.zeros(SECTORS, bool)
-    outer_hit[SECTOR[OUTER & patch]] = True
+    outer_hit[SECTOR[OUTER & patch & visible]] = True
     run, start = longest_run(outer_hit)
-    return dict(fill=float(patch[RING].mean()), coverage=float(ring_hit.mean()),
+    if start is not None:
+        tail = np.arange(start, start + run) % SECTORS
+        if np.any(OUTER & np.isin(SECTOR, tail) & ~visible):
+            return None
+    return dict(fill=float(patch[seen].mean()), coverage=float(ring_hit[visible_sectors].mean()),
                 outer_coverage=float(outer_hit.mean()), tail_run=run, tail_start=start)
 
 
@@ -160,7 +183,7 @@ def peaks(mask):
     return [(int(xs[i]) * SCALE + SCALE // 2, int(ys[i]) * SCALE + SCALE // 2) for i in order]
 
 
-def refine(mask, cx, cy):
+def refine(mask, cx, cy, valid=None):
     """在候选圆心周围按 4、2、1 像素逐级搜索环覆盖最高、环带占比最接近典型值的位置。
 
     不把“能否通过检验”放进排序：让精修去找一个勉强能过的落点，会把残缺的圆形场景物也放进来。
@@ -171,13 +194,23 @@ def refine(mask, cx, cy):
         for dy in (-step, 0, step):
             for dx in (-step, 0, step):
                 x, y = base[0] + dx, base[1] + dy
-                score = measure(mask, x, y)
+                score = measure(mask, x, y, valid)
                 if score is None:
                     continue
                 rank = (score['coverage'], -abs(score['fill'] - FILL_TYPICAL))
                 if best is None or rank > best[0]:
                     best = (rank, x, y, score)
     return best
+
+
+def visible_region(image):
+    """仅当控件与蓝色紧凑面板同时可见时排除其固定遮挡区；关闭态不制造虚假缺失区域。"""
+    from module.campaign.vision.minimap import map_visible, minimap_control_visible
+    valid = np.ones(image.shape[:2], bool)
+    if (minimap_control_visible(image[76:120, 20:64])
+            and map_visible(image[118:273, 27:207])):
+        valid[76:295, 18:232] = False
+    return valid
 
 
 def squad_offscreen(image):
@@ -189,9 +222,10 @@ def squad_offscreen(image):
     if image is None or image.ndim != 3 or image.shape[1::-1] != CLIENT_SIZE:
         raise ValueError('小队离屏标记识别需要 1776×999 的 BGR 客户区截图。')
     mask = bright(image)
+    valid = visible_region(image)
     best = None
     for cx, cy in peaks(mask):
-        refined = refine(mask, cx, cy)
+        refined = refine(mask, cx, cy, valid)
         if refined is None:
             continue
         rank, x, y, score = refined

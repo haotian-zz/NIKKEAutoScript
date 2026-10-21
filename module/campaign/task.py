@@ -128,7 +128,8 @@ class AutoPush(UI):
     def runtime_ready(self):
         """在导航前检查 ONNX 依赖与模型完整性，失败时写入可补做的待处理原因。"""
         try:
-            from module.campaign.vision.detection import detector
+            from module.campaign.vision.detection import configure_inference, detector
+            configure_inference(self.config.config_name)
             detector()
             return True
         except (ImportError, RuntimeError, ValueError, OSError) as exc:

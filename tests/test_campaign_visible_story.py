@@ -31,6 +31,8 @@ def definitions():
                                            {'reason': 'chapter_clearance_unconfirmed'}),
                      squad_arrow=Mock(return_value=None), squad_offscreen=Mock(return_value=None),
                      story_markers=story_markers, pan_scene=Mock())
+    from module.campaign.vision.native_motion import ClickProgress, NativeMotion
+    namespace.update(ClickProgress=ClickProgress, NativeMotion=NativeMotion)
     exec(compile(ast.Module(body=nodes, type_ignores=[]), str(path), 'exec'), namespace)
     return namespace
 
@@ -319,14 +321,40 @@ class VisibleStoryTests(unittest.TestCase):
         self.session.battle_step.assert_not_called()
 
     def test_movement_timeout_does_not_repeat_click(self):
-        """移动超时记录暂不可达，单轮只发送一个落点且不启动战斗。"""
+        """可靠停滞请求诊断，单轮只发送一个落点且不宣称道路不可达。"""
         self.ns['read_stage'] = Mock(return_value=(20, 6))
         self.runner.scan = Mock(return_value=(self.field, [self.target]))
         self.runner.wait_entry = Mock(return_value=False)
         self.assertEqual(self.runner.run(ticks=1)['state'], 'continue')
         self.session.tap.assert_called_once()
-        self.runner.memory.identify.assert_called_once_with('ring-1', None, 'unreachable')
+        self.runner.memory.attempt.assert_called_once_with('ring-1', 'stalled', None)
+        self.runner.memory.identify.assert_not_called()
         self.executor.battle.assert_not_called()
+
+    def test_click_feedback_keeps_waiting_for_observed_motion_past_twenty_seconds(self):
+        """真实移动可超过20秒，途中备战仍优先接管，不追加第二次落点。"""
+        clock = [0.]
+        self.ns['time'].monotonic.side_effect = lambda: clock[0]
+        self.session.pause.side_effect = lambda seconds: clock.__setitem__(0, clock[0]+seconds)
+        self.ns['NativeMotion'] = Mock()
+        self.ns['NativeMotion'].return_value.observe.return_value = dict(state='moving', reason='camera_compensated')
+        self.ns['goto'].battle_popup_score.side_effect = lambda frame: 1. if clock[0] >= 25. else 0.
+        self.assertTrue(self.runner.wait_entry(self.field))
+        self.assertGreaterEqual(clock[0], 25.)
+        self.session.tap.assert_not_called()
+
+    def test_unobserved_click_stops_without_facility_input(self):
+        """一直缺失位移观测时保留unknown，不能请求设施交互或记录unreachable。"""
+        clock = [0.]
+        self.ns['time'].monotonic.side_effect = lambda: clock[0]
+        self.session.pause.side_effect = lambda seconds: clock.__setitem__(0, clock[0]+seconds)
+        self.ns['NativeMotion'] = Mock()
+        self.ns['NativeMotion'].return_value.observe.return_value = dict(state='unknown', reason='squad_unobserved')
+        with self.assertRaises(self.ns['StoryVerificationError']) as raised:
+            self.runner.wait_entry(self.field)
+        self.assertEqual(raised.exception.reason, 'native_observation_unknown')
+        self.runner.memory.identify.assert_not_called()
+        self.session.tap.assert_not_called()
 
     def test_structure_scout_keeps_recovery_priority_over_another_enemy_click(self):
         """受阻后的设施换视角仍需继续找设施，不立即插入另一次敌人点击打断恢复。"""
