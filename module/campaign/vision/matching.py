@@ -6,6 +6,8 @@
 
 import hashlib
 import json
+import os
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import cv2
@@ -15,7 +17,7 @@ import numpy as np
 ROI = (25, 96, 243, 307)
 SCALE = 0.25
 PAD = 180
-MATCH_VERSION = 5
+MATCH_VERSION = 6
 # match_panel 的接受判据：道路 IoU、粗搜首名与远处歧义候选的分差、同分候选的参数离散度。
 # 观察器要用同一组常量解释定位为何未被接受，写成常量而不是散在判据里的字面量，避免两边漂移。
 # 道路 IoU 取 0.70：小地图只露出一小块路、或该章配色与底图有固有差异时，正确位置实测落在
@@ -34,6 +36,8 @@ PARAMETER_GRID = sorted({(round(float(a), 2), round(float(b), 2))
                            for a in np.arange(1.9, 3.21, .1) for b in np.arange(.45, .851, .05)})
 # 热启动的小网格半径：a 步长 0.2、b 步长 0.15，各取 ±1 步；超出即视为尺度漂移，退回全扫。
 WARM_START_RADIUS = 1
+# 每个参数只读共享底图，OpenCV 相关计算会释放 GIL；限制并发，给 OCR 和其他任务留核。
+SEARCH_WORKERS = max(1, min(4, (os.cpu_count() or 1) // 2))
 
 
 def minimap_masks(image):
@@ -106,14 +110,25 @@ def player_center(panel):
 
 
 def template_matrix(projection, a, b, shape):
-    """枚举尺度与透视组合，将紧凑地图映射到地图投影平面并返回有效模板边界。"""
+    """枚举尺度与透视组合，拒绝跨投影地平线的模板，再返回有限画布。
+
+    角点投影为有限数并不足以证明整块面板有效：齐次深度在面板内变号时，内部存在
+    无穷远点，warpPerspective 只留下折叠的道路碎片，反而可能得到很高的伪 IoU。
+    深度是仿射函数，四角严格同号即可排除内部穿越；整体负号仍是合法的等价单应。
+    """
     height, width = shape
     transform = np.array([[a, 0, 243 - a * width / 2], [0, a, 231 - a * height / 2], [0, 0, 1.]])
     matrix = np.diag([b * SCALE, b * SCALE, 1.]) @ projection @ transform
-    corners = cv2.perspectiveTransform(np.array([[[0., 0], [width, 0], [width, height], [0, height]]]), matrix)[0]
+    points = np.array([[0., 0], [width, 0], [width, height], [0, height]])
+    depth = np.column_stack([points, np.ones(4)]) @ matrix[2]
+    if not np.isfinite(matrix).all() or not (np.all(depth > 1e-8) or np.all(depth < -1e-8)):
+        return None
+    corners = cv2.perspectiveTransform(points[None], matrix)[0]
+    if not np.isfinite(corners).all():
+        return None
     lower = np.floor(corners.min(axis=0))
     size = np.ceil(corners.max(axis=0) - lower).astype(int)
-    if not np.isfinite(corners).all() or min(size) < 8 or max(size) > 600:
+    if min(size) < 8 or max(size) > 600:
         return None
     matrix = np.array([[1, 0, -lower[0]], [0, 1, -lower[1]], [0, 0, 1.]]) @ matrix
     return matrix, tuple(int(v) for v in size)
@@ -170,8 +185,7 @@ class MapMatcher:
         self.pad = 900
         self.large = cv2.copyMakeBorder(self.terrain, self.pad, self.pad, self.pad, self.pad,
                                        cv2.BORDER_CONSTANT, value=0)
-        self.warm_parameters = None
-        self.warm_margin = None
+        self.warm_starts = {}
 
     def match(self, image, review=None):
         """粗搜索尺度和位移后细化最佳候选，以 IoU、远处候选分差及参数分散度联合决定是否接受。"""
@@ -220,31 +234,38 @@ class MapMatcher:
             surface[np.hypot(xs - center[0], ys - center[1]) > SQUAD_ANCHOR_RADIUS * scale] = -1.
 
         def sweep(parameters):
-            """对给定 (a, b) 参数做一次粗搜打分，返回粗搜候选列表。"""
-            found = []
-            for a, b in sorted(parameters):
+            """有界并行计算独立参数，保持排序及同分候选顺序与串行搜索一致。"""
+            def candidate(pair):
+                """只读章节底图，为一组参数创建独立分数面与候选，不修改热启动状态。"""
+                a, b = pair
                 template = template_matrix(self.projection, a, b, road.shape)
                 if template is None:
-                    continue
+                    return None
                 matrix, size = template
                 surface = iou_surface(self.target, road, valid, matrix, size)
                 if surface is None:
-                    continue
+                    return None
                 p = cv2.perspectiveTransform(player[None, None], matrix)[0, 0]
                 restrict(surface, p - PAD, SCALE)
                 _, score, _, location = cv2.minMaxLoc(surface)
                 if score < 0:
-                    continue
+                    return None
                 cv2.circle(surface, location, round(130 * SCALE), 0, -1)
                 _, second, _, second_location = cv2.minMaxLoc(surface)
-                found.append({'a': a, 'b': b, 'score': score, 'second': second,
-                              'position': (np.asarray(location) + p - PAD) / SCALE,
-                              'second_position': (np.asarray(second_location) + p - PAD) / SCALE,
-                              'location': location, 'matrix': matrix, 'size': size})
-            return found
+                return {'a': a, 'b': b, 'score': score, 'second': second,
+                        'position': (np.asarray(location) + p - PAD) / SCALE,
+                        'second_position': (np.asarray(second_location) + p - PAD) / SCALE,
+                        'location': location, 'matrix': matrix, 'size': size}
+
+            parameters = sorted(parameters)
+            if SEARCH_WORKERS == 1 or len(parameters) < 2:
+                return [result for result in map(candidate, parameters) if result is not None]
+            with ThreadPoolExecutor(max_workers=SEARCH_WORKERS) as pool:
+                return [result for result in pool.map(candidate, parameters) if result is not None]
 
         # seed_matcher 等旁路构造的实例没有热启动字段；热启动只对持有完整画布的实例有意义。
-        warm = getattr(self, 'warm_parameters', None) if expected is None else None
+        warm_state = getattr(self, 'warm_starts', {}).get(road.shape) if expected is None else None
+        warm, warm_margin = warm_state if warm_state is not None else (None, None)
         warm_hit = False
         if warm is not None:
             steps = sorted({b for _, b in PARAMETER_GRID})
@@ -296,8 +317,8 @@ class MapMatcher:
         # margin 是「粗搜首名与远处歧义候选的分差」，热启动只扫了参数邻域、语义不完整；
         # 但该分差主要由尺度参数决定，与平移无关，所以热启动命中的参数若正是上次全网格
         # accepted 的参数，可以直接复用当时的 margin 得出 accepted，避免每帧都做全网格。
-        if warm_hit and self.warm_parameters == (result['a'], result['b']) and self.warm_margin is not None:
-            margin = self.warm_margin
+        if warm_hit and warm == (result['a'], result['b']) and warm_margin is not None:
+            margin = warm_margin
         accepted = bool(inside and result['road_iou'] >= ACCEPT_ROAD_IOU and margin >= ACCEPT_COARSE_MARGIN
                         and spread <= ACCEPT_PARAMETER_SPREAD_PX)
         result.update(status='accepted' if accepted else 'needs_review', coarse_margin=float(margin),
@@ -307,9 +328,8 @@ class MapMatcher:
             result.update(expected_position=expected.tolist(), anchor_error=float(np.linalg.norm(point - expected)))
         # 只有全网格 accepted 才更新热启动：needs_review 的定位不可信，把它的参数喂给下一帧
         # 会把漂移延续下去；accepted 复用同一参数直接命中，后续帧全部走小网格并复用 margin。
-        if expected is None and accepted and not warm_hit and hasattr(self, 'warm_parameters'):
-            self.warm_parameters = (result['a'], result['b'])
-            self.warm_margin = float(margin)
+        if expected is None and accepted and not warm_hit and hasattr(self, 'warm_starts'):
+            self.warm_starts[road.shape] = ((result['a'], result['b']), float(margin))
         if review is not None:
             recovered = cv2.warpPerspective((self.terrain * 255).astype(np.uint8),
                                             np.linalg.inv(np.asarray(result['roi_to_map'])), panel.shape[1::-1])

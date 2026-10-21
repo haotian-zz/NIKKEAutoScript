@@ -253,7 +253,8 @@ class Campaign(ModuleBase):
         第 1 次用紧凑小地图；失败就展开大地图重判（展开面板面积是紧凑面板的数倍，道路证据更多，
         配准分数通常明显更高），仍失败则在面板内换一段区域再判。展开与平移都会改变画面，
         所以退出前必须收起回紧凑形态，否则后续推图是在大地图盖住画面的状态下操作。
-        initial 是章节确认时已经观测过的那一帧快照：它已经接受定位时直接采用，避免同一画面配准两次。
+        initial 是章节确认时已经观测过的那一帧快照：无论接受与否都作为第一次结果，
+        拒绝后直接展开补充新证据，避免对不变的小视野再做一次完整配准。
         接受时打印小队在章节地图上的坐标与使用的小地图形态；未接受时保留最后一次快照并发布预览，
         让界面能看到失败证据（具体未达标项由观察器的告警给出）。
         """
@@ -265,6 +266,10 @@ class Campaign(ModuleBase):
             return initial
         snapshot, expanded = None, False
         for attempt in range(1, SQUAD_LOCATE_ATTEMPTS + 1):
+            if attempt == 1 and initial is not None:
+                snapshot = initial
+                logger.info('紧凑地图已有定位结果，直接展开补充道路证据。')
+                continue
             if attempt == 2:
                 if not self.expand_minimap():
                     break

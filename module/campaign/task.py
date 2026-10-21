@@ -44,7 +44,7 @@ class AutoPush(UI):
         """
         self.device.target_resolution = (720, 1280)
         self.device.ensure_resolution(self.config.PCClient_ScreenNumber, 720, 1280,
-                                      position=self.config.PCClient_GameWindowPosition)
+                                      position=self.config.PCClient_GameWindowPosition, interval=.15, stable_time=1.)
         self.device.check_resolution(720, 1280)
         self.device.screenshot()
         self.ui_ensure(page_main)
@@ -178,7 +178,8 @@ class AutoPush(UI):
                     require_advance = None
                 self.device.target_resolution = Campaign.RESOLUTION
                 self.device.ensure_resolution(self.config.PCClient_ScreenNumber, *Campaign.RESOLUTION,
-                                              position=self.config.PCClient_GameWindowPosition)
+                                              position=self.config.PCClient_GameWindowPosition,
+                                              interval=.15, stable_time=1.)
                 self.device.check_resolution(*Campaign.RESOLUTION)
                 campaign = Campaign(self.config, device=self.device)
                 campaign.continuous = continuous
@@ -242,5 +243,5 @@ class AutoPush(UI):
             self.config.task_delay(schedule=True)
             self.device.target_resolution = (720, 1280)
             self.device.ensure_resolution(self.config.PCClient_ScreenNumber, 720, 1280,
-                                          position=self.config.PCClient_GameWindowPosition)
+                                          position=self.config.PCClient_GameWindowPosition, interval=.15, stable_time=1.)
             self.device.check_resolution(720, 1280)
