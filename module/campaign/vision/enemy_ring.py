@@ -68,6 +68,7 @@ class RingFrame:
     帧间变化。特征与检测来自同一客户区帧，matrix 必须由该帧的紧凑小地图配准得到。
     kinds 可选并与 centers 对齐；可信 EX 分类用于保留待清，未知类别不授予普通关卡身份。
     squad_overlap_boxes 是客户区中覆盖可信小队落点的歧义框，仅用于诊断和纹理屏蔽。
+    boss_evidence 保存本帧骷髅及实际脚圈框，供动画中心波动时核对共同可点击区域。
     """
 
     centers: np.ndarray
@@ -78,6 +79,7 @@ class RingFrame:
     squad: list
     kinds: tuple = ()
     squad_overlap_boxes: tuple = ()
+    boss_evidence: tuple = ()
 
 
 def observe_rings(image, panel, matrix, viewport):

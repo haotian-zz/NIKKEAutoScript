@@ -90,6 +90,7 @@ class ChapterSweep:
             self.found = dict(state='entry')
             return None
         first_frame = ring_frame(field, self.runner.owner.chapter_ocr)
+        before_field = field
         first = self.memory.observe(field, frame=first_frame)
         self.session.pause(.25)
         field = self.runner.map_frame()
@@ -108,9 +109,13 @@ class ChapterSweep:
         if second or markers:
             self.hints.append(dict(view=self.steps, rings=len(second), minimap=markers))
         # 原始像素保留在有界证据槽中；JPEG 不能复现细小文字与发光圈的颜色阈值。
-        arrays = dict(field=field) if markers and not second else None
+        if (first or second) and not candidates:
+            arrays = dict(field=field, previous_field=before_field)
+        else:
+            arrays = dict(field=field) if markers and not second else None
         self.session.record_evidence('chapter_sweep_view', field, pans=self.steps, rows=self.rows,
-                                     remaining=second, minimap=markers, arrays=arrays)
+                                     remaining=second, previous_enemies=first, stable=len(candidates),
+                                     minimap=markers, arrays=arrays)
         logger.info(f'清怪巡检第 {self.steps} 屏：场景目标 {len(second)} 个，'
                     f'可选 {len(candidates)} 个，小地图待处理提示 {len(markers)} 个。')
         if candidates:

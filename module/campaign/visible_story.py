@@ -342,10 +342,15 @@ class VisibleStoryRunner:
         if goto.battle_popup_score(fresh) > .8:
             return fresh, []
         second = self.memory.observe(fresh)
-        arrays = dict(field=fresh) if not any(item.get('kind') != 'ex' for item in second) else None
+        candidates = stable_candidates(first, second)
+        if (first or second) and not candidates:
+            arrays = dict(field=fresh, previous_field=field)
+        else:
+            arrays = dict(field=fresh) if not any(item.get('kind') != 'ex' for item in second) else None
         self.session.record_evidence('scene_scan', fresh, quest=self.quest, enemies=second, arrays=arrays,
+                                     previous_enemies=first, stable=len(candidates),
                                      squad_overlap=getattr(self.memory.previous, 'squad_overlap_boxes', ()))
-        return fresh, stable_candidates(first, second)
+        return fresh, candidates
 
     def selectable(self, item):
         """过滤本轮暂不可达和需手动战斗的 EX；被过滤目标仍保留在巡检与观察簿中。

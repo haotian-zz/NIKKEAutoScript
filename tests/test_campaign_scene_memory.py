@@ -44,6 +44,18 @@ class SceneMemoryTests(unittest.TestCase):
         self.assertEqual(stable_candidates(before, [dict(click=[101., 200.]), dict(click=[105., 200.])]), [])
         self.assertEqual(stable_candidates(before, [dict(click=[104., 200.])]), [dict(click=[104., 200.])])
 
+    def test_boss_animation_uses_fresh_stable_glyph_and_shared_click_region(self):
+        """真实失败的13px中心摆动可由双帧语义内区确认，标记移动或内区冲突仍拒绝。"""
+        before = dict(click=[886., 734.], kind='boss',
+                      boss_visual=dict(anchor=[875., 600.], region=[800., 680., 972., 788.]))
+        after = dict(click=[873., 731.], kind='boss',
+                     boss_visual=dict(anchor=[875., 600.], region=[790., 675., 956., 787.]))
+        self.assertEqual(stable_candidates([before], [after]), [after])
+        moved = dict(after, boss_visual=dict(anchor=[885., 600.], region=after['boss_visual']['region']))
+        self.assertEqual(stable_candidates([before], [moved]), [])
+        wrong = dict(after, boss_visual=dict(anchor=[875., 600.], region=[1000., 680., 1170., 788.]))
+        self.assertEqual(stable_candidates([before], [wrong]), [])
+
     def test_untrusted_camera_change_creates_new_observation(self):
         """背景跟踪失败时不在同屏相近坐标上继承旧敌人的身份和不可达状态。"""
         with tempfile.TemporaryDirectory() as folder:

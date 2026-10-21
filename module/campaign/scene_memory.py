@@ -6,6 +6,7 @@ import time
 import cv2
 import numpy as np
 
+from module.campaign.vision.detection import Detection
 from module.campaign.vision.enemy_ring import HUD_RECTS, RingFrame, scene_ring_candidates, scene_tracks
 
 
@@ -15,8 +16,10 @@ def ring_frame(field, reader=None):
     排除 HUD 和敌人动画区域后提取 SIFT，后续只用通过几何检验的双帧关联继承观察 ID。
     """
     rings, overlap = scene_ring_candidates(field)
-    from module.campaign.vision.boss_ring import scene_boss_rings
-    boss_rings = scene_boss_rings(field)
+    from module.campaign.vision.boss_ring import boss_ring_candidates
+    boss_evidence = boss_ring_candidates(field)
+    boss_rings = [Detection('scene_enemy_ring', item['shape_score'], tuple(map(float, item['box'])))
+                  for item in boss_evidence]
     for item in boss_rings:
         if not any(np.linalg.norm(np.asarray(item.center) - known.center) < 20. for known in rings):
             rings.append(item)
@@ -39,7 +42,8 @@ def ring_frame(field, reader=None):
     kinds = tuple('ex' if any(np.linalg.norm(point-ex.center) < 20. for ex in ex_rings)
                   else 'boss' if any(np.linalg.norm(point-boss.center) < 20. for boss in boss_rings)
                   else 'unknown' for point in centers)
-    return RingFrame(centers, np.asarray([key.pt for key in keys]), descriptors, np.zeros(2), [], [], kinds, overlap)
+    return RingFrame(centers, np.asarray([key.pt for key in keys]), descriptors, np.zeros(2), [], [], kinds,
+                     overlap, tuple(boss_evidence))
 
 
 class SceneEnemyMemory:
@@ -89,7 +93,18 @@ class SceneEnemyMemory:
                 break
             del self.records[victim]
         self.save()
-        return [dict(self.records[key], click=point.tolist()) for key, point in zip(ids, current.centers)]
+        candidates = []
+        for index, (key, point) in enumerate(zip(ids, current.centers)):
+            candidate = dict(self.records[key], click=point.tolist())
+            kinds = getattr(current, 'kinds', ())
+            if len(kinds) == len(current.centers) and kinds[index] == 'boss':
+                evidence = [item for item in getattr(current, 'boss_evidence', ())
+                            if np.linalg.norm((np.asarray(item['box'][:2])+item['box'][2:])/2-point) < 20.]
+                if len(evidence) == 1:
+                    x, y, width, height = evidence[0]['glyph']
+                    candidate['boss_visual'] = dict(anchor=[x+width/2, y+height/2], region=evidence[0]['box'])
+            candidates.append(candidate)
+        return candidates
 
     def identify(self, identifier, stage, status='pending'):
         """用备战页核实的完整关卡号标记一个观察；不会推测点击目标与实际遇敌是否相同。"""
@@ -136,16 +151,42 @@ class SceneEnemyMemory:
         temporary.replace(self.path)
 
 
+def confirmation_cost(before, after):
+    """计算两帧即时目标的关联距离；Boss可用稳定骷髅和两帧共同内区替代动画框中心。
+
+    普通圈沿用12px中心门槛。两帧都有新鲜Boss联合证据时，骷髅中心须≤8px，当前
+    点击点在两椭圆中归一半径平方均≤0.7，才返回骷髅距离。无效或冲突证据返回无穷。
+    """
+    if not (before.get('kind') == after.get('kind') == 'boss'
+            and 'boss_visual' in before and 'boss_visual' in after):
+        return float(np.linalg.norm(np.asarray(before['click'])-after['click']))
+    first, second = before['boss_visual'], after['boss_visual']
+    anchors = np.asarray([first['anchor'], second['anchor']], float)
+    regions = np.asarray([first['region'], second['region']], float)
+    if (anchors.shape != (2, 2) or regions.shape != (2, 4)
+            or not np.isfinite(anchors).all() or not np.isfinite(regions).all()):
+        return np.inf
+    radii = (regions[:, 2:]-regions[:, :2])/2
+    if np.any(radii <= 0):
+        return np.inf
+    centers = (regions[:, 2:]+regions[:, :2])/2
+    point = np.asarray(after['click'], float)
+    if point.shape != (2,) or not np.isfinite(point).all():
+        return np.inf
+    distance = float(np.linalg.norm(anchors[0]-anchors[1]))
+    if distance > 8. or np.any(np.sum(((point-centers)/radii)**2, axis=1) > .7):
+        return np.inf
+    return distance
+
+
 def stable_candidates(first, second):
-    """仅返回连续两帧唯一对应且位移不超过 12px 的新帧红圈；附近竞争目标时拒绝。
+    """返回连续两帧唯一对应的新帧红圈；普通圈12px，Boss另核对语义锚点及共同内区。
 
     此规则只用于下一次即时落点；跨镜头的位置记忆另由背景几何跟踪维护。
     """
     if not first or not second:
         return []
-    before = np.asarray([item['click'] for item in first])
-    after = np.asarray([item['click'] for item in second])
-    costs = np.linalg.norm(before[:, None] - after[None, :], axis=2)
+    costs = np.asarray([[confirmation_cost(before, after) for after in second] for before in first])
     result = []
     for j, item in enumerate(second):
         i = int(np.argmin(costs[:, j]))
