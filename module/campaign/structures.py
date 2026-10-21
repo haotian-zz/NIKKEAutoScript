@@ -8,7 +8,7 @@ from module.campaign.navigation import controls as goto
 from module.campaign.navigation.camera_navigation import pan_scene
 from module.campaign.navigation.movement_feedback import TargetTriggered
 from module.campaign.vision.enemy_ring import clickable_ring
-from module.campaign.vision.objects import detect_objects, nearby_platforms
+from module.campaign.vision.objects import detect_objects, nearby_platforms, visible_platforms
 from module.campaign.vision.perception import squad_arrow
 from module.campaign.vision.native_motion import ClickProgress, MinimapStability, NativeMotion, combine_motion
 from module.campaign.vision.learned_recovery import recover_if_enabled
@@ -43,16 +43,17 @@ def stable_structures(first, second):
     return result
 
 
-def structure_observations(field, arrow):
+def structure_observations(field, arrow, unanchored=False):
     """合并网格与可信小队附近的分级补查，平台框IoU≥0.5时保留分数更高的当前观测。
 
     起终点只是外观分类，重叠去重按平台语义而非标签方向，避免同一平台重复候选互相竞争。
-    小队未确认时不建立局部裁图；实际交互仍须两帧原状态与原分数门槛。
+    小队未确认时只有显式unanchored恢复可补查全屏平台；实际交互仍须两帧原状态与原分数门槛。
     """
     objects = detect_objects(field, ('ground_mechanism', 'elevator', 'barrier'))
-    if arrow is None:
+    if arrow is None and not unanchored:
         return objects
-    local = nearby_platforms(field, np.asarray(arrow)+[0., goto.ARROW_GROUND_OFFSET])
+    local = (visible_platforms(field) if arrow is None else
+             nearby_platforms(field, np.asarray(arrow)+[0., goto.ARROW_GROUND_OFFSET]))
     for candidate in local:
         duplicates = []
         a = np.asarray(candidate['box'])
@@ -102,38 +103,44 @@ def wait_structure_settle(runner, before=None):
     raise StructureUnconfirmed('设施交互后未确认小队及道路停稳，已保留原图；不发送下一个目标。')
 
 
-def recover_visible_structure(runner, field):
+def recover_visible_structure(runner, field, allow_unanchored=False):
     """普通目标受阻后尝试可见设施或有界换视角；真实胜利前最多两次交互、四次镜头动作。
 
     平台 start/end 只是模型外观类别，不代表可逆或已经传送。游戏自身决定路径和交互；
     不编造电梯配对、地面坐标或成功结果。全部输入经正式会话，后续仍须实际备战及胜利确认。
+    allow_unanchored仅用于稳定任务标记下镜头避让无锚点的恢复：两帧唯一高分平台可交给
+    游戏原生寻路；没有小队位置时仍禁止拖镜头、按距离排序和尝试多个歧义设施。
     """
     learned = recover_if_enabled(runner, field)
     if learned is not None:
         return learned
     session = runner.session
-    first = structure_observations(field, squad_arrow(field))
+    first = structure_observations(field, squad_arrow(field), allow_unanchored)
     session.pause(.25)
     fresh = runner.map_frame()
     if goto.battle_popup_score(fresh) > .8:
         return 'entry'
     arrow = squad_arrow(fresh)
-    second = structure_observations(fresh, arrow)
+    second = structure_observations(fresh, arrow, allow_unanchored)
     candidates = stable_structures(first, second)
     session.record_evidence('structure_probe', fresh, objects=second, candidates=candidates,
                             arrays=dict(field=fresh), inputs=runner.structure_inputs, pans=runner.structure_pans)
     session.preview(fresh)
-    if arrow is None:
+    if arrow is None and not allow_unanchored:
         raise StructureUnconfirmed('目标受阻，设施恢复未确认画面内小队位置；已保留原图，停止探索。')
-    ground = np.asarray(arrow) + [0., goto.ARROW_GROUND_OFFSET]
+    ground = None if arrow is None else np.asarray(arrow) + [0., goto.ARROW_GROUND_OFFSET]
+    if ground is None and (len(candidates) != 1 or candidates[0]['kind'] != 'elevator'):
+        raise StructureUnconfirmed('缺少小队锚点且未得到两帧唯一高分平台，停止恢复，不发送镜头或走位。')
     # 邻近平台仍可能需要主动踏上或交互，不能以100px近距推定已经操作；距离只用于排序。
-    candidates = [item for item in candidates
-                  if np.linalg.norm(np.asarray(item['position']) - ground) <= 1000.]
+    if ground is not None:
+        candidates = [item for item in candidates
+                      if np.linalg.norm(np.asarray(item['position']) - ground) <= 1000.]
     if candidates and runner.structure_inputs < 2:
-        target = min(candidates, key=lambda item: (
-            item['kind'] != 'ground_mechanism', np.linalg.norm(np.asarray(item['position']) - ground)))
+        target = (candidates[0] if ground is None else min(candidates, key=lambda item: (
+            item['kind'] != 'ground_mechanism', np.linalg.norm(np.asarray(item['position']) - ground))))
         session.begin_target('structure_attempt')
-        session.record_evidence('structure_attempt', fresh, target=target, arrays=dict(field=fresh))
+        session.record_evidence('structure_attempt', fresh, target=target, arrays=dict(field=fresh),
+                                squad_anchor='unobserved' if ground is None else 'arrow_ground')
         runner.structure_inputs += 1
         logger.info(f"尝试可见设施：{target['kind']}／{target['state']}，位置 {target['position']}；"
                     '交互结果保持未确认，下一步重新扫描实际道路和敌人。')
@@ -150,6 +157,8 @@ def recover_visible_structure(runner, field):
         runner.guided_quests.discard(runner.quest)
         runner.marker_pans = 0
         return 'attempted'
+    if ground is None:
+        raise StructureUnconfirmed('无小队锚点的设施交互预算已用尽，停止恢复，不发送镜头动作。')
     if runner.structure_pans < 4:
         directions = ((-360., 0.), (0., -240.), (360., 0.), (0., 240.))
         drag = np.asarray(directions[runner.structure_pans])

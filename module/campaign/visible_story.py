@@ -438,6 +438,12 @@ class VisibleStoryRunner:
             return False
         arrow = squad_arrow(fresh)
         if arrow is None and squad_offscreen(fresh) is None:
+            if self.quest is not None and self.quest not in self.owner.story_wins:
+                from module.campaign.structures import recover_visible_structure
+                self.session.record_evidence('marker_camera_unanchored', fresh, marker=marker,
+                                             arrays=dict(field=fresh))
+                recover_visible_structure(self, fresh, allow_unanchored=True)
+                return True
             return False
         ground = None if arrow is None else np.asarray(arrow) + [0., goto.ARROW_GROUND_OFFSET]
         drag *= min(1., 480. / length)

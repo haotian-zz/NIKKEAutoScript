@@ -29,6 +29,9 @@ class StructureTests(unittest.TestCase):
         patcher = patch.object(structure, 'nearby_platforms', return_value=[])
         patcher.start()
         self.addCleanup(patcher.stop)
+        patcher = patch.object(structure, 'visible_platforms', return_value=[])
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def test_only_unactivated_switch_or_full_high_confidence_platform_is_actionable(self):
         """开启机关、低分、底栏和截断框不得变成新落点。"""
@@ -86,6 +89,36 @@ class StructureTests(unittest.TestCase):
         self.runner.session.tap.assert_called_once_with(near['position'])
         self.runner.guided_quests.discard.assert_called_once()
         self.assertEqual(self.runner.marker_pans, 0)
+
+    def test_explicit_unanchored_recovery_clicks_one_confirmed_platform_without_pan(self):
+        """稳定任务标记可请求原生点击唯一平台，缺小队锚点仍不发送镜头或认领传送。"""
+        target = fixture()
+        with patch.object(structure, 'detect_objects', return_value=[target]), \
+                patch.object(structure, 'squad_arrow', return_value=None), \
+                patch.object(structure.goto, 'battle_popup_score', return_value=0.), \
+                patch.object(structure, 'wait_structure_settle', return_value=self.field), \
+                patch.object(structure, 'pan_scene') as pan:
+            self.assertEqual(structure.recover_visible_structure(
+                self.runner, self.field, allow_unanchored=True), 'attempted')
+        self.runner.session.tap.assert_called_once_with(target['position'])
+        pan.assert_not_called()
+        self.runner.memory.victory.assert_not_called()
+        attempts = [call for call in self.runner.session.record_evidence.call_args_list
+                    if call.args[0] == 'structure_attempt']
+        self.assertEqual(attempts[0].kwargs['squad_anchor'], 'unobserved')
+
+    def test_unanchored_ambiguity_or_spent_budget_never_sends_input(self):
+        """无锚点时多设施和已耗尽的两次输入均不得退化为猜距离或拖镜头。"""
+        for objects, spent in (([fixture(), fixture(position=(650., 500.))], 0), ([fixture()], 2)):
+            self.runner.structure_inputs = spent
+            with patch.object(structure, 'detect_objects', return_value=objects), \
+                    patch.object(structure, 'squad_arrow', return_value=None), \
+                    patch.object(structure.goto, 'battle_popup_score', return_value=0.), \
+                    patch.object(structure, 'pan_scene') as pan:
+                with self.assertRaises(structure.StructureUnconfirmed):
+                    structure.recover_visible_structure(self.runner, self.field, allow_unanchored=True)
+            self.runner.session.tap.assert_not_called()
+            pan.assert_not_called()
 
     def test_exhausted_budget_stops_and_does_not_click_again(self):
         """两次设施和四次视角均已用完时，明确停止而不继续同一设施。"""

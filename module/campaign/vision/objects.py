@@ -103,6 +103,37 @@ def nearby_platforms(image, ground):
     return [dict(described(item, 'client'), view='squad_local_400') for item in suppress(found)]
 
 
+def visible_platforms(image):
+    """缺少小队锚点时以400px网格补查平台，不生成小队位置或推断平台可达。
+
+    仅供稳定任务标记下、无法安全拖镜头的有界恢复。15片覆盖正式客户区；最多把两个
+    最高分提案重新居中补查，匹配框IoU须≥0.5。保留原类别阈值，输入前仍须两帧同状态
+    且≥0.9、唯一可交互平台；不能把提案存在当作允许点击或传送成功。
+    """
+    if image.shape != (999, 1776, 3) or image.dtype != np.uint8:
+        raise ValueError('无小队锚点的平台补查要求1776×999 uint8客户区。')
+    from module.campaign.vision.enemy_ring import clickable_ring
+    model, found = detector(), []
+    labels = ('scene_elevator_start', 'scene_elevator_end')
+    for top in (0, 300, 599):
+        for left in (0, 344, 688, 1032, 1376):
+            for item in model.predict(image[top:top+400, left:left+400], labels):
+                shifted = Detection(item.label, item.confidence, tuple(np.asarray(item.box)+[left, top, left, top]))
+                if clickable_ring(shifted.box):
+                    found.append(shifted)
+    proposals = sorted(suppress(found), key=lambda item: item.confidence, reverse=True)
+    for proposal in proposals[:2]:
+        left, top = np.clip(np.rint(proposal.center-200), (0, 0), (1376, 599)).astype(int)
+        for item in model.predict(image[top:top+400, left:left+400], labels):
+            shifted = Detection(item.label, item.confidence, tuple(np.asarray(item.box)+[left, top, left, top]))
+            a, b = np.asarray(proposal.box), np.asarray(shifted.box)
+            intersection = np.maximum(0., np.minimum(a[2:], b[2:])-np.maximum(a[:2], b[:2])).prod()
+            union = np.prod(a[2:]-a[:2])+np.prod(b[2:]-b[:2])-intersection
+            if intersection/max(1., union) >= .5 and clickable_ring(shifted.box):
+                found.append(shifted)
+    return [dict(described(item, 'client'), view='scene_platform_400') for item in suppress(found)]
+
+
 def detect_minimap_objects(panel, kinds=None):
     """小地图面板里的小队圆环与敌人标记，坐标为面板像素。
 

@@ -6,7 +6,7 @@ from unittest.mock import Mock, patch
 import numpy as np
 
 from module.campaign.vision.detection import Detection
-from module.campaign.vision.objects import nearby_platforms
+from module.campaign.vision.objects import nearby_platforms, visible_platforms
 
 
 class NearbyPlatformTests(unittest.TestCase):
@@ -26,6 +26,20 @@ class NearbyPlatformTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 nearby_platforms(field, [float('nan'), 400.])
             detector.predict.assert_not_called()
+
+    def test_recenter_never_promotes_a_different_platform(self):
+        """全屏弱提案补查遇到另一个高分平台时，不能把其分数移植给原目标。"""
+        field = np.zeros((999, 1776, 3), np.uint8)
+        detector = Mock()
+        weak = Detection('scene_elevator_start', .88, (260., 300., 350., 380.))
+        different = Detection('scene_elevator_start', .99, (300., 200., 380., 280.))
+        detector.predict.side_effect = [[weak]] + [[] for _ in range(14)] + [[different]]
+        with patch('module.campaign.vision.objects.detector', return_value=detector):
+            found = visible_platforms(field)
+        self.assertEqual(detector.predict.call_count, 16)
+        self.assertEqual(len(found), 1)
+        self.assertEqual(found[0]['confidence'], .88)
+        self.assertEqual(found[0]['box'], [260., 300., 350., 380.])
 
 
 if __name__ == '__main__':
