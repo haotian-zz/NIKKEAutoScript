@@ -82,6 +82,17 @@ class VisibleStoryTests(unittest.TestCase):
             reader.paddleocr.recognize.return_value = [dict(rec_text=text, rec_score=score)]
             self.assertIsNone(self.ns['read_stage'](self.field, reader, quest=True))
 
+    def test_portrait_quest_line_excludes_secondary_event_and_keeps_score_gate(self):
+        """大厅使用独立单行区域；低分或无白字仍拒绝，不把活动任务混入主线。"""
+        field = np.zeros((1280, 720, 3), np.uint8)
+        cv2.putText(field, 'CLEAR 21-1', (452, 136), cv2.FONT_HERSHEY_SIMPLEX,
+                    .5, (255, 255, 255), 1)
+        reader = Mock()
+        reader.paddleocr.recognize.return_value = [dict(rec_text='通关【21-1]', rec_score=.914)]
+        self.assertEqual(self.ns['read_quest_text'](field, reader), '通关【21-1]')
+        reader.paddleocr.recognize.return_value = [dict(rec_text='通关【21-1]', rec_score=.899)]
+        self.assertIsNone(self.ns['read_quest_text'](field, reader))
+
     def test_entry_title_requires_complete_anchor_and_preserves_branches(self):
         """Boss标签不当分支B，普通分支仍保留全号，EX/残缺/多编号均拒绝。"""
         parse = self.ns['parse_entry_title']

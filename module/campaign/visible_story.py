@@ -22,6 +22,7 @@ from module.campaign.navigation.camera_navigation import pan_scene
 from module.logger import logger
 
 QUEST_AREA = (1565, 88, 1710, 114)
+LOBBY_QUEST_AREA = (445, 108, 657, 147)
 ENTRY_AREA = (570, 465, 1195, 625)
 ENTRY_TITLE_AREA = (620, 535, 970, 580)
 ENTRY_WAIT_SECONDS = 20.
@@ -113,13 +114,18 @@ def read_stage(field, reader, quest=False):
 
 
 def read_quest_text(field, reader):
-    """读取完整固定主线任务行，保留0.9分门槛；不把返回大厅等非战斗指令丢成空编号。
+    """读取固定主线任务行，保留0.9分门槛；兼容1776×999地图和720×1280大厅。
 
     返回高分原文或None；任务类型由调用方独立解析，不从当前章节或已胜关卡补全。
+    两种已知布局分别裁单行，避开图标和第二条活动任务；其他尺寸直接拒绝。
     """
-    if field.shape != (999, 1776, 3):
-        raise ValueError('主线任务核对需要1776×999 BGR客户区。')
-    x1, y1, x2, y2 = QUEST_AREA
+    if field.shape == (999, 1776, 3):
+        area = QUEST_AREA
+    elif field.shape == (1280, 720, 3):
+        area = LOBBY_QUEST_AREA
+    else:
+        raise ValueError('主线任务核对需要1776×999或720×1280客户区。')
+    x1, y1, x2, y2 = area
     crop = field[y1:y2, x1:x2]
     hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
     ys, xs = np.nonzero((hsv[:, :, 1] < 90) & (hsv[:, :, 2] > 150))

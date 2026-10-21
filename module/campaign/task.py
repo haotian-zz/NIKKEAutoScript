@@ -1,5 +1,6 @@
 """独立推图任务：选择章节、进入主线并将实际结果写入简报。"""
 import re
+import time
 
 import cv2
 import psutil
@@ -14,6 +15,7 @@ from module.campaign.vision import battle
 from module.campaign.vision.chapter import chapter_identity
 from module.campaign.vision.chapter_completion import overlay_anchor
 from module.campaign.window import CampaignWindow
+from module.campaign.visible_story import read_quest_text
 from module.exception import GameStuckError, RequestHumanTakeover
 from module.execution.context import report
 from module.logger import logger
@@ -39,14 +41,37 @@ class AutoPush(UI):
     def quest_stage(self):
         """从竖屏主线读取具体关卡，并独立保留已核对的非数字前往地面出击指令。
 
-        OCR仅保留0.9以上文字；出击须为完整指令，不将其虚构成下一关编号。
+        固定单行识别优先，低分保留旧大区域OCR；两者均只保留0.9以上文字。
+        出击须为完整指令，不将其虚构成下一关编号。
         """
-        text = Ocr((390, 65, 710, 185), name='CAMPAIGN_MAIN_QUEST',
-                   model_type=self.config.Optimization_OcrModelType).ocr(self.device.image, threshold=.9)['text']
+        reader = Ocr((390, 65, 710, 185), name='CAMPAIGN_MAIN_QUEST',
+                     model_type=self.config.Optimization_OcrModelType)
+        text = read_quest_text(self.device.image, reader)
+        if text is None:
+            text = reader.ocr(self.device.image, threshold=.9)['text']
         self.lobby_sortie_instruction = bool(re.fullmatch(r'前往地面(?:【出[击擊]】|\[出[击擊]\])',
                                                          re.sub(r'\s+', '', text)))
         match = re.search(r'(?:通关|CLEAR).*?([1-9]\d?)\s*[-－]\s*([1-9]\d?)', text, re.I)
         return tuple(map(int, match.groups())) if match else None
+
+    def confirm_lobby_quest(self):
+        """大厅首次显示可能尚在淡入，四秒内等待两帧相同有效任务，不以空OCR立即终止。
+
+        每帧重核大厅锚点，数字任务与完整出击指令分别比较；没有确认时不发送入口点击。
+        """
+        deadline, previous = time.monotonic() + 4., None
+        while time.monotonic() < deadline:
+            self.device.screenshot()
+            if not self.appear(MAIN_CHECK, offset=30):
+                return None
+            current = self.quest_stage()
+            sortie = getattr(self, 'lobby_sortie_instruction', False)
+            identity = ('sortie',) if sortie else current
+            if identity is not None and identity == previous:
+                return current, sortie
+            previous = identity
+            self.device.sleep(.3)
+        return None
 
     def recover_settlement(self):
         """继续上次中断后遗留的竖屏结算，不将旧胜利计入本次推图。
@@ -79,12 +104,11 @@ class AutoPush(UI):
         self.recover_settlement()
         self.device.screenshot()
         self.ui_ensure(page_main)
-        self.device.screenshot()
-        current = self.quest_stage()
-        sortie = getattr(self, 'lobby_sortie_instruction', False)
-        if current is None and not sortie:
+        entry = self.confirm_lobby_quest()
+        if entry is None:
             report('blocked', '无法确认当前主线任务引导', '请确认主线任务引导可见后重试，已保存当前画面')
             return False
+        current, sortie = entry
         self.entry_stage = current
         point = (674, 126)
         if sortie:

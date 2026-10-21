@@ -23,6 +23,7 @@ def load(name, **namespace):
     node.decorator_list = []
     namespace.setdefault('pending_chapter', Mock(return_value=None))
     namespace.setdefault('psutil', SimpleNamespace(virtual_memory=lambda: SimpleNamespace(available=8*1024**3)))
+    namespace.setdefault('read_quest_text', Mock(return_value=None))
     exec(compile(ast.Module(body=[node], type_ignores=[]), name, 'exec'), namespace)
     return namespace[name]
 
@@ -359,6 +360,29 @@ class CampaignStartTests(unittest.TestCase):
             fn = load('quest_stage', re=re, Ocr=ocr)
             runner = SimpleNamespace(config=SimpleNamespace(Optimization_OcrModelType='mobile'), device=Mock())
             self.assertEqual(fn(runner), expected)
+
+    def test_lobby_fade_waits_for_matching_fresh_quest_frames(self):
+        """首帧空OCR和变化中的任务都不能直接触发入口，须等两次相同有效任务。"""
+        clock = Mock(side_effect=[0., .1, .5, .9, 1.3])
+        fn = load('confirm_lobby_quest', time=SimpleNamespace(monotonic=clock), MAIN_CHECK=object())
+        runner = SimpleNamespace(device=Mock(), appear=Mock(return_value=True),
+                                 quest_stage=Mock(side_effect=[None, (20, 31), (21, 1), (21, 1)]),
+                                 lobby_sortie_instruction=False)
+        self.assertEqual(fn(runner), ((21, 1), False))
+        self.assertEqual(runner.device.screenshot.call_count, 4)
+        runner.device.click_xy.assert_not_called()
+        runner.appear.return_value = False
+        clock.side_effect = [0., .1]
+        self.assertIsNone(fn(runner))
+
+    def test_fixed_lobby_line_avoids_empty_broad_detection(self):
+        """固定单行高分可读取有效主线时，无需再次调用会受淡入干扰的大区域文字检测。"""
+        reader = Mock()
+        fn = load('quest_stage', re=re, Ocr=Mock(return_value=reader),
+                  read_quest_text=Mock(return_value='通关【21-1]'))
+        runner = SimpleNamespace(config=SimpleNamespace(Optimization_OcrModelType='mobile'), device=Mock())
+        self.assertEqual(fn(runner), (21, 1))
+        reader.ocr.assert_not_called()
 
     def test_sortie_instruction_is_distinct_from_a_numbered_stage(self):
         """完整出击指令独立保存，活动或残缺文字不得虚构下一关，也不接受弱分文本。"""
