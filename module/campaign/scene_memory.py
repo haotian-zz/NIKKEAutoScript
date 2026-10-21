@@ -10,13 +10,20 @@ from module.campaign.vision.detection import detect_grid
 from module.campaign.vision.enemy_ring import HUD_RECTS, RING_CONFIDENCE, RingFrame, clickable_ring, scene_tracks
 
 
-def ring_frame(field):
+def ring_frame(field, reader=None):
     """提取当前客户区的可点击脚圈及静态背景特征；不依赖章节底图或小地图定位。
 
     排除 HUD 和敌人动画区域后提取 SIFT，后续只用通过几何检验的双帧关联继承观察 ID。
     """
     rings = [item for item in detect_grid(field, ('scene_enemy_ring',))
              if item.confidence >= RING_CONFIDENCE and clickable_ring(item.box)]
+    ex_rings = []
+    if reader is not None:
+        from module.campaign.vision.ex_ring import scene_ex_rings
+        ex_rings = scene_ex_rings(field, reader)
+        for item in ex_rings:
+            if not any(np.linalg.norm(np.asarray(item.center) - known.center) < 20. for known in rings):
+                rings.append(item)
     centers = np.asarray([item.center for item in rings], float).reshape(-1, 2)
     mask = np.full(field.shape[:2], 255, np.uint8)
     for left, top, right, bottom in HUD_RECTS:
@@ -25,7 +32,9 @@ def ring_frame(field):
         cv2.rectangle(mask, (x - 65, max(0, y - 140)), (x + 65, y + 35), 0, -1)
     keys, descriptors = cv2.SIFT_create(nfeatures=4000).detectAndCompute(
         cv2.cvtColor(field, cv2.COLOR_BGR2GRAY), mask)
-    return RingFrame(centers, np.asarray([key.pt for key in keys]), descriptors, np.zeros(2), [], [])
+    kinds = tuple('ex' if any(np.linalg.norm(point - ex.center) < 20. for ex in ex_rings) else 'unknown'
+                  for point in centers)
+    return RingFrame(centers, np.asarray([key.pt for key in keys]), descriptors, np.zeros(2), [], [], kinds)
 
 
 class SceneEnemyMemory:
@@ -35,15 +44,15 @@ class SceneEnemyMemory:
     所有点击仍由当前两帧可见红圈提供。最多保留 512 条观察，每个敌人保留最近八次位置。
     """
 
-    def __init__(self, path):
+    def __init__(self, path, reader=None):
         """每次任务建立独立观察簿；历史文件仅供复盘，不作为新会话的定位先验。"""
-        self.path = path
+        self.path, self.reader = path, reader
         self.previous, self.ids, self.records, self.sequence = None, [], {}, 0
         self.wins = []
 
-    def observe(self, field):
+    def observe(self, field, frame=None):
         """扫描全部可见脚圈并更新轨迹；几何跟踪不可信时创建新观察，不沿用旧坐标。"""
-        current = ring_frame(field)
+        current = ring_frame(field, self.reader) if frame is None else frame
         links = {}
         if self.previous is not None and len(self.previous.centers) and len(current.centers):
             try:
@@ -61,6 +70,10 @@ class SceneEnemyMemory:
                 identifier = f'ring-{self.sequence}-{index}'
                 self.records[identifier] = dict(id=identifier, stage=None, status='pending', positions=[])
             record = self.records[identifier]
+            kinds = getattr(current, 'kinds', ())
+            kind = kinds[index] if len(kinds) == len(current.centers) else 'unknown'
+            if kind != 'unknown' or 'kind' not in record:
+                record['kind'] = kind
             record['positions'] = (record['positions'] + [dict(frame=self.sequence, point=point.tolist())])[-8:]
             record['seen_at'] = time.time()
             ids.append(identifier)

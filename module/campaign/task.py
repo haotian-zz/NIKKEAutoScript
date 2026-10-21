@@ -6,6 +6,7 @@ import cv2
 from module.base.timer import Timer
 from module.base.watchdog import WaitGuard, save_wait_image
 from module.campaign.campaign import Campaign
+from module.campaign.clearance import pending_chapter
 from module.campaign.report import GOAL_REASONS
 from module.campaign.vision.chapter import chapter_identity
 from module.exception import GameStuckError, RequestHumanTakeover
@@ -170,7 +171,7 @@ class AutoPush(UI):
             if mode not in ('single', 'continuous'):
                 raise ValueError('请选择单轮推图或持续推图')
             continuous = mode == 'continuous'
-            target = None if continuous else chapter_number(self.config.CampaignMap_Chapter)
+            target = pending_chapter(self.config) if continuous else chapter_number(self.config.CampaignMap_Chapter)
         except ValueError as exc:
             report('blocked', '推图设置无效', str(exc))
             self.config.task_delay(schedule=True)
@@ -207,6 +208,8 @@ class AutoPush(UI):
                     if total_cleared:
                         report('partial', f'本轮已确认清除 {total_cleared} 个敌人，章节入口需要处理')
                     return
+                if continuous:
+                    target = None
                 segment += 1
                 logger.info(f'推图第 {segment} 段开始；模式 {mode}，累计确认清除 {total_cleared} 个敌人')
                 error = None
@@ -228,6 +231,9 @@ class AutoPush(UI):
                           'collectible_indicator': '遇到收集品提示，需要处理后继续'}.get(
                     code, GOAL_REASONS.get(code) or detail
                     or '请查看日志与截图，确认当前地图、道路或战斗状态')
+                if code == 'chapter_cleared':
+                    report('success', f'本章清怪巡检完成，本轮确认清除 {total_cleared} 个敌人', reason)
+                    return
                 if continuous and code in ('tick_budget', 'segment_timeout') and cleared:
                     logger.info(f'{reason}，本段确认清除 {cleared} 个敌人，继续当前主线进度')
                     self.renew_progress_guard()

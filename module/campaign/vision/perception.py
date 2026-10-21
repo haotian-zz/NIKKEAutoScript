@@ -6,7 +6,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from module.campaign.vision.detection import detect_minimap, detect_scene
+from module.campaign.vision.detection import detect_grid, detect_minimap, detect_scene
 from module.campaign.vision.minimap import terrain
 
 
@@ -71,11 +71,17 @@ def squad_arrow(image):
     """客户区里小队箭头的精确中心；不是恰好一个可信箭头时返回 None。
 
     要求精定位后只剩一个结果：出现多个说明画面里有别的相似符号，这时无法确定哪个是小队，
-    继续用会把移动指令发到错误位置。
+    继续用会把移动指令发到错误位置。旧切片没有可信结果时，用全画面网格补查真实场景，
+    避免右侧固定遮罩截断完整箭头；补查仍须同一模板精定位并排除 HUD。
     """
     candidates = [item for item in detect_scene(image) if item.label == 'scene_squad_arrow']
     centers = [refine_arrow(image, item) for item in candidates]
     centers = [center for center in centers if center is not None]
+    if not centers:
+        from module.campaign.vision.enemy_ring import clickable_ring
+        candidates = [item for item in detect_grid(image, ('scene_squad_arrow',)) if clickable_ring(item.box)]
+        centers = [refine_arrow(image, item) for item in candidates]
+        centers = [center for center in centers if center is not None]
     if len(centers) != 1:
         return None
     return centers[0]

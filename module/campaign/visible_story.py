@@ -11,13 +11,19 @@ from module.campaign.navigation.movement_feedback import TargetTriggered
 from module.campaign.vision import battle
 from module.campaign.vision.chapter import chapter_identity
 from module.campaign.scene_memory import SceneEnemyMemory, stable_candidates
+from module.campaign.clearance import ClearanceJournal
+from module.campaign.sweep import ChapterSweep, SweepUnconfirmed
 from module.campaign.vision.perception import squad_arrow
+from module.campaign.vision.offscreen import squad_offscreen
+from module.campaign.vision.story_marker import story_markers
+from module.campaign.navigation.camera_navigation import pan_scene
 from module.logger import logger
 
 QUEST_AREA = (1565, 88, 1710, 114)
 ENTRY_AREA = (570, 465, 1195, 625)
 ENTRY_WAIT_SECONDS = 20.
 ENTRY_READ_SECONDS = 10.
+QUEST_JUMP_AREA = (1726, 80, 1769, 119)
 
 
 class StoryVerificationError(RuntimeError):
@@ -53,6 +59,8 @@ def parse_stage(text, quest=False):
 
 def stage_text(stage):
     """按游戏显示格式输出完整身份；普通关卡和字母分支不共享一个简写。"""
+    if len(stage) == 4 and stage[2] == 'EX':
+        return f'{stage[0]}-EX#{stage[3]}'
     base = f'{stage[0]}-{stage[1]}'
     return base if len(stage) == 2 else f'{base}{stage[2]}-{stage[3]}'
 
@@ -88,6 +96,45 @@ def read_stage(field, reader, quest=False):
     return parse_stage(text, quest=True) if np.isfinite(score) and score >= .9 else None
 
 
+def read_ex_entry(field, reader):
+    """EX 备战同时核对独立标题模板与完整 OCR 标题，不凭共有 STAGE 字样认领 EX。
+
+    EX 标题没有普通数字关卡身份，调用方只记录当前章及内部遇敌序号，不虚构游戏编号。
+    """
+    if not battle.ex_stage(field):
+        return False
+    x1, y1, x2, y2 = ENTRY_AREA
+    crop = cv2.resize(field[y1:y2, x1:x2], None, fx=2, fy=2)
+    text = reader.ocr(crop, direct_ocr=True, threshold=.9)['text']
+    return bool(re.search(r'(?<![A-Z])EX\s*STAGE(?![A-Z])', text, re.I))
+
+
+def quest_jump_point(field):
+    """在主线任务行右侧核对蓝底白色右箭头；仅返回实测控件中心，不提供固定落点兜底。
+
+    客户区固定为1776×999；白色连通块须为8～26px右箭头，归一化轮廓与通用几何交并比至少0.75。
+    调用方还须连续核对当前主线文字；本控件只用于请求游戏定位任务，不能证明目标身份或清怪完成。
+    """
+    x1, y1, x2, y2 = QUEST_JUMP_AREA
+    hsv = cv2.cvtColor(field[y1:y2, x1:x2], cv2.COLOR_BGR2HSV)
+    if np.mean(cv2.inRange(hsv, (85, 100, 100), (118, 255, 255)) > 0) < .25:
+        return None
+    white = cv2.inRange(hsv, (0, 0, 210), (179, 80, 255))
+    template = np.zeros((32, 32), np.uint8)
+    cv2.fillPoly(template, [np.array([[0, 8], [15, 8], [15, 0], [31, 15],
+                                     [15, 31], [15, 23], [0, 23]])], 255)
+    contours, _ = cv2.findContours(white, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    points = []
+    for contour in contours:
+        x, y, width, height = cv2.boundingRect(contour)
+        if not (8 <= width <= 26 and 8 <= height <= 26):
+            continue
+        glyph = cv2.resize(white[y:y + height, x:x + width], (32, 32), interpolation=cv2.INTER_NEAREST)
+        if np.logical_and(glyph, template).sum() / max(1, np.logical_or(glyph, template).sum()) >= .75:
+            points.append((x1 + x + width / 2, y1 + y + height / 2))
+    return points[0] if len(points) == 1 else None
+
+
 class EntryStageGuard:
     """在实际开战前连续核对两帧备战关卡；错误或十秒仍读不清时关闭弹窗并停止。"""
 
@@ -101,7 +148,11 @@ class EntryStageGuard:
         """仅对连续正确两帧放行；关闭路径显式跳过关卡校验，避免递归。"""
         if self.started is None:
             self.started = time.monotonic()
-        current = read_stage(field, self.reader)
+        is_ex = len(self.stage) == 4 and self.stage[2] == 'EX'
+        if is_ex:
+            current = self.stage if read_ex_entry(field, self.reader) else None
+        else:
+            current = read_stage(field, self.reader)
         self.session.record_evidence('story_entry', field, expected=self.stage, actual=current)
         self.stable = self.stable + 1 if current is not None and current == self.previous else int(current is not None)
         self.previous = current
@@ -118,14 +169,21 @@ class EntryStageGuard:
 
 
 class VisibleStoryRunner:
-    """扫描可见敌人、记录位置与实际遇敌身份；胜利后留在地图继续，困难道路才交导航。"""
+    """扫描全部敌人并核对实际遇敌身份；胜利后留在地图继续，换章前必须完成清怪巡检。"""
 
     def __init__(self, owner, session, executor):
         """观察簿绑定当前执行的证据目录，隔离实例及历史截图；不跨账号复用胜利或旧坐标。"""
         self.owner, self.session, self.executor = owner, session, executor
-        self.memory = SceneEnemyMemory(session.evidence.folder / 'scene-enemies.json')
+        self.session.accept_ex_entry = True
+        self.memory = SceneEnemyMemory(session.evidence.folder / 'scene-enemies.json', owner.chapter_ocr)
         self.deferred = set()
         self.quest = None
+        self.ex_sequence = 0
+        self.manual_ex_seen = False
+        self.guided_quests = set()
+        self.marker_pans = 0
+        self.journal = ClearanceJournal(owner.config.config_name)
+        self.journal.begin(owner.current_chapter)
 
     def map_frame(self, timeout=30.):
         """等待地图或备战弹窗，剧情出现即跳过；不在加载或未知画面发送地图落点。
@@ -187,19 +245,21 @@ class VisibleStoryRunner:
     def inspect_entry(self):
         """连续两帧读取实际遇敌完整编号；不假设它就是被点击的敌人。
 
-        可接管当前章节普通及字母分支；EX 仅关闭。十秒仍读不清就停止，不凭任务栏猜编号。
+        当前章节普通、字母分支及 EX 均可识别；EX 记录内部遇敌序号，不虚构数字关卡号。
         """
         deadline = time.monotonic() + ENTRY_READ_SECONDS
         previous = None
+        self.ex_sequence += 1
+        ex_identity = (self.owner.current_chapter, 0, 'EX', self.ex_sequence)
         while time.monotonic() < deadline:
             self.session.check()
             field = self.session.win.client()
             if goto.battle_popup_score(field) <= .8:
                 raise StoryVerificationError('核对关卡时备战弹窗消失，未开始战斗。')
             if battle.ex_stage(field):
-                self.close_entry()
-                return None
-            current = read_stage(field, self.owner.chapter_ocr)
+                current = ex_identity if read_ex_entry(field, self.owner.chapter_ocr) else None
+            else:
+                current = read_stage(field, self.owner.chapter_ocr)
             self.session.record_evidence('scene_entry', field, actual=current, quest=self.quest)
             if current is not None and current == previous:
                 return current
@@ -209,23 +269,26 @@ class VisibleStoryRunner:
         raise StoryVerificationError('备战关卡十秒内未能连续核对，已关闭并停止，未开始战斗。')
 
     def fight_entry(self, target=None):
-        """按实际遇敌身份接管战斗；已胜利、未来编号或其他章节只关闭，不消耗再次挑战。
+        """按实际遇敌身份接管普通及分支；EX 保留待清，已确认胜利或其他章节只关闭。
 
         字母分支属于当前章节清怪范围。一次点击可能在途中触发其他敌人，因此观察簿记录的是
         encountered_on_route 关系；不会把被点击的远端敌人直接标成已清除。
         """
         stage = self.inspect_entry()
         identifier = None if target is None else target['id']
-        if stage is None:
-            self.memory.identify(identifier, None, 'ex_skipped')
-            return False
         if stage[0] != self.owner.current_chapter:
             self.close_entry()
             raise StoryVerificationError(f'备战属于其他章节 {stage_text(stage)}，已关闭并停止。')
-        if stage in self.owner.story_wins or (self.quest is not None and stage[1] > self.quest[1]):
+        if len(stage) == 4 and stage[2] == 'EX':
+            self.manual_ex_seen = True
+            self.memory.identify(identifier, stage, 'manual_required')
+            self.close_entry()
+            logger.info('EX 需要手动瞄准及爆裂控制，已关闭备战并保留未完成，继续普通／分支清怪。')
+            return False
+        if stage in self.owner.story_wins:
             self.memory.identify(identifier, stage, 'deferred')
             self.close_entry()
-            logger.info(f'已关闭备战 {stage_text(stage)}：本次已确认胜利或编号超过当前任务，继续扫描其他敌人。')
+            logger.info(f'已关闭备战 {stage_text(stage)}：本次已确认胜利，继续扫描其他敌人。')
             return False
         self.memory.identify(identifier, stage, 'encountered_on_route')
         goal = dict(kind='story', id='story-' + stage_text(stage), stage=list(stage))
@@ -242,6 +305,7 @@ class VisibleStoryRunner:
             guard.progress()
         logger.info(f'地图战斗已确认胜利：{stage_text(stage)}；留在地图继续扫描，不要求每次胜利都改变任务栏。')
         self.deferred.clear()
+        self.marker_pans = 0
         return True
 
     def scan(self, field):
@@ -252,17 +316,151 @@ class VisibleStoryRunner:
         if goto.battle_popup_score(fresh) > .8:
             return fresh, []
         second = self.memory.observe(fresh)
-        self.session.record_evidence('scene_scan', fresh, quest=self.quest, enemies=second)
+        arrays = dict(field=fresh) if not any(item.get('kind') != 'ex' for item in second) else None
+        self.session.record_evidence('scene_scan', fresh, quest=self.quest, enemies=second, arrays=arrays)
         return fresh, stable_candidates(first, second)
 
+    def selectable(self, item):
+        """过滤本轮暂不可达和需手动战斗的 EX；被过滤目标仍保留在巡检与观察簿中。
+
+        EX 只凭高分完整字样和脚圈分类；未知类型仍通过实际备战核对，不能当作普通关卡直接开战。
+        """
+        if item.get('kind') == 'ex':
+            if not self.manual_ex_seen:
+                logger.info('发现 EX 待清目标：当前不支持手动战斗，保留未完成并优先清理普通／分支。')
+            self.manual_ex_seen = True
+            return False
+        return (item['id'] not in self.deferred
+                and item['status'] not in ('deferred', 'ex_skipped', 'unreachable', 'manual_required'))
+
+    def guide_quest(self, field):
+        """无可选普通怪时，最多一次请求游戏定位当前任务，再从新帧扫描而不猜测敌人坐标。
+
+        同一完整任务号只尝试一次；两帧任务身份和右箭头都须一致。定位之后旧相机关联作废，
+        若途中遭遇其他怪，主循环仍核对实际备战编号；此操作不替代本章末尾的清怪巡检。
+        """
+        if (self.quest is None or self.quest[0] != self.owner.current_chapter
+                or self.quest in self.guided_quests or self.quest in self.owner.story_wins):
+            return False
+        self.guided_quests.add(self.quest)
+        point = quest_jump_point(field)
+        if point is None:
+            return False
+        self.session.pause(.25)
+        fresh = self.map_frame()
+        if goto.battle_popup_score(fresh) > .8:
+            return True
+        current = read_stage(fresh, self.owner.chapter_ocr, quest=True)
+        confirmed = quest_jump_point(fresh)
+        if current != self.quest or confirmed is None or np.linalg.norm(np.asarray(point) - confirmed) > 5.:
+            return False
+        self.session.begin_target('quest_guide')
+        self.session.record_evidence('quest_guide', fresh, quest=self.quest, control=confirmed)
+        self.memory.previous = None
+        try:
+            if not self.session.tap(confirmed, interval=2.):
+                return False
+        except TargetTriggered:
+            return True
+        logger.info(f'已请求游戏定位主线任务 {stage_text(self.quest)}，下一步重新扫描全部普通／分支红圈。')
+        self.session.pause(1.5)
+        return True
+
+    def reveal_marked_area(self, field):
+        """用稳定的场内／离屏菱形露出目标区域，不把屏幕标记当作地面落点或敌人身份。
+
+        同一战斗间隔最多四次，拖动不超过480px。场内／离屏分类会随指针动画变化，
+        最多六帧内两次同位置识别才用于找镜头方向，不直接点击。小队精定位或离屏标记须明确，
+        实际相机手势继续经过现有按下点避让；操作后必须重新扫描脚圈并核对真实备战。
+        """
+        if self.marker_pans >= 4:
+            return False
+        previous, observations, marker = [], [], None
+        fresh = field
+        for index in range(6):
+            if index:
+                self.session.pause(.25)
+                fresh = self.map_frame()
+                if goto.battle_popup_score(fresh) > .8:
+                    return True
+            observed = story_markers(fresh)
+            observations.append(observed)
+            markers = [item for item in observed if item['kind'] in ('scene', 'edge', 'cue')]
+            confirmed = [item for item in markers if sum(
+                np.linalg.norm(np.asarray(item['position']) - old['position']) <= 10. for old in previous) == 1]
+            if confirmed:
+                marker = max(confirmed, key=lambda item: item['confidence'])
+                break
+            if markers:
+                previous = markers
+        self.session.record_evidence('marker_probe', fresh, observations=observations, attempts=self.marker_pans,
+                                     arrays=dict(field=fresh))
+        logger.info(f'任务标记观测：{observations}。')
+        if marker is None:
+            return False
+        target = np.asarray(marker['position'], float)
+        drag = np.asarray([888., 450.]) - target
+        length = np.linalg.norm(drag)
+        if length < 120.:
+            return False
+        arrow = squad_arrow(fresh)
+        if arrow is None and squad_offscreen(fresh) is None:
+            return False
+        ground = None if arrow is None else np.asarray(arrow) + [0., goto.ARROW_GROUND_OFFSET]
+        drag *= min(1., 480. / length)
+        self.session.begin_target('marker_reveal')
+        self.session.record_evidence('marker_reveal', fresh, marker=marker, drag=drag.tolist())
+        self.marker_pans += 1
+        pan_scene(self.session, drag, squad_ground=ground)
+        logger.info('已向稳定任务菱形调整镜头，重新扫描真实脚圈，不将菱形作为战斗落点。')
+        return True
+
+    def restore_chapter(self, current):
+        """游戏已自动换章但旧章未完成巡检时，逐章返回旧章；不把新章入口当作旧章清空证据。
+
+        复用正式选章按钮坐标，每步重新核对 NORMAL 章节号，三十秒内未恢复则停止。
+        """
+        deadline = time.monotonic() + 30.
+        while current[0] > self.owner.current_chapter and time.monotonic() < deadline:
+            if current[1] != 'normal':
+                raise SweepUnconfirmed('换章后难度变化，不能复用旧章清怪状态。')
+            self.session.tap((1551, 940), interval=2.)
+            self.session.pause(1.)
+            field = self.map_frame()
+            observed = chapter_identity(field, self.owner.chapter_ocr)
+            if observed is not None:
+                current = observed
+        if current != (self.owner.current_chapter, 'normal'):
+            raise SweepUnconfirmed('未能返回尚未完成巡检的章节，清怪状态保持未完成。')
+        self.memory.previous = None
+        self.deferred.clear()
+
+    def advance_chapter(self, proof):
+        """本章完整巡检无剩余敌人且任务已进入下一章后，才点击下一章节并核对新身份。"""
+        if proof.get('state') != 'verified_empty' or self.quest is None or self.quest[0] <= self.owner.current_chapter:
+            raise SweepUnconfirmed('本章清怪或主线剧情未同时完成，保持在当前章。')
+        self.journal.complete(self.owner.current_chapter, proof)
+        if not getattr(self.owner, 'continuous', False):
+            return dict(state='complete', reason='chapter_cleared', clearance=proof)
+        self.session.tap((1715, 940), interval=2.)
+        deadline = time.monotonic() + 30.
+        previous = None
+        while time.monotonic() < deadline:
+            field = self.map_frame()
+            current = chapter_identity(field, self.owner.chapter_ocr)
+            if current is not None and current == previous and current == (self.owner.current_chapter + 1, 'normal'):
+                logger.info(f'本章清怪巡检通过后已确认进入第 {current[0]} 章。')
+                return dict(state='continue', reason='chapter_changed', clearance=proof)
+            previous = current
+            self.session.pause(.35)
+        raise SweepUnconfirmed('本章清怪已确认，但下一章入口未能核对；已停止。')
+
     def run(self, ticks=48):
-        """优先清理可见敌人，目标耗尽后有限显露任务方向；道路受阻时才交现有导航。
+        """优先清理全部可见敌人，视野内目标耗尽后逐行巡检全章，清空复核通过后才换章。
 
         关卡顺序只作为辅助信息：已知遇敌编号从小到大、未知目标按距离排序；每次开战仍独立
         核对实际编号。总时限、单目标输入预算、停止信号及首次战败终止继续由正式会话执行。
         """
-        from module.campaign.navigation.story_navigation import reveal_story_marker
-        revealed = False
         for _ in range(ticks):
             self.session.begin_target('scene_scan')
             field = self.map_frame()
@@ -271,9 +469,10 @@ class VisibleStoryRunner:
                 continue
             identity = chapter_identity(field, self.owner.chapter_ocr)
             if identity is not None and identity[0] > self.owner.current_chapter:
-                return dict(state='continue', reason='chapter_changed')
+                self.restore_chapter(identity)
+                continue
             current = read_stage(field, self.owner.chapter_ocr, quest=True)
-            if current is not None and current[0] == self.owner.current_chapter:
+            if current is not None:
                 if current != self.quest:
                     self.memory.reconsider(current, self.owner.story_wins)
                     self.deferred.clear()
@@ -282,13 +481,19 @@ class VisibleStoryRunner:
             if goto.battle_popup_score(fresh) > .8:
                 self.fight_entry()
                 continue
-            candidates = [item for item in candidates if item['id'] not in self.deferred
-                          and item['status'] not in ('deferred', 'ex_skipped', 'unreachable')]
+            candidates = [item for item in candidates if self.selectable(item)]
             if not candidates:
-                if not revealed and reveal_story_marker(self.session):
-                    revealed = True
+                if self.guide_quest(fresh):
                     continue
-                return dict(state='fallback', message='当前可见敌人已处理或未能到达，转入道路与机关导航')
+                if self.reveal_marked_area(fresh):
+                    continue
+                survey = ChapterSweep(self).run()
+                if survey['state'] == 'entry':
+                    self.fight_entry()
+                    continue
+                if survey['state'] == 'verified_empty':
+                    return self.advance_chapter(survey['proof'])
+                fresh, candidates = survey['field'], survey['targets']
             anchor = squad_arrow(fresh)
             anchor = np.asarray(goto.VIEWPORT_PIXEL if anchor is None else anchor)
             target = min(candidates, key=lambda item: (
@@ -311,7 +516,6 @@ class VisibleStoryRunner:
                 won = self.fight_entry(target)
                 if not won:
                     self.deferred.add(target['id'])
-                revealed = False
             else:
                 self.memory.identify(target['id'], None, 'unreachable')
                 logger.info('敌人落点二十秒内未进入备战，记录暂不可达并扫描其他目标。')
@@ -320,7 +524,7 @@ class VisibleStoryRunner:
 
 
 def run_visible_story(owner):
-    """在加载底图前运行主线直接闭环；所有退出路径释放会话，地图导航仅在明确 fallback 时接手。"""
+    """在加载底图前运行清怪闭环；所有退出路径释放会话，未完成巡检不得声明本章清空。"""
     from module.campaign.execution import CampaignExecutor
     from module.campaign.session import CampaignSession
     owner.story_wins = set()

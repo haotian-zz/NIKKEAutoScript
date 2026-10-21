@@ -9,7 +9,8 @@ from unittest.mock import patch
 
 import numpy as np
 
-from module.campaign.scene_memory import SceneEnemyMemory, stable_candidates
+from module.campaign.scene_memory import SceneEnemyMemory, ring_frame, stable_candidates
+from module.campaign.vision.detection import Detection
 
 
 class SceneMemoryTests(unittest.TestCase):
@@ -85,6 +86,24 @@ class SceneMemoryTests(unittest.TestCase):
             memory.reconsider((20, 12), {(20, 9)})
             self.assertEqual(memory.records['future']['status'], 'pending')
             self.assertEqual(memory.records['cleared']['status'], 'deferred')
+
+    def test_ex_classification_survives_ring_deduplication_and_temporary_ocr_miss(self):
+        """模型脚圈与文字脚圈同处只计一只，已验证的 EX 不因下一帧 OCR 漏检变成普通目标。"""
+        field = np.zeros((999, 1776, 3), np.uint8)
+        ring = Detection('scene_enemy_ring', .99, (500., 500., 600., 550.))
+        with patch('module.campaign.scene_memory.detect_grid', return_value=[ring]), \
+                patch('module.campaign.vision.ex_ring.scene_ex_rings', return_value=[ring]):
+            frame = ring_frame(field, object())
+        self.assertEqual(frame.kinds, ('ex',))
+        self.assertEqual(len(frame.centers), 1)
+        with tempfile.TemporaryDirectory() as folder:
+            memory = SceneEnemyMemory(Path(folder) / 'enemies.json')
+            first = memory.observe(field, frame=frame)[0]
+            with patch('module.campaign.scene_memory.scene_tracks',
+                       return_value=(frame.centers, np.array([True]))):
+                second = memory.observe(field, frame=SimpleNamespace(centers=frame.centers))[0]
+            self.assertEqual(first['id'], second['id'])
+            self.assertEqual(second['kind'], 'ex')
 
 
 if __name__ == '__main__':

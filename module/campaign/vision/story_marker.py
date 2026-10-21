@@ -73,28 +73,41 @@ def outward_arrow(image, box):
 def story_markers(image):
     """匹配不同大小的蓝色主线菱形，返回客户区 box、position、confidence 和 scene/edge 形态。
 
-    候选按蓝色外框的实际大小归一化，并微调三种尺度匹配；不依赖半自动旧模板及固定点击偏移。
+    候选按蓝色外框的实际大小归一化；白色内框补候选时须有周围青色且模板分至少0.9。
+    白色内框只返回 cue 探索提示，不能判断场内／离屏或获得点击许可。
     顶栏、任务栏、小地图与底部按钮不参与识别。离屏点击必须同时满足靠边与外向箭头判据，
     靠边却无箭头的标记保留为 scene，只允许后续验证所属脚圈，不能直接点击。
     """
     if image is None or image.shape != (999, 1776, 3):
         raise ValueError('主线标记识别需要 1776×999 BGR 客户区截图。')
     hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
-    blue = cv2.inRange(hsv, (88, 130, 140), (115, 255, 255))
+    # 发光动画会降低青色边框饱和度并留下小断口；只补候选连通，不降低最终感叹号模板门槛。
+    blue = cv2.inRange(hsv, (80, 50, 100), (130, 255, 255))
+    blue = cv2.morphologyEx(blue, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8))
+    white = cv2.inRange(hsv, (0, 0, 180), (179, 90, 255))
     for left, top, right, bottom in HUD_RECTS:
         blue[top:bottom, left:right] = 0
-    contours, _ = cv2.findContours(blue, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+        white[top:bottom, left:right] = 0
+    blue_contours, _ = cv2.findContours(blue, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+    white_contours, _ = cv2.findContours(white, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+    contours = [(contour, (.95, 1., 1.05, 1.1), MATCH_THRESHOLD, False) for contour in blue_contours]
+    contours += [(contour, (1.2, 1.3, 1.4, 1.5), .9, True) for contour in white_contours]
     template, mask = marker_template()
     result = []
-    for contour in contours:
+    for contour, scales, threshold, cue in contours:
         x, y, width, height = cv2.boundingRect(contour)
         if not (28 <= width <= 110 and 28 <= height <= 110 and .8 < width / height < 1.25):
             continue
         if not .3 < cv2.contourArea(contour) / (width * height) < .75:
             continue
         center = np.array([x + width / 2, y + height / 2])
+        if cue:
+            margin = max(width, height) // 4
+            context = blue[max(0, y - margin):y + height + margin, max(0, x - margin):x + width + margin]
+            if np.mean(context > 0) < .03:
+                continue
         best = None
-        for scale in (.95, 1., 1.05):
+        for scale in scales:
             half = np.array([width, height]) * scale / 2
             left, top = np.rint(center - half).astype(int)
             right, bottom = np.rint(center + half).astype(int)
@@ -104,16 +117,17 @@ def story_markers(image):
             score = float(cv2.matchTemplate(patch, template, cv2.TM_CCOEFF_NORMED, mask=mask)[0, 0])
             if np.isfinite(score) and (best is None or score > best):
                 best = score
-        if best is None or best < MATCH_THRESHOLD:
+        if best is None or best < threshold:
             continue
         box = [int(x), int(y), int(x + width), int(y + height)]
         if any(x < right and x + width > left and y < bottom and y + height > top
                for left, top, right, bottom in HUD_RECTS):
             continue
-        result.append(dict(kind='edge' if outward_arrow(image, box) else 'scene', box=box,
+        kind = 'cue' if cue else ('edge' if outward_arrow(image, box) else 'scene')
+        result.append(dict(kind=kind, box=box,
                            position=center.tolist(), confidence=round(best, 4)))
     selected = []
-    for item in sorted(result, key=lambda value: value['confidence'], reverse=True):
+    for item in sorted(result, key=lambda value: (value['kind'] == 'cue', -value['confidence'])):
         if any(np.linalg.norm(np.asarray(item['position']) - old['position']) < 25 for old in selected):
             continue
         selected.append(item)

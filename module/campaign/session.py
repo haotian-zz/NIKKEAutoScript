@@ -305,6 +305,8 @@ class CampaignSession(NavigationSession):
         self.popup_handling = False
         # 战斗接管中：准备弹窗不再是终态，允许会话自己点它上面的按钮。
         self.battle_mode = False
+        # 仅已安装独立 EX 身份核对的清怪闭环可保留 EX 弹窗；其他导航保持原来的关闭策略。
+        self.accept_ex_entry = False
         # 本场战斗给 AUTO 点过几次、连续几帧读成关闭外观，以及「不再重复点击」的告警是否已经打过。
         self.auto_taps = 0
         self.auto_off_frames = 0
@@ -390,7 +392,8 @@ class CampaignSession(NavigationSession):
 
         这几种画面上都不是主线地图，平时任何落点点击都可能点进战斗、点掉结算或点错按钮，所以立即
         停止并交给执行层（普通关卡由执行层接管）；battle_mode 为真说明已经进入接管（或正要接管），
-        这时它们就是要被点的对象。EX 弹窗只关一次后仍然是终态：本次实现不接管 EX 关卡。
+        这时它们就是要被点的对象。EX 默认关闭；完整清怪闭环显式接管时只交出弹窗，
+        仍禁止本闸门点击进入战斗，须由执行层连续核对 EX 标题。
         实机里点「进入战斗」之后战斗更早就开始了：外层若只认弹窗，就会在战斗画面上继续做野外动作
         （点地图控件、点地面），所以战斗中与结算也在这里拦住。
         识别战斗与剧情需要匹配多个模板，而这个闸门每个手势都会走一次，所以先用野外判据
@@ -411,7 +414,7 @@ class CampaignSession(NavigationSession):
             return
         evidence = {'kind': 'battle_popup', 'chapter': self.expected_identity[0]}
         message = '画面出现战斗准备弹窗，交由执行层接管这场战斗。'
-        if battle.ex_stage(field):
+        if battle.ex_stage(field) and not self.accept_ex_entry:
             self.popup_handling = True
             try:
                 origin = self.win.client_origin()
@@ -447,7 +450,7 @@ class CampaignSession(NavigationSession):
         return None
 
     def verify_identity(self, field):
-        """核对章节、难度与弹窗；普通弹窗保留，EX 只关闭一次，任何用途都立即结束任务。
+        """核对章节、难度与弹窗；弹窗交给既定接管策略，普通地图身份须完全匹配。
 
         只在会话开始时调用：读到别的章节／难度或读不到时抛 WindowChanged，禁止后续输入。
         """

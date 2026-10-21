@@ -45,6 +45,7 @@ class RingFrame:
 
     centers/keys 为客户区像素，viewport/enemies/squad 为章节底图像素；两类坐标只比较各自的
     帧间变化。特征与检测来自同一客户区帧，matrix 必须由该帧的紧凑小地图配准得到。
+    kinds 可选并与 centers 对齐；可信 EX 分类用于保留待清，未知类别不授予普通关卡身份。
     """
 
     centers: np.ndarray
@@ -53,6 +54,7 @@ class RingFrame:
     viewport: np.ndarray
     enemies: list
     squad: list
+    kinds: tuple = ()
 
 
 def observe_rings(image, panel, matrix, viewport):
@@ -85,13 +87,10 @@ def observe_rings(image, panel, matrix, viewport):
                      descriptors, np.asarray(viewport, float).copy(), enemies, squad)
 
 
-def scene_tracks(before, after):
-    """以双向特征匹配求场景前帧到后帧单应，再双向唯一关联脚圈；失败抛 ValueError。
+def scene_registration(before, after):
+    """用静态背景双向特征验证帧间单应，返回矩阵及两帧有内点支持的凸包。
 
-    单应只用于场景跟踪，不是大小地图换算。至少 30 个内点、30% 内点率及 2.5px 中位误差，
-    脚圈还须落在特征支持凸包内；15px 关联距离与 12px 次选间隔防止长拖后串目标。
-    返回每个后帧脚圈的前帧位置和有实测轨迹的掩码。没有轨迹的框只用逆单应估计作歧义否决，
-    不能获得点击许可，避免把新入屏或上一帧漏检的竞争候选静默排除。
+    最少 30 个内点、内点率 30%、中位重投影误差 2.5px；只给局部视野运动证据，不证明全章定位。
     """
     if (before.descriptors is None or after.descriptors is None
             or min(len(before.keys), len(after.keys)) < 30):
@@ -115,6 +114,18 @@ def scene_tracks(before, after):
     keep = inliers.ravel().astype(bool)
     if np.median(np.linalg.norm(project(matrix, source[keep]) - destination[keep], axis=1)) > 2.5:
         raise ValueError('场景帧间重投影误差过大。')
+    return matrix, cv2.convexHull(source[keep]), cv2.convexHull(destination[keep])
+
+
+def scene_tracks(before, after):
+    """以双向特征匹配求场景前帧到后帧单应，再双向唯一关联脚圈；失败抛 ValueError。
+
+    单应只用于场景跟踪，不是大小地图换算。至少 30 个内点、30% 内点率及 2.5px 中位误差，
+    脚圈还须落在特征支持凸包内；15px 关联距离与 12px 次选间隔防止长拖后串目标。
+    返回每个后帧脚圈的前帧位置和有实测轨迹的掩码。没有轨迹的框只用逆单应估计作歧义否决，
+    不能获得点击许可，避免把新入屏或上一帧漏检的竞争候选静默排除。
+    """
+    matrix, source_hull, destination_hull = scene_registration(before, after)
     inverse = np.linalg.inv(matrix)
     old = project(inverse, after.centers)
     tracked = np.zeros(len(after.centers), bool)
@@ -122,8 +133,6 @@ def scene_tracks(before, after):
         return old, tracked
     predicted = project(matrix, before.centers)
     costs = np.linalg.norm(predicted[:, None] - after.centers[None, :], axis=2)
-    source_hull = cv2.convexHull(source[keep])
-    destination_hull = cv2.convexHull(destination[keep])
     for j, point in enumerate(after.centers):
         i = int(np.argmin(costs[:, j]))
         if costs[i, j] > TRACK_DISTANCE or int(np.argmin(costs[i])) != j:

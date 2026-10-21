@@ -18,6 +18,7 @@ def load(name, **namespace):
     node = next(n for n in ast.walk(SOURCE) if isinstance(n, ast.FunctionDef) and n.name == name)
     node = copy.deepcopy(node)
     node.decorator_list = []
+    namespace.setdefault('pending_chapter', Mock(return_value=None))
     exec(compile(ast.Module(body=[node], type_ignores=[]), name, 'exec'), namespace)
     return namespace[name]
 
@@ -149,6 +150,15 @@ class CampaignStartTests(unittest.TestCase):
         self.assertEqual(reports[-1][0], 'partial')
         self.assertIn('3 个敌人', reports[-1][1])
         self.assertEqual(reports[-1][2], 'battle_defeat')
+
+    def test_pending_chapter_is_selected_once_before_continuous_progress(self):
+        """中断后先补旧章，完成并换章后的续段不再把相机送回旧章。"""
+        fn, runner, factory, _ = self.continuous_runner(
+            [('chapter_changed', 1), ('tick_budget', 0)], [(20, 31)])
+        fn.__globals__['pending_chapter'] = Mock(return_value=20)
+        fn(runner)
+        self.assertEqual(factory.call_count, 2)
+        self.assertEqual([c.args[1] for c in runner.select_chapter.call_args_list], [20, None])
 
     def test_continuous_does_not_renew_empty_segment_or_target_budget(self):
         """无胜利的段预算与单目标输入耗尽都不能作为持续重跑的理由。"""

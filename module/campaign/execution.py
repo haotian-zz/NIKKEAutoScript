@@ -289,7 +289,7 @@ class CampaignExecutor:
         self.session.begin_target('battle')
         self.session.battle_mode = True
         settled, close_entry, retries, polls = None, False, 0, 0
-        previous = None
+        previous, phase = None, None
         total, segment = Stopwatch(), Stopwatch()
         deadline = time.monotonic() + BATTLE_TIME_LIMIT
         settle_gone = Timer(BATTLE_SETTLE_CONFIRM, count=BATTLE_SETTLE_FRAMES)
@@ -338,15 +338,20 @@ class CampaignExecutor:
                             settled, close_entry = 'defeat', True
                             logger.warning('战斗失败且重试次数耗尽，准备返回野外并请求人工接管。')
                         deadline, segment, reported = time.monotonic() + BATTLE_TIME_LIMIT, Stopwatch(), False
+                        phase = None
                     self.session.tap(DEFEAT_BACK_POINT if settled == 'defeat' else DEFEAT_RETRY_POINT,
                                      SETTLE_TAP_INTERVAL)
                 elif kind in ('entry', 'battle'):
-                    # 每段战斗单独计时：准备弹窗、以及加载结束真正进入战斗时都重新计时。
-                    if kind != previous:
+                    # 未识别帧不会重开阶段；只有首次进入备战或真正进入本次战斗时计时。
+                    if phase is None or (phase == 'entry' and kind == 'battle'):
+                        phase = kind
                         deadline, segment, reported = time.monotonic() + BATTLE_TIME_LIMIT, Stopwatch(), False
                 if settled is None and not reported and segment.seconds >= BATTLE_IDLE_REPORT:
                     reported = True
-                    logger.info(f'等待战斗结算：当前画面 {label(BATTLE_STATES, kind)}，阶段耗时 {segment}。')
+                    field = self.session.win.client()
+                    self.session.preview(field)
+                    self.session.record_evidence('battle_wait', field, state=kind, elapsed=segment.seconds)
+                    logger.info(f'等待战斗结算：当前画面 {label(BATTLE_STATES, kind)}，阶段耗时 {segment}；已保存画面。')
                 previous = kind
                 self.session.pause(BATTLE_POLL_SECONDS)
         finally:

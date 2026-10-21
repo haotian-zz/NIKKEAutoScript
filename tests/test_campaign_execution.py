@@ -403,6 +403,16 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(triggered.exception.evidence['kind'], 'ex_stage_skipped')
         self.handler.mouse_click.assert_called_once_with(1165, 541)
 
+    def test_ex_popup_in_clearance_hands_off_without_any_input(self):
+        """全清闭环遇到 EX 只抛接管信号，不能沿用旧导航的自动关闭或直接开战。"""
+        self.session.accept_ex_entry = True
+        with patch('module.campaign.session.goto.battle_popup_score', return_value=.99), \
+                patch('module.campaign.session.battle.ex_stage', return_value=True):
+            with self.assertRaises(TargetTriggered) as triggered:
+                self.session.identity(self.owner.device.image)
+        self.assertEqual(triggered.exception.evidence['kind'], 'battle_popup')
+        self.handler.mouse_click.assert_not_called()
+
     def test_collectible_indicator_blocks_all_new_input(self):
         """收集任务即便在执行探索，看到提示后也不再发镜头手势或拾取点击。"""
         self.session.collectible_mode = True
@@ -979,6 +989,20 @@ class ExecutorTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, '超过 60 秒'):
                 self.executor.battle(None)
         self.assertLessEqual(self.session.battle_step.call_count, 5)
+
+
+    def test_battle_unknown_fluctuation_does_not_renew_deadline(self):
+        """同场战斗在可识别与未知帧间波动不能续期；超时保留当前战斗模式释放。"""
+        clock = [0.]
+        sequence = iter(('entry', 'battle', 'unknown', 'battle', 'unknown', 'battle', 'unknown', 'battle'))
+        self.session.battle_step.side_effect = lambda **kw: dict(state=next(sequence))
+        self.session.pause.side_effect = lambda seconds: clock.__setitem__(0, clock[0] + 20.)
+        with patch('module.campaign.execution.time.monotonic', lambda: clock[0]), \
+                patch('module.campaign.execution.BATTLE_TIME_LIMIT', 60):
+            with self.assertRaisesRegex(RuntimeError, '未结算'):
+                self.executor.battle(None)
+        self.assertLessEqual(self.session.battle_step.call_count, 4)
+        self.assertFalse(self.session.battle_mode)
 
     def test_story_victory_is_counted_without_map_enemy_id(self):
         """主线战斗胜利单独记账，不能凭未知底图坐标清除任何敌人。"""

@@ -406,7 +406,11 @@ class VirtualMouseInput(Input):
         span_x, span_y = x2 - x1, y2 - y1
         for index in range(1, steps + 1):
             ratio = index / steps
-            if not self.mouse_driver.set_cursor(round(x1 + span_x * ratio), round(y1 + span_y * ratio)):
+            target = (round(x1 + span_x * ratio), round(y1 + span_y * ratio))
+            if not self.mouse_driver.set_cursor(*target):
+                logger.error(f'Virtual mouse drag waypoint {index}/{steps} failed: '
+                             f'target={target}, actual={self.mouse_driver.cursor()}, '
+                             f'backend={type(self.mouse_driver).__name__}, elapsed={time.perf_counter() - start:.3f}s')
                 return False
             # 用绝对截止时刻推进，避免「发送」的开销逐轮累积成节拍漂移
             delay = start + index * interval - time.perf_counter()
