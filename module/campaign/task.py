@@ -7,8 +7,13 @@ from module.base.timer import Timer
 from module.base.watchdog import WaitGuard, save_wait_image
 from module.campaign.campaign import Campaign
 from module.campaign.clearance import pending_chapter
+from module.campaign.chapter_flow import ChapterOverlayFlow
+from module.campaign.session import CampaignSession
 from module.campaign.report import GOAL_REASONS
+from module.campaign.vision import battle
 from module.campaign.vision.chapter import chapter_identity
+from module.campaign.vision.chapter_completion import overlay_anchor
+from module.campaign.window import CampaignWindow
 from module.exception import GameStuckError, RequestHumanTakeover
 from module.execution.context import report
 from module.logger import logger
@@ -59,6 +64,9 @@ class AutoPush(UI):
         主线任务引导使用 720×1280 客户区，确认大厅及引导文字后才点击。
         进入章节地图受 90 秒时限保护；章节选择随后在横屏尺寸单独核对。
         """
+        if self.recover_chapter_overlays():
+            self.entry_stage = None
+            return True
         self.device.target_resolution = (720, 1280)
         self.device.ensure_resolution(self.config.PCClient_ScreenNumber, 720, 1280,
                                       position=self.config.PCClient_GameWindowPosition, interval=.15, stable_time=1.)
@@ -87,6 +95,53 @@ class AutoPush(UI):
                 self.device.click_xy(674, 126)
                 timer.reset()
             self.ui_additional()
+
+    def recover_chapter_overlays(self):
+        """重启入口先处理遗留的已知章节通知及列表，确认仍在同一普通章后直接续用地图。
+
+        先统一1776×999，普通界面仅做廉价锚点检查；没有浮层则返回False走既有大厅入口。
+        有浮层时连续核对真实章号后才建正式会话；处理后两帧同章地图可见才返回True。
+        四十五秒仍未知则停止，清理簿不改，旧胜利不计入本轮，也不从大厅任务猜章号。
+        """
+        self.device.target_resolution = Campaign.RESOLUTION
+        self.device.ensure_resolution(self.config.PCClient_ScreenNumber, *Campaign.RESOLUTION,
+                                      position=self.config.PCClient_GameWindowPosition, interval=.15, stable_time=1.)
+        self.device.check_resolution(*Campaign.RESOLUTION)
+        self.device.screenshot()
+        field = cv2.cvtColor(self.device.image, cv2.COLOR_RGB2BGR)
+        if overlay_anchor(field) is None:
+            return False
+        owner = Campaign(self.config, device=self.device)
+        win = CampaignWindow(owner)
+        win.focus()
+        first = chapter_identity(field, owner.chapter_ocr)
+        fresh = win.client()
+        second = chapter_identity(fresh, owner.chapter_ocr)
+        if first is None or first != second or first[1] != 'normal':
+            raise RequestHumanTakeover('遗留章节浮层下的普通地图身份未连续确认，未发送处理点击。')
+        owner.current_chapter, owner.current_difficulty = first
+        session = CampaignSession(owner, navigation=False)
+        guard = WaitGuard(self.device, '恢复遗留章节通知', timeout=45, warn_after=15)
+        ready = 0
+        try:
+            session.start()
+            flow = ChapterOverlayFlow(session, owner.chapter_ocr)
+            while True:
+                guard.check()
+                field = session.win.client()
+                if flow.handle(field):
+                    ready = 0
+                    continue
+                if battle.field_visible(field) and chapter_identity(field, owner.chapter_ocr) == first:
+                    ready += 1
+                    if ready >= 2:
+                        logger.info(f'遗留章节界面已处理，连续确认仍在普通第{first[0]}章地图；旧章待办保留。')
+                        return True
+                else:
+                    ready = 0
+                session.pause(.35)
+        finally:
+            session.close()
 
     def select_chapter(self, campaign, target):
         """通过横屏右下角相邻章节按钮逐章切换，每次均重新识别章节与普通难度。

@@ -10,6 +10,9 @@ import sys
 import unittest
 from unittest.mock import Mock, patch
 
+import cv2
+import numpy as np
+
 SOURCE = ast.parse((Path(__file__).resolve().parents[1] / 'module/campaign/task.py').read_text(encoding='utf-8'))
 
 
@@ -24,6 +27,67 @@ def load(name, **namespace):
 
 
 class CampaignStartTests(unittest.TestCase):
+
+    def test_recovered_notification_map_does_not_need_a_numbered_lobby_quest(self):
+        """解锁后大厅任务可能是返回大厅，已连续确认的原地图可直接续用，不伪造数字任务。"""
+        fn = load('ensure_main_map')
+        runner = SimpleNamespace(recover_chapter_overlays=Mock(return_value=True), entry_stage=(20, 31),
+                                 device=Mock())
+        self.assertTrue(fn(runner))
+        self.assertIsNone(runner.entry_stage)
+        self.assertEqual(runner.device.mock_calls, [])
+
+    def test_notification_recovery_confirms_two_real_map_frames(self):
+        """遗留列表经正式会话处理后，连续两帧原章地图才恢复；会话退出始终释放。"""
+        field = np.zeros((999, 1776, 3), np.uint8)
+        session, win, flow = Mock(), Mock(), Mock()
+        session.win.client.return_value = win.client.return_value = field
+        flow.handle.side_effect = [True, False, False]
+        factory = Mock(return_value=SimpleNamespace(chapter_ocr=Mock()))
+        factory.RESOLUTION = (1776, 999)
+        fn = load('recover_chapter_overlays', Campaign=factory, CampaignWindow=Mock(return_value=win),
+                  CampaignSession=Mock(return_value=session), ChapterOverlayFlow=Mock(return_value=flow),
+                  WaitGuard=Mock(), overlay_anchor=Mock(return_value=dict(kind='chapter_list')),
+                  chapter_identity=Mock(return_value=(20, 'normal')), cv2=cv2, logger=Mock(),
+                  battle=SimpleNamespace(field_visible=Mock(return_value=True)))
+        runner = SimpleNamespace(config=SimpleNamespace(PCClient_ScreenNumber=0, PCClient_GameWindowPosition='center'),
+                                 device=Mock(image=field))
+        self.assertTrue(fn(runner))
+        session.start.assert_called_once()
+        session.close.assert_called_once()
+        self.assertEqual(flow.handle.call_count, 3)
+        self.assertEqual(factory.return_value.current_chapter, 20)
+        runner.device.click_xy.assert_not_called()
+
+    def test_notification_recovery_rejects_uncertain_background_chapter(self):
+        """底层章号读不清时不建立输入会话，不能从浮层或大厅任务猜当前章。"""
+        field = np.zeros((999, 1776, 3), np.uint8)
+        session, win = Mock(), Mock()
+        win.client.return_value = field
+        factory = Mock(); factory.RESOLUTION = (1776, 999)
+        takeover = type('Takeover', (Exception,), {})
+        fn = load('recover_chapter_overlays', Campaign=factory, CampaignWindow=Mock(return_value=win),
+                  CampaignSession=session, overlay_anchor=Mock(return_value=dict(kind='chapter_list')),
+                  chapter_identity=Mock(side_effect=[(20, 'normal'), None]), cv2=cv2,
+                  RequestHumanTakeover=takeover)
+        runner = SimpleNamespace(config=SimpleNamespace(PCClient_ScreenNumber=0, PCClient_GameWindowPosition='center'),
+                                 device=Mock(image=field))
+        with self.assertRaises(takeover):
+            fn(runner)
+        session.assert_not_called()
+        runner.device.click_xy.assert_not_called()
+
+    def test_no_notification_keeps_lobby_path_without_text_models(self):
+        """普通界面无锚点时不创建章节OCR/会话，直接交回已有大厅入口。"""
+        field = np.zeros((999, 1776, 3), np.uint8)
+        factory, reader = Mock(), Mock(); factory.RESOLUTION = (1776, 999)
+        fn = load('recover_chapter_overlays', Campaign=factory, overlay_anchor=Mock(return_value=None),
+                  chapter_identity=reader, cv2=cv2)
+        runner = SimpleNamespace(config=SimpleNamespace(PCClient_ScreenNumber=0, PCClient_GameWindowPosition='center'),
+                                 device=Mock(image=field))
+        self.assertFalse(fn(runner))
+        factory.assert_not_called()
+        reader.assert_not_called()
 
     def test_existing_settlement_is_continued_without_counting_a_win(self):
         """补做入口可清理旧结算；只点现有继续模板，不报告新胜利或开启战斗。"""

@@ -287,6 +287,7 @@ class SessionTests(unittest.TestCase):
         self.session.win.origin, self.session.win.handle = (10, 20), 123
         for target, value in (('module.campaign.session.goto.battle_popup_score', 0),
                               ('module.campaign.session.chapter_identity', (41, 'normal')),
+                              ('module.campaign.session.overlay_anchor', None),
                               # 画面确认（await_field）是独立闸门，另有测试；这里让假截图通过，
                               # 这些用例关心的是移动、观测与状态回写。
                               ('module.campaign.session.battle.field_visible', lambda image: True)):
@@ -299,6 +300,28 @@ class SessionTests(unittest.TestCase):
         """点击只加一次客户区原点，且新输入经过预算计数。"""
         self.session.move([100, 200])
         self.handler.mouse_click.assert_called_once_with(110, 220)
+        self.assertEqual(self.session.inputs, 1)
+
+    def test_chapter_overlay_blocks_ground_input_and_keeps_budget(self):
+        """地图仍可见但章节浮层阻塞时，不允许旧地面落点穿透，也不把拒绝算真输入。"""
+        with patch('module.campaign.session.overlay_anchor', return_value=dict(kind='chapter_completion')):
+            with self.assertRaises(TargetTriggered):
+                self.session.move([100, 200])
+        self.handler.mouse_click.assert_not_called()
+        self.assertEqual(self.session.inputs, 0)
+
+    def test_chapter_overlay_final_guard_cannot_leak_to_later_inputs(self):
+        """最后一帧核对失败不点；成功仅放行一次，校验器始终清除且不借用战斗接管。"""
+        reject = Mock(return_value=False)
+        with self.assertRaises(WindowChanged):
+            self.session.tap_chapter_overlay([880, 630], reject)
+        self.handler.mouse_click.assert_not_called()
+        self.assertIsNone(self.session.chapter_overlay_validator)
+        self.assertFalse(self.session.battle_mode)
+        accept = Mock(return_value=True)
+        self.assertTrue(self.session.tap_chapter_overlay([880, 630], accept))
+        self.handler.mouse_click.assert_called_once_with(890, 650)
+        self.assertIsNone(self.session.chapter_overlay_validator)
         self.assertEqual(self.session.inputs, 1)
 
     def test_invalid_clicks_send_nothing(self):

@@ -12,6 +12,7 @@ from module.campaign.vision import battle
 from module.campaign.vision.chapter import chapter_identity
 from module.campaign.scene_memory import SceneEnemyMemory, stable_candidates
 from module.campaign.clearance import ClearanceJournal
+from module.campaign.chapter_flow import ChapterOverlayFlow
 from module.campaign.sweep import ChapterSweep, SweepUnconfirmed
 from module.campaign.vision.perception import squad_arrow
 from module.campaign.vision.offscreen import squad_offscreen
@@ -199,6 +200,7 @@ class VisibleStoryRunner:
     def __init__(self, owner, session, executor):
         """观察簿绑定当前执行的证据目录，隔离实例及历史截图；不跨账号复用胜利或旧坐标。"""
         self.owner, self.session, self.executor = owner, session, executor
+        self.chapter_flow = ChapterOverlayFlow(session, owner.chapter_ocr)
         self.session.accept_ex_entry = True
         self.memory = SceneEnemyMemory(session.evidence.folder / 'scene-enemies.json', owner.chapter_ocr)
         self.deferred = set()
@@ -223,6 +225,8 @@ class VisibleStoryRunner:
         while time.monotonic() < deadline:
             self.session.check()
             field = self.session.win.client()
+            if self.chapter_flow.handle(field):
+                continue
             if goto.battle_popup_score(field) > .8:
                 return field
             if battle.field_visible(field):

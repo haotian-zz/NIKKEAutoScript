@@ -19,6 +19,7 @@ from module.campaign.report import (ANCHOR_METHODS, ANCHOR_RESULTS, BATTLE_STATE
 from module.campaign.run_state import describe_changes, located
 from module.campaign.timing import Stopwatch
 from module.campaign.vision.chapter import chapter_identity
+from module.campaign.vision.chapter_completion import overlay_anchor
 from module.campaign.vision import battle
 from module.campaign.vision.minimap import terrain
 from module.campaign.vision.observation import EXPANDED_ROI
@@ -303,6 +304,7 @@ class CampaignSession(NavigationSession):
         self.gestures = 0
         self.deadline = None
         self.popup_handling = False
+        self.chapter_overlay_validator = None
         # 战斗接管中：准备弹窗不再是终态，允许会话自己点它上面的按钮。
         self.battle_mode = False
         # 仅已安装独立 EX 身份核对的清怪闭环可保留 EX 弹窗；其他导航保持原来的关闭策略。
@@ -373,15 +375,21 @@ class CampaignSession(NavigationSession):
         self.target_inputs = 0
 
     def before_input(self):
-        """每次场景手势之前核对弹窗与收集品提示；超时或达到单目标预算时不发送下一次输入。
+        """每次场景手势前核对战斗、章节浮层和收集品；超时或预算耗尽不发送下一次输入。
 
         这里不重读章节身份：身份由 start 核对一次（见 verify_identity）。真正必须逐帧看的是
-        战斗弹窗与收集品提示——漏一帧就可能把落点点进战斗，或踩掉一次拾取机会。
+        战斗弹窗、阻塞浮层与收集品提示。专门的浮层输入还须在此独立核验最新帧。
         """
         self.check()
         if not self.popup_handling:
             self.input_frame = self.win.client()
-            self.identity(self.input_frame)
+            if self.chapter_overlay_validator is None:
+                self.identity(self.input_frame)
+            else:
+                self.popup(self.input_frame)
+                self.check_collectible(self.input_frame)
+                if not self.chapter_overlay_validator(self.input_frame):
+                    raise WindowChanged('章节浮层在发送输入前已变化或未确认，未发送点击。')
         if self.target_inputs >= TARGET_INPUT_BUDGET:
             raise InputBudgetExceeded(f'同一个目标已操作 {TARGET_INPUT_BUDGET} 次仍未完成，停止并交人工复核。')
         self.inputs += 1
@@ -429,14 +437,33 @@ class CampaignSession(NavigationSession):
         raise TargetTriggered(message, evidence)
 
     def identity(self, field):
-        """逐帧闸门：只查战斗弹窗与收集品提示，不重读章节身份。
+        """逐帧闸门：查战斗弹窗、阻塞章节字形与收集品，不在普通地图重读章节身份。
 
         每个手势、每次观测以及共享移动闭环都调用它，所以必须便宜。章节与难度只在会话开始
         （start 的 verify_identity）核对一次：逐帧重读章节号不会带来新信息，而弹窗与收集品提示
         漏一帧就可能把落点点进战斗或踩掉一次拾取机会。
         """
+        if not self.battle_mode:
+            overlay = overlay_anchor(field)
+            if overlay is not None:
+                self.preview(field)
+                raise TargetTriggered('章节完成或探索解锁浮层阻塞地图，禁止发送野外操作。', overlay)
         self.popup(field)
         self.check_collectible(field)
+
+    def tap_chapter_overlay(self, point, validator):
+        """仅为独立核验的章节浮层提供一次按钮点击，最后一帧仍须通过相同证据核对。
+
+        不开启battle_mode或popup_handling；停止、焦点、几何、战斗弹窗与输入预算保持有效。
+        validator只在本次同步调用中生效，失败或异常均清除，不能让后续地图手势绕过浮层检查。
+        """
+        if self.battle_mode or self.popup_handling or self.chapter_overlay_validator is not None:
+            raise WindowChanged('其他界面处理仍在进行，不能接管章节浮层。')
+        self.chapter_overlay_validator = validator
+        try:
+            return self.tap(point)
+        finally:
+            self.chapter_overlay_validator = None
 
     def next_chapter(self):
         """持续模式每轮确认是否已换章，确认后由外层重新载入资源与坐标模型。
