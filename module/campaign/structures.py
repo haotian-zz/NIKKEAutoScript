@@ -9,7 +9,8 @@ from module.campaign.navigation.camera_navigation import pan_scene
 from module.campaign.navigation.movement_feedback import TargetTriggered
 from module.campaign.vision.enemy_ring import clickable_ring
 from module.campaign.vision.objects import detect_objects
-from module.campaign.vision.perception import minimap_masks, squad_arrow
+from module.campaign.vision.perception import squad_arrow
+from module.campaign.vision.native_motion import ClickProgress, MinimapStability, NativeMotion, combine_motion
 from module.campaign.vision.learned_recovery import recover_if_enabled
 from module.logger import logger
 
@@ -42,34 +43,35 @@ def stable_structures(first, second):
     return result
 
 
-def wait_structure_settle(runner):
-    """设施落点后最多等二十秒，三帧道路和小队同时停稳才恢复目标扫描；不据此认领传送成功。"""
-    deadline, samples = time.monotonic() + 20., []
+def wait_structure_settle(runner, before=None):
+    """设施落点后共用独立移动反馈；可靠静止才恢复扫描，不据此认领传送成功。
+
+    无有效反馈最多20秒，真实移动可续等但总计60秒；不以整张小地图的低变化比例
+    掩盖小范围道路滚动，也不让浮动箭头动画阻止可靠圆心与道路提供静止证据。
+    """
+    before = runner.map_frame() if before is None else before
+    progress = ClickProgress(time.monotonic())
+    motion = NativeMotion(before, squad_arrow(before))
+    minimap = MinimapStability(before)
     field = None
-    while time.monotonic() < deadline:
-        runner.session.pause(.5)
-        field = runner.map_frame(timeout=max(.1, deadline - time.monotonic()))
+    while True:
+        runner.session.pause(.7)
+        field = runner.map_frame(timeout=max(.1, min(30., progress.started + 60. - time.monotonic())))
         if goto.battle_popup_score(field) > .8:
             return field
-        try:
-            _, road, valid, player = minimap_masks(field)
-        except ValueError:
-            samples.clear()
-            continue
-        samples.append((road, valid, np.asarray(player)))
-        samples = samples[-3:]
-        if len(samples) < 3:
-            continue
-        common = np.logical_and.reduce([sample[1] > 0 for sample in samples])
-        if np.count_nonzero(common) < 200:
-            continue
-        if (all(np.linalg.norm(sample[2] - samples[0][2]) <= 2. for sample in samples[1:])
-                and all(np.mean(sample[0][common] != samples[0][0][common]) < .03 for sample in samples[1:])):
+        observation = combine_motion(motion.observe(field, squad_arrow(field)), minimap.observe(field))
+        state = progress.update(time.monotonic(), observation)
+        if state == 'stalled':
+            runner.session.record_evidence('structure_settled', field, feedback=observation,
+                                           state='stationary_interaction_unconfirmed')
             return field
+        if state != 'waiting':
+            break
     if field is not None:
-        runner.session.record_evidence('structure_wait_timeout', field, arrays=dict(field=field))
+        runner.session.record_evidence('structure_wait_timeout', field, feedback=observation,
+                                       outcome=state, arrays=dict(field=field))
         runner.session.preview(field)
-    raise StructureUnconfirmed('设施交互后二十秒未确认小队及道路停稳，已保留原图；不发送下一个目标。')
+    raise StructureUnconfirmed('设施交互后未确认小队及道路停稳，已保留原图；不发送下一个目标。')
 
 
 def recover_visible_structure(runner, field):
@@ -111,7 +113,7 @@ def recover_visible_structure(runner, field):
             session.tap(target['position'])
         except TargetTriggered:
             return 'entry'
-        observed = wait_structure_settle(runner)
+        observed = wait_structure_settle(runner, fresh)
         session.record_evidence('structure_observed', observed, attempted=target,
                                 state='unconfirmed', arrays=dict(field=observed))
         # 镜头或小队可能已经移动，旧观察身份不得阻止新画面的独立目标复核。

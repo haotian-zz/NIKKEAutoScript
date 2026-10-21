@@ -83,12 +83,17 @@ class StructureTests(unittest.TestCase):
 
     def test_moving_squad_needs_three_new_stable_minimap_frames(self):
         """首帧小队仍在动时不提前结束；之后连续三帧稳定才允许恢复扫描。"""
-        road = np.zeros((30, 30), np.uint8)
-        valid = np.full_like(road, 255)
-        samples = [(None, road, valid, point) for point in ((0., 0.), (8., 0.), (8., 0.), (8., 0.))]
-        with patch.object(structure, 'minimap_masks', side_effect=samples), \
+        clock = [0.]
+        self.runner.session.pause.side_effect = lambda seconds: clock.__setitem__(0, clock[0] + 1.)
+        samples = [dict(state=state) for state in ('unknown', 'stationary', 'stationary', 'stationary')]
+        with patch.object(structure.time, 'monotonic', side_effect=lambda: clock[0]), \
+                patch.object(structure, 'MinimapStability') as mini, \
+                patch.object(structure, 'NativeMotion') as motion, \
+                patch.object(structure, 'squad_arrow', return_value=None), \
                 patch.object(structure.goto, 'battle_popup_score', return_value=0.):
-            self.assertIs(structure.wait_structure_settle(self.runner), self.field)
+            mini.return_value.observe.side_effect = samples
+            motion.return_value.observe.return_value = dict(state='unknown')
+            self.assertIs(structure.wait_structure_settle(self.runner, self.field), self.field)
         self.assertEqual(self.runner.map_frame.call_count, 4)
         self.runner.session.tap.assert_not_called()
 
@@ -97,10 +102,14 @@ class StructureTests(unittest.TestCase):
         clock = [0.]
         self.runner.session.pause.side_effect = lambda seconds: clock.__setitem__(0, clock[0] + seconds)
         with patch.object(structure.time, 'monotonic', side_effect=lambda: clock[0]), \
-                patch.object(structure, 'minimap_masks', side_effect=ValueError('no ring')), \
+                patch.object(structure, 'MinimapStability') as mini, \
+                patch.object(structure, 'NativeMotion') as motion, \
+                patch.object(structure, 'squad_arrow', return_value=None), \
                 patch.object(structure.goto, 'battle_popup_score', return_value=0.):
-            with self.assertRaisesRegex(structure.StructureUnconfirmed, '二十秒'):
-                structure.wait_structure_settle(self.runner)
+            mini.return_value.observe.return_value = dict(state='unknown')
+            motion.return_value.observe.return_value = dict(state='unknown')
+            with self.assertRaisesRegex(structure.StructureUnconfirmed, '未确认'):
+                structure.wait_structure_settle(self.runner, self.field)
         self.assertLessEqual(self.runner.map_frame.call_count, 40)
         self.runner.session.tap.assert_not_called()
         self.assertEqual(self.runner.session.record_evidence.call_args.args[0], 'structure_wait_timeout')

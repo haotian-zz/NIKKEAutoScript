@@ -31,8 +31,9 @@ def definitions():
                                            {'reason': 'chapter_clearance_unconfirmed'}),
                      squad_arrow=Mock(return_value=None), squad_offscreen=Mock(return_value=None),
                      story_markers=story_markers, pan_scene=Mock())
-    from module.campaign.vision.native_motion import ClickProgress, NativeMotion
-    namespace.update(ClickProgress=ClickProgress, NativeMotion=NativeMotion)
+    from module.campaign.vision.native_motion import ClickProgress, NativeMotion, combine_motion
+    namespace.update(ClickProgress=ClickProgress, NativeMotion=NativeMotion, combine_motion=combine_motion,
+                     MinimapStability=Mock(return_value=SimpleNamespace(observe=lambda field: dict(state='unknown'))))
     exec(compile(ast.Module(body=nodes, type_ignores=[]), str(path), 'exec'), namespace)
     return namespace
 

@@ -16,7 +16,7 @@ from module.campaign.sweep import ChapterSweep, SweepUnconfirmed
 from module.campaign.vision.perception import squad_arrow
 from module.campaign.vision.offscreen import squad_offscreen
 from module.campaign.vision.story_marker import story_markers
-from module.campaign.vision.native_motion import ClickProgress, NativeMotion
+from module.campaign.vision.native_motion import ClickProgress, MinimapStability, NativeMotion, combine_motion
 from module.campaign.navigation.camera_navigation import pan_scene
 from module.logger import logger
 
@@ -225,13 +225,14 @@ class VisibleStoryRunner:
         """
         progress = ClickProgress(time.monotonic(), unknown_limit=ENTRY_WAIT_SECONDS)
         motion = NativeMotion(before, arrow, None if target is None else target['click'])
+        minimap = MinimapStability(before)
         previous_state = None
         while True:
             field = self.map_frame(timeout=max(.1, min(30., progress.started+60.-time.monotonic())))
             if goto.battle_popup_score(field) > .8:
                 self.entry_outcome = dict(state='entry')
                 return True
-            observation = motion.observe(field, squad_arrow(field))
+            observation = combine_motion(motion.observe(field, squad_arrow(field)), minimap.observe(field))
             now = time.monotonic()
             state = progress.update(now, observation)
             self.entry_outcome = dict(observation, outcome=state, elapsed=round(now-progress.started, 2))

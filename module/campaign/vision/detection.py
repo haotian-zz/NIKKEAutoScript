@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 import hashlib
 import json
+import logging
 from pathlib import Path
 import threading
 
@@ -94,8 +95,10 @@ def decode(output, scales, padding, thresholds, shape, labels, guards=(True, Tru
     if not len(rows):
         return []
     scores = rows[:, 4:]
-    if np.any(scores < 0) or np.any(scores > 1):
+    if np.any(scores < -1e-6) or np.any(scores > 1 + 1e-6):
         raise ValueError('YOLO class scores are not probabilities.')
+    # 部分CPU后端融合Sigmoid时出现约1个FP32精度单位的负零，不应判为模型损坏。
+    scores = np.clip(scores, 0., 1.)
     classes = scores.argmax(axis=1)
     confidence = scores[np.arange(len(rows)), classes]
     # 未请求的类别给出无穷阈值；类别仍由全类 argmax 决定，不在子集上重新取最大值。
@@ -167,8 +170,7 @@ class Detector:
         options.inter_op_num_threads = 1
         self.session = ort.InferenceSession(str(model), sess_options=options,
                                             providers=providers or ['CPUExecutionProvider'])
-        from module.logger import logger
-        logger.info(f'推图检测后端：{self.session.get_providers()}，ORT {ort.__version__}，CPU线程 {threads}。')
+        logging.getLogger('nkas').info(f'推图检测后端：{self.session.get_providers()}，ORT {ort.__version__}，CPU线程 {threads}。')
         inputs, outputs = self.session.get_inputs(), self.session.get_outputs()
         if len(inputs) != 1 or inputs[0].shape != [1, 3, self.size, self.size] or inputs[0].type != 'tensor(float)':
             raise ValueError('Campaign YOLO input contract mismatch.')

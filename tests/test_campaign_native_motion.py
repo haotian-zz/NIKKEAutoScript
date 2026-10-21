@@ -5,7 +5,7 @@ import unittest
 import cv2
 import numpy as np
 
-from module.campaign.vision.native_motion import ClickProgress, NativeMotion
+from module.campaign.vision.native_motion import ClickProgress, MinimapStability, NativeMotion, combine_motion
 
 
 class NativeMotionTests(unittest.TestCase):
@@ -60,6 +60,47 @@ class NativeMotionTests(unittest.TestCase):
             self.assertEqual(progress.update(now, dict(state='moving')), 'waiting')
         self.assertEqual(progress.update(60., dict(state='moving')), 'movement_timeout')
         self.assertEqual(ClickProgress(0.).update(20., dict(state='unknown')), 'observation_unknown')
+
+    def minimap(self):
+        """构造多转角固定UI轮廓，使地图比较具有二维支持而非仅一条无限直路。"""
+        road = np.zeros((211, 218), np.uint8)
+        cv2.rectangle(road, (20, 30), (95, 180), 255, -1)
+        cv2.rectangle(road, (75, 65), (195, 100), 255, -1)
+        cv2.rectangle(road, (130, 90), (165, 155), 255, -1)
+        return road, np.full(road.shape, 255, np.uint8), np.array([111., 104.])
+
+    def test_stable_minimap_resolves_vertical_arrow_animation(self):
+        """箭头上下摆动而圆心与可辨道路都静止，三次独立证据可确认停滞。"""
+        sample = self.minimap()
+        mini = MinimapStability(None, reader=lambda field: sample)
+        progress = ClickProgress(0.)
+        for now in (2., 3., 4.):
+            observation = combine_motion(dict(state='moving', movement_vector=[0., 15.]), mini.observe(None))
+            result = progress.update(now, observation)
+        self.assertEqual(result, 'stalled')
+        self.assertEqual(observation['reason'], 'independent_minimap_stable')
+
+    def test_map_scroll_or_ring_displacement_cannot_confirm_stationary(self):
+        """跟随镜头造成道路移动，或镜头不动但圆心移动，都不能被静止交叉确认覆盖。"""
+        road, valid, player = self.minimap()
+        moved = cv2.warpAffine(road, np.float32([[1, 0, 8], [0, 1, 0]]), road.shape[::-1])
+        for changed in ((moved, valid, player), (road, valid, player+[2., 0.])):
+            reader = iter([(road, valid, player), changed])
+            mini = MinimapStability(None, reader=lambda field: next(reader))
+            self.assertEqual(mini.observe(None)['state'], 'unknown')
+
+    def test_featureless_straight_road_cannot_certify_stationary(self):
+        """无限长直路滚动可与原图相同，缺少二维转角时拒绝提供静止证据。"""
+        road, valid, player = self.minimap()
+        road[:] = 0
+        road[:, 80:130] = 255
+        mini = MinimapStability(None, reader=lambda field: (road, valid, player))
+        self.assertEqual(mini.observe(None)['state'], 'unknown')
+
+    def test_conflicting_real_motion_remains_unknown(self):
+        """超出已标定箭头动画的场景移动与小地图冲突时，不选更方便的静止结果。"""
+        scene = dict(state='moving', movement_vector=[40., 0.])
+        self.assertEqual(combine_motion(scene, dict(state='stationary'))['state'], 'unknown')
 
 
 if __name__ == '__main__':
