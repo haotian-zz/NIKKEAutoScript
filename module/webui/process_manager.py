@@ -20,6 +20,31 @@ from module.logger import logger, set_file_logger, set_func_logger
 from module.webui.setting import State
 
 
+def enqueue_renderable(target, item):
+    """向有界网页日志队列非阻塞投递，消费停顿时不累积无限对象或阻塞任务。
+
+    DEBUG在满队列时直接丢弃；其他级别可替换最旧条目，完整文件日志仍由独立处理器保存。
+    消费进程退出造成的管道错误仅终止该次网页投递，不影响游戏执行或文件日志。
+    """
+    try:
+        try:
+            target.put_nowait(item)
+            return
+        except queue.Full:
+            if item[0] < logging.INFO:
+                return
+        try:
+            target.get_nowait()
+        except queue.Empty:
+            pass
+        try:
+            target.put_nowait(item)
+        except queue.Full:
+            pass
+    except (BrokenPipeError, EOFError, OSError):
+        return
+
+
 class ProcessManager:
     _processes: Dict[str, "ProcessManager"] = {}
     # get_manager 的 check-then-act 必须加锁：后端启动时编排器线程与
@@ -30,7 +55,7 @@ class ProcessManager:
     def __init__(self, config_name: str = "nkas") -> None:
         self.config_name = config_name
         self._lifecycle_lock = threading.RLock()
-        self._renderable_queue: queue.Queue[Tuple[int, ConsoleRenderable]] = State.manager.Queue()
+        self._renderable_queue: queue.Queue[Tuple[int, ConsoleRenderable]] = State.manager.Queue(maxsize=2048)
         # Replay buffer entries are (levelno, renderable).  Retention is per
         # level class so a debug flood cannot push info/warn/error lines out
         # of the replay: the SPA filter defaults to info and would otherwise
@@ -513,7 +538,7 @@ class ProcessManager:
             logger.info("Electron detected, remove log output to stdout")
             from module.logger import console_hdlr
             logger.removeHandler(console_hdlr)
-        set_func_logger(func=q.put)
+        set_func_logger(func=lambda item: enqueue_renderable(q, item))
         set_preview_queue(pq)
 
         from module.config.config import NikkeConfig

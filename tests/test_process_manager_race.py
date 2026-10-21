@@ -6,6 +6,7 @@ ProcessManager.get_manager 并发安全回归测试。
 覆盖了真正 fork 实例进程的对象，后端误判实例已停止、串行令牌永不授予。
 """
 import queue
+import logging
 import threading
 import time
 import unittest
@@ -19,7 +20,7 @@ class DummyManager:
 
     def Queue(self, *args, **kwargs):
         time.sleep(0.002)
-        return queue.Queue()
+        return queue.Queue(*args, **kwargs)
 
 
 class GetManagerRaceTests(unittest.TestCase):
@@ -52,6 +53,23 @@ class GetManagerRaceTests(unittest.TestCase):
 
             self.assertEqual(len(ProcessManager._processes), 1)
             self.assertEqual(len({id(m) for m in results}), 1)
+
+    def test_stopped_log_consumer_has_bounded_storage_and_accepts_recent_error(self):
+        """无人消费时大量调试日志不得无限占用内存，后续错误仍能替换旧条目。"""
+        manager = ProcessManager('resource-test')
+        for i in range(10000):
+            process_manager.enqueue_renderable(manager._renderable_queue, (logging.DEBUG, str(i)))
+        self.assertEqual(manager._renderable_queue.qsize(), 2048)
+        process_manager.enqueue_renderable(manager._renderable_queue, (logging.ERROR, 'recent failure'))
+        retained = [manager._renderable_queue.get_nowait() for _ in range(2048)]
+        self.assertIn((logging.ERROR, 'recent failure'), retained)
+
+    def test_closed_log_consumer_does_not_raise_into_game_task(self):
+        """网页日志进程断开时，发送端不将管道异常传播成游戏任务失败。"""
+        from unittest.mock import Mock
+        target = Mock()
+        target.put_nowait.side_effect = BrokenPipeError('consumer exited')
+        process_manager.enqueue_renderable(target, (logging.ERROR, 'saved to file separately'))
 
 
 if __name__ == '__main__':
