@@ -7,6 +7,7 @@ import numpy as np
 from module.campaign.navigation import controls as goto
 from module.campaign.navigation.camera_navigation import pan_scene
 from module.campaign.navigation.movement_feedback import TargetTriggered
+from module.campaign.navigation.hybrid_localization import locate_squad, position_feedback
 from module.campaign.vision.enemy_ring import clickable_ring
 from module.campaign.vision.objects import detect_objects, nearby_platforms, visible_platforms
 from module.campaign.vision.perception import squad_arrow
@@ -155,6 +156,19 @@ def recover_visible_structure(runner, field, allow_unanchored=False):
     if candidates and runner.structure_inputs < 2:
         target = (candidates[0] if ground is None else min(candidates, key=lambda item: (
             item['kind'] != 'ground_mechanism', np.linalg.norm(np.asarray(item['position']) - ground))))
+        # 仅每次真实胜利前的首个设施尝试补地图证据，普通点击与后续恢复不承担反复全图定位成本。
+        before_location = None
+        if runner.structure_inputs == 0:
+            before_location = locate_squad(session, 'structure_before_location')
+            session.pause(.25)
+            fresh = runner.map_frame()
+            if goto.battle_popup_score(fresh) > .8:
+                return 'entry'
+            current = structure_observations(fresh, squad_arrow(fresh), allow_unanchored)
+            matches = stable_structures([target], current)
+            if len(matches) != 1:
+                raise StructureUnconfirmed('地图定位后设施未在新鲜画面保持唯一确认，未发送旧落点。')
+            target = matches[0]
         session.begin_target('structure_attempt')
         session.record_evidence('structure_attempt', fresh, target=target, arrays=dict(field=fresh),
                                 squad_anchor='unobserved' if ground is None else 'arrow_ground')
@@ -166,8 +180,15 @@ def recover_visible_structure(runner, field, allow_unanchored=False):
         except TargetTriggered:
             return 'entry'
         observed = wait_structure_settle(runner, fresh)
+        location_result = dict(state='unknown', transfer='unconfirmed', activated='unconfirmed')
+        if before_location is not None and goto.battle_popup_score(observed) <= .8:
+            after_location = locate_squad(session, 'structure_after_location')
+            location_result = position_feedback(before_location, after_location)
+            observed = runner.map_frame()
+            session.record_evidence('structure_position_result', observed, before=before_location,
+                                    after=after_location, result=location_result, arrays=dict(field=observed))
         session.record_evidence('structure_observed', observed, attempted=target,
-                                state='unconfirmed', arrays=dict(field=observed))
+                                state='unconfirmed', position_feedback=location_result, arrays=dict(field=observed))
         # 镜头或小队可能已经移动，旧观察身份不得阻止新画面的独立目标复核。
         runner.memory.previous = None
         runner.deferred.clear()

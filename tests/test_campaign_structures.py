@@ -26,6 +26,10 @@ class StructureTests(unittest.TestCase):
         self.runner = Mock(structure_inputs=0, structure_pans=0)
         self.runner.map_frame.return_value = self.field
         self.runner.session = Mock()
+        patcher = patch.object(structure, 'locate_squad', return_value=dict(
+            status='needs_review', identity=[21, 'normal'], map_sha256=None, position=None))
+        patcher.start()
+        self.addCleanup(patcher.stop)
         patcher = patch.object(structure, 'nearby_platforms', return_value=[])
         patcher.start()
         self.addCleanup(patcher.stop)
@@ -76,6 +80,18 @@ class StructureTests(unittest.TestCase):
         self.runner.session.tap.assert_not_called()
         pan.assert_not_called()
 
+    def test_localization_does_not_preserve_a_stale_facility_click(self):
+        """地图复核后设施移动或消失时拒绝旧落点，不能把定位成功当作交互许可。"""
+        target = fixture()
+        with patch.object(structure, 'detect_objects', side_effect=[
+                [target], [target], [fixture(position=(1050., 650.))]]), \
+                patch.object(structure, 'squad_arrow', return_value=np.array([600., 400.])), \
+                patch.object(structure.goto, 'battle_popup_score', return_value=0.):
+            with self.assertRaisesRegex(structure.StructureUnconfirmed, '旧落点'):
+                structure.recover_visible_structure(self.runner, self.field)
+        self.runner.session.tap.assert_not_called()
+        self.assertEqual(self.runner.structure_inputs, 0)
+
     def test_nearby_platform_is_not_rejected_as_already_used(self):
         """真实失败中近端距小队约90px的平台优先于峡谷另一侧高分平台，仍只点一次。"""
         near, far = fixture(position=(750., 305.)), fixture(position=(1482., 699.))
@@ -123,13 +139,13 @@ class StructureTests(unittest.TestCase):
     def test_unanchored_transient_miss_still_requires_two_adjacent_confirmations(self):
         """首帧平台短暂漏检时最多补两帧；两次连续高分后才发唯一输入。"""
         target = fixture()
-        with patch.object(structure, 'detect_objects', side_effect=[[], [target], [target]]) as detect, \
+        with patch.object(structure, 'detect_objects', side_effect=[[], [target], [target], [target]]) as detect, \
                 patch.object(structure, 'squad_arrow', return_value=None), \
                 patch.object(structure.goto, 'battle_popup_score', return_value=0.), \
                 patch.object(structure, 'wait_structure_settle', return_value=self.field):
             self.assertEqual(structure.recover_visible_structure(
                 self.runner, self.field, allow_unanchored=True), 'attempted')
-        self.assertEqual(detect.call_count, 3)
+        self.assertEqual(detect.call_count, 4)
         self.runner.session.tap.assert_called_once_with(target['position'])
 
     def test_unanchored_permanent_miss_stops_after_four_observations(self):
