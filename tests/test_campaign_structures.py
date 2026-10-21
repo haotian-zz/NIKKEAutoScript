@@ -26,6 +26,9 @@ class StructureTests(unittest.TestCase):
         self.runner = Mock(structure_inputs=0, structure_pans=0)
         self.runner.map_frame.return_value = self.field
         self.runner.session = Mock()
+        patcher = patch.object(structure, 'nearby_platforms', return_value=[])
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def test_only_unactivated_switch_or_full_high_confidence_platform_is_actionable(self):
         """开启机关、低分、底栏和截断框不得变成新落点。"""
@@ -69,6 +72,20 @@ class StructureTests(unittest.TestCase):
                 structure.recover_visible_structure(self.runner, self.field)
         self.runner.session.tap.assert_not_called()
         pan.assert_not_called()
+
+    def test_nearby_platform_is_not_rejected_as_already_used(self):
+        """真实失败中近端距小队约90px的平台优先于峡谷另一侧高分平台，仍只点一次。"""
+        near, far = fixture(position=(750., 305.)), fixture(position=(1482., 699.))
+        with patch.object(structure, 'detect_objects', return_value=[far]), \
+                patch.object(structure, 'nearby_platforms', return_value=[near]), \
+                patch.object(structure, 'squad_arrow', return_value=np.array([721., 304.5])), \
+                patch.object(structure.goto, 'ARROW_GROUND_OFFSET', 90.), \
+                patch.object(structure.goto, 'battle_popup_score', return_value=0.), \
+                patch.object(structure, 'wait_structure_settle', return_value=self.field):
+            self.assertEqual(structure.recover_visible_structure(self.runner, self.field), 'attempted')
+        self.runner.session.tap.assert_called_once_with(near['position'])
+        self.runner.guided_quests.discard.assert_called_once()
+        self.assertEqual(self.runner.marker_pans, 0)
 
     def test_exhausted_budget_stops_and_does_not_click_again(self):
         """两次设施和四次视角均已用完时，明确停止而不继续同一设施。"""

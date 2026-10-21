@@ -8,7 +8,7 @@ from module.campaign.navigation import controls as goto
 from module.campaign.navigation.camera_navigation import pan_scene
 from module.campaign.navigation.movement_feedback import TargetTriggered
 from module.campaign.vision.enemy_ring import clickable_ring
-from module.campaign.vision.objects import detect_objects
+from module.campaign.vision.objects import detect_objects, nearby_platforms
 from module.campaign.vision.perception import squad_arrow
 from module.campaign.vision.native_motion import ClickProgress, MinimapStability, NativeMotion, combine_motion
 from module.campaign.vision.learned_recovery import recover_if_enabled
@@ -41,6 +41,34 @@ def stable_structures(first, second):
         if len(nearby) == 1 and not competition:
             result.append(item)
     return result
+
+
+def structure_observations(field, arrow):
+    """合并网格与可信小队附近的分级补查，平台框IoU≥0.5时保留分数更高的当前观测。
+
+    起终点只是外观分类，重叠去重按平台语义而非标签方向，避免同一平台重复候选互相竞争。
+    小队未确认时不建立局部裁图；实际交互仍须两帧原状态与原分数门槛。
+    """
+    objects = detect_objects(field, ('ground_mechanism', 'elevator', 'barrier'))
+    if arrow is None:
+        return objects
+    local = nearby_platforms(field, np.asarray(arrow)+[0., goto.ARROW_GROUND_OFFSET])
+    for candidate in local:
+        duplicates = []
+        a = np.asarray(candidate['box'])
+        for index, item in enumerate(objects):
+            if item['kind'] != 'elevator':
+                continue
+            b = np.asarray(item['box'])
+            intersection = np.maximum(0., np.minimum(a[2:], b[2:])-np.maximum(a[:2], b[:2])).prod()
+            union = np.prod(a[2:]-a[:2])+np.prod(b[2:]-b[:2])-intersection
+            if intersection/max(1., union) >= .5:
+                duplicates.append(index)
+        if not duplicates:
+            objects.append(candidate)
+        elif all(candidate['confidence'] > objects[index]['confidence'] for index in duplicates):
+            objects = [item for index, item in enumerate(objects) if index not in duplicates]+[candidate]
+    return objects
 
 
 def wait_structure_settle(runner, before=None):
@@ -84,23 +112,23 @@ def recover_visible_structure(runner, field):
     if learned is not None:
         return learned
     session = runner.session
-    first = detect_objects(field, ('ground_mechanism', 'elevator', 'barrier'))
+    first = structure_observations(field, squad_arrow(field))
     session.pause(.25)
     fresh = runner.map_frame()
     if goto.battle_popup_score(fresh) > .8:
         return 'entry'
-    second = detect_objects(fresh, ('ground_mechanism', 'elevator', 'barrier'))
-    candidates = stable_structures(first, second)
     arrow = squad_arrow(fresh)
+    second = structure_observations(fresh, arrow)
+    candidates = stable_structures(first, second)
     session.record_evidence('structure_probe', fresh, objects=second, candidates=candidates,
                             arrays=dict(field=fresh), inputs=runner.structure_inputs, pans=runner.structure_pans)
     session.preview(fresh)
     if arrow is None:
         raise StructureUnconfirmed('目标受阻，设施恢复未确认画面内小队位置；已保留原图，停止探索。')
     ground = np.asarray(arrow) + [0., goto.ARROW_GROUND_OFFSET]
-    # 站在平台附近时不重复点脚下；直线距离只用于排序，不声称已经验证道路可达。
+    # 邻近平台仍可能需要主动踏上或交互，不能以100px近距推定已经操作；距离只用于排序。
     candidates = [item for item in candidates
-                  if 100. <= np.linalg.norm(np.asarray(item['position']) - ground) <= 1000.]
+                  if np.linalg.norm(np.asarray(item['position']) - ground) <= 1000.]
     if candidates and runner.structure_inputs < 2:
         target = min(candidates, key=lambda item: (
             item['kind'] != 'ground_mechanism', np.linalg.norm(np.asarray(item['position']) - ground)))
@@ -119,6 +147,8 @@ def recover_visible_structure(runner, field):
         # 镜头或小队可能已经移动，旧观察身份不得阻止新画面的独立目标复核。
         runner.memory.previous = None
         runner.deferred.clear()
+        runner.guided_quests.discard(runner.quest)
+        runner.marker_pans = 0
         return 'attempted'
     if runner.structure_pans < 4:
         directions = ((-360., 0.), (0., -240.), (360., 0.), (0., 240.))

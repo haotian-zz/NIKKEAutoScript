@@ -154,7 +154,7 @@ class EntryStageGuard:
             current = self.stage if read_ex_entry(field, self.reader) else None
         else:
             current = read_stage(field, self.reader)
-        self.session.record_evidence('story_entry', field, expected=self.stage, actual=current)
+        self.session.record_evidence('story_entry', field, expected=self.stage, actual=current, arrays=dict(field=field))
         self.stable = self.stable + 1 if current is not None and current == self.previous else int(current is not None)
         self.previous = current
         if current == self.stage and self.stable >= 2:
@@ -285,7 +285,7 @@ class VisibleStoryRunner:
                 current = ex_identity if read_ex_entry(field, self.owner.chapter_ocr) else None
             else:
                 current = read_stage(field, self.owner.chapter_ocr)
-            self.session.record_evidence('scene_entry', field, actual=current, quest=self.quest)
+            self.session.record_evidence('scene_entry', field, actual=current, quest=self.quest, arrays=dict(field=field))
             if current is not None and current == previous:
                 return current
             previous = current
@@ -401,7 +401,8 @@ class VisibleStoryRunner:
     def reveal_marked_area(self, field):
         """用稳定的场内／离屏菱形露出目标区域，不把屏幕标记当作地面落点或敌人身份。
 
-        同一战斗间隔最多四次，拖动不超过480px。场内／离屏分类会随指针动画变化，
+        每次目标定位最多四次，设施动作后允许重新定位；真实胜利前设施总预算仍是两次。
+        拖动不超过480px。场内／离屏分类会随指针动画变化，
         最多六帧内两次同位置识别才用于找镜头方向，不直接点击。小队精定位或离屏标记须明确，
         实际相机手势继续经过现有按下点避让；操作后必须重新扫描脚圈并核对真实备战。
         """
@@ -539,7 +540,7 @@ class VisibleStoryRunner:
                 float(np.linalg.norm(np.asarray(item['click']) - anchor))))
             self.session.begin_target(target['id'])
             self.session.preview(fresh)
-            self.session.record_evidence('scene_target', fresh, quest=self.quest, target=target)
+            self.session.record_evidence('scene_target', fresh, quest=self.quest, target=target, arrays=dict(field=fresh))
             logger.info(f"地图敌人目标：{target['id']}，脚圈 {target['click']}，当前可选 {len(candidates)} 个；"
                         '到达后读取实际遇敌关卡。')
             try:

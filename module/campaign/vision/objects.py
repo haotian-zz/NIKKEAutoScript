@@ -1,6 +1,11 @@
 """客户区与小地图里的目标识别：把 YOLO 类别统一成后续推图逻辑使用的语义对象。"""
 
-from module.campaign.vision.detection import GRID_LABELS, LEGACY_SCENE_LABELS, MINIMAP_LABELS, detect_grid, detect_minimap, detect_scene
+import numpy as np
+
+from module.campaign.vision.detection import (
+    GRID_LABELS, LEGACY_SCENE_LABELS, MINIMAP_LABELS, Detection,
+    detect_grid, detect_minimap, detect_scene, detector, suppress,
+)
 
 # 模型类别到语义的映射；state 区分同一类目标的状态或形态，后续逻辑按 kind 取、按 state 判断。
 OBJECTS = {
@@ -69,6 +74,33 @@ def detect_objects(image, kinds=None):
         detections += detect_scene(image, legacy)
     return sorted((described(item, 'client') for item in detections),
                   key=lambda item: item['confidence'], reverse=True)
+
+
+def nearby_platforms(image, ground):
+    """在可信小队周围分级补查400px平台裁图，保留原模型分数与客户区坐标。
+
+    用于原生寻路停滞后的设施诊断，补足640网格对近端小平台的尺度/上下文漏检。
+    中央一片没有完整高分平台时才扩展四个邻域，最多五片；裁图保持400×400并夹回客户区。
+    不移动游戏镜头、不修改全局阈值、不推测可达或配对，仍须下游两帧及0.9交互门槛。
+    """
+    ground = np.asarray(ground, float)
+    if image.shape != (999, 1776, 3) or ground.shape != (2,) or not np.isfinite(ground).all():
+        raise ValueError('近端平台补查要求正式客户区和可信二维小队落点。')
+    from module.campaign.vision.enemy_ring import clickable_ring
+    found, seen = [], set()
+    for index, offset in enumerate(((0, 0), (-300, 0), (300, 0), (0, -240), (0, 240))):
+        left, top = np.clip(np.rint(ground+offset-200), (0, 0), (1376, 599)).astype(int)
+        if (left, top) in seen:
+            continue
+        seen.add((left, top))
+        local = detector().predict(image[top:top+400, left:left+400],
+                                   ('scene_elevator_start', 'scene_elevator_end'))
+        shifted = [Detection(item.label, item.confidence, tuple(np.asarray(item.box)+[left, top, left, top]))
+                   for item in local]
+        found.extend(item for item in shifted if clickable_ring(item.box))
+        if index == 0 and any(item.confidence >= .9 for item in found):
+            break
+    return [dict(described(item, 'client'), view='squad_local_400') for item in suppress(found)]
 
 
 def detect_minimap_objects(panel, kinds=None):
