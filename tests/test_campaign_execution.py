@@ -324,6 +324,18 @@ class SessionTests(unittest.TestCase):
         self.assertIsNone(self.session.chapter_overlay_validator)
         self.assertEqual(self.session.inputs, 1)
 
+    def test_verified_ui_keeps_overlay_guard_and_clears_validator(self):
+        """任务控件不能穿透章节浮层，最终核验失败不发输入且不泄漏临时许可。"""
+        with patch('module.campaign.session.overlay_anchor', return_value=dict(kind='chapter_completion')):
+            with self.assertRaises(TargetTriggered):
+                self.session.tap_verified_ui([1749, 100], Mock(return_value=True))
+        self.assertIsNone(self.session.ui_validator)
+        with self.assertRaises(WindowChanged):
+            self.session.tap_verified_ui([1749, 100], Mock(return_value=False))
+        self.assertIsNone(self.session.ui_validator)
+        self.handler.mouse_click.assert_not_called()
+        self.assertEqual(self.session.inputs, 0)
+
     def test_invalid_clicks_send_nothing(self):
         """非有限或越界点在驱动前被拦截。"""
         for point in ([np.nan, 1], [-1, 1], [1776, 1], [1]):
@@ -778,6 +790,24 @@ class LandingTests(unittest.TestCase):
 
 class PanEndpointTests(unittest.TestCase):
     """镜头拖动的按下点必须避开小队，且不得改变规划器给出的向量。"""
+
+    def test_real_body_box_avoids_press_without_inventing_ground(self):
+        """没有箭头时真实人物框可独立保护按下区域，不产生地面锚点且保持原拖动向量。"""
+        region = (24, 320, 1752, 880)
+        drag = np.array([-52.2, 217.1])
+        start, end = pan_endpoints(region, drag, squad_box=[840, 438, 941, 526])
+        self.assertFalse(760 <= start[0] <= 1021 and 338 <= start[1] <= 626)
+        self.assertEqual((end-start).tolist(), [-52, 218])
+        for point in (start, end):
+            self.assertTrue(24 <= point[0] <= 1752 and 320 <= point[1] <= 880)
+
+    def test_invalid_or_fully_blocking_body_box_refuses_pan(self):
+        """坏框或没有空地按下点时明确失败，不把框中心当替代的小队脚下。"""
+        for box in ([np.nan, 1, 2, 3], [1, 2, 0, 3], [0, 0, 1777, 999], [1, 2]):
+            with self.assertRaises(ValueError):
+                pan_endpoints((24, 320, 1752, 880), np.array([100., 0.]), squad_box=box)
+        with self.assertRaises(ValueError):
+            pan_endpoints((870, 496, 900, 520), np.array([-10., 20.]), squad_box=[840, 438, 941, 526])
 
     def test_short_drag_moves_press_off_squad(self):
         """复现 38 章短拖动：原按下点在小队脚下时，整体移到最近的空地端点。"""

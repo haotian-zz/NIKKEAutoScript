@@ -108,6 +108,19 @@ def read_stage(field, reader, quest=False):
                 return stage
         crop = cv2.resize(crop, None, fx=2, fy=2)
         return parse_stage(reader.ocr(crop, direct_ocr=True, threshold=.9)['text'])
+    text = read_quest_text(field, reader)
+    return parse_stage(text, quest=True) if text is not None else None
+
+
+def read_quest_text(field, reader):
+    """读取完整固定主线任务行，保留0.9分门槛；不把返回大厅等非战斗指令丢成空编号。
+
+    返回高分原文或None；任务类型由调用方独立解析，不从当前章节或已胜关卡补全。
+    """
+    if field.shape != (999, 1776, 3):
+        raise ValueError('主线任务核对需要1776×999 BGR客户区。')
+    x1, y1, x2, y2 = QUEST_AREA
+    crop = field[y1:y2, x1:x2]
     hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
     ys, xs = np.nonzero((hsv[:, :, 1] < 90) & (hsv[:, :, 2] > 150))
     if len(xs) < 20:
@@ -119,7 +132,13 @@ def read_stage(field, reader, quest=False):
         return None
     text, score = results[0].get('rec_text', ''), float(results[0].get('rec_score', 0.))
     logger.info(f'主线任务单行识别：{text!r}，分数 {score:.3f}')
-    return parse_stage(text, quest=True) if np.isfinite(score) and score >= .9 else None
+    return text if np.isfinite(score) and score >= .9 else None
+
+
+def return_lobby_quest(text):
+    """只接受完整的简繁体返回大厅任务，不从含大厅的说明句或残缺文字猜测操作。"""
+    return bool(text is not None and re.fullmatch(r'返回(?:【(?:大厅|大廳)】|\[(?:大厅|大廳)\]|大厅|大廳)',
+                                                re.sub(r'\s+', '', text)))
 
 
 def read_ex_entry(field, reader):
@@ -393,6 +412,44 @@ class VisibleStoryRunner:
         return (item['id'] not in self.deferred
                 and item['status'] not in ('deferred', 'ex_skipped', 'unreachable', 'stalled', 'manual_required'))
 
+    def return_lobby(self, field):
+        """连续确认主线要求返回大厅后点真实任务箭头一次，后续由大厅独立核对任务推进。
+
+        两帧及最终输入帧都须确认同章普通地图、完整任务文字和蓝色箭头；文字已确认但
+        控件或身份不稳定时停止，不继续扫怪。点击本身不计作任务完成或整章清空。
+        """
+        if not return_lobby_quest(read_quest_text(field, self.owner.chapter_ocr)):
+            return False
+        expected = (self.owner.current_chapter, 'normal')
+        point = quest_jump_point(field)
+        if point is None or chapter_identity(field, self.owner.chapter_ocr) != expected:
+            raise StoryVerificationError('返回大厅任务已出现，但地图身份或任务箭头未确认。',
+                                         reason='story_return_unconfirmed')
+
+        def validate(latest):
+            """最新一帧必须仍为同一返回任务、地图身份和实际箭头，不沿用旧屏幕点位。"""
+            current = read_quest_text(latest, self.owner.chapter_ocr)
+            control = quest_jump_point(latest)
+            accepted = (return_lobby_quest(current) and chapter_identity(latest, self.owner.chapter_ocr) == expected
+                        and control is not None and np.linalg.norm(np.asarray(point)-control) <= 5.)
+            self.session.record_evidence('story_return_guard', latest, accepted=bool(accepted), quest=current,
+                                         control=control, arrays=dict(field=latest))
+            return bool(accepted)
+
+        self.session.pause(.35)
+        fresh = self.map_frame()
+        if not validate(fresh):
+            raise StoryVerificationError('返回大厅任务未能连续确认，未发送点击。',
+                                         reason='story_return_unconfirmed')
+        self.session.begin_target('story_return_lobby')
+        self.session.record_evidence('story_return_lobby', fresh, chapter=expected[0], control=point,
+                                     arrays=dict(field=fresh))
+        if not self.session.tap_verified_ui(point, validate):
+            raise StoryVerificationError('返回大厅任务点击未发送，保留当前状态。',
+                                         reason='story_return_unconfirmed')
+        logger.info('已核验返回大厅任务并点击任务箭头；待大厅实际任务核对，不计作通关或清理完成。')
+        return True
+
     def guide_quest(self, field):
         """无可选普通怪时，最多一次请求游戏定位当前任务，再从新帧扫描而不猜测敌人坐标。
 
@@ -539,6 +596,8 @@ class VisibleStoryRunner:
                 self.restore_chapter(identity)
                 continue
             current = read_stage(field, self.owner.chapter_ocr, quest=True)
+            if current is None and self.return_lobby(field):
+                return dict(state='continue', reason='story_return_lobby', chapter=self.owner.current_chapter)
             if current is not None:
                 if current != self.quest:
                     self.memory.reconsider(current, self.owner.story_wins)

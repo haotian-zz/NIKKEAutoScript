@@ -232,6 +232,30 @@ class CampaignStartTests(unittest.TestCase):
             self.assertEqual(factory.call_count, 1)
             runner.renew_progress_guard.assert_not_called()
 
+    def test_return_lobby_confirms_new_quest_and_reselects_pending_chapter(self):
+        """返回点击不续计时；大厅实际读到新章任务后才续，并重新选择旧章待办。"""
+        fn, runner, factory, _ = self.continuous_runner(
+            [('story_return_lobby', 0), ('tick_budget', 0)], [None, (21, 1)])
+        campaigns = list(factory.side_effect)
+        campaigns[0].last_result['chapter'] = 20
+        factory.side_effect = campaigns
+        fn.__globals__['pending_chapter'] = Mock(return_value=20)
+        fn(runner)
+        self.assertEqual(runner.ensure_main_map.call_count, 2)
+        self.assertEqual([c.args[1] for c in runner.select_chapter.call_args_list], [20, 20])
+        runner.renew_progress_guard.assert_called_once()
+
+    def test_return_lobby_without_new_quest_stops_without_renewal(self):
+        """大厅仍无法给出新任务时停止，不能把返回动作计为真实进展或反复跳转。"""
+        fn, runner, factory, reports = self.continuous_runner([('story_return_lobby', 0)], [None, None])
+        campaigns = list(factory.side_effect)
+        campaigns[0].last_result['chapter'] = 20
+        factory.side_effect = campaigns
+        fn(runner)
+        self.assertEqual(factory.call_count, 1)
+        runner.renew_progress_guard.assert_not_called()
+        self.assertIn('尚未确认推进', reports[-1][1])
+
     def test_continuous_empty_map_checks_quest_once_then_stops(self):
         """无可达目标时只多核对一次大厅任务，任务没前进就结束。"""
         fn, runner, factory, reports = self.continuous_runner([('no_reachable_target', 0)], [(20, 6)] * 2)

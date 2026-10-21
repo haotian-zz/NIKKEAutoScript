@@ -305,6 +305,7 @@ class CampaignSession(NavigationSession):
         self.deadline = None
         self.popup_handling = False
         self.chapter_overlay_validator = None
+        self.ui_validator = None
         # 战斗接管中：准备弹窗不再是终态，允许会话自己点它上面的按钮。
         self.battle_mode = False
         # 仅已安装独立 EX 身份核对的清怪闭环可保留 EX 弹窗；其他导航保持原来的关闭策略。
@@ -390,6 +391,8 @@ class CampaignSession(NavigationSession):
                 self.check_collectible(self.input_frame)
                 if not self.chapter_overlay_validator(self.input_frame):
                     raise WindowChanged('章节浮层在发送输入前已变化或未确认，未发送点击。')
+            if self.ui_validator is not None and not self.ui_validator(self.input_frame):
+                raise WindowChanged('地图任务控件在发送输入前已变化或未确认，未发送点击。')
         if self.target_inputs >= TARGET_INPUT_BUDGET:
             raise InputBudgetExceeded(f'同一个目标已操作 {TARGET_INPUT_BUDGET} 次仍未完成，停止并交人工复核。')
         self.inputs += 1
@@ -450,6 +453,21 @@ class CampaignSession(NavigationSession):
                 raise TargetTriggered('章节完成或探索解锁浮层阻塞地图，禁止发送野外操作。', overlay)
         self.popup(field)
         self.check_collectible(field)
+
+    def tap_verified_ui(self, point, validator):
+        """对已连续核验的地图任务控件单次点击，并在实际输入前重新核验最新画面。
+
+        保留普通identity的章节浮层、战斗和收集品保护；此入口不能绕过阻塞界面。
+        校验器只在同步点击期间有效，失败及异常均清除，不刷新任何真实进展计时器。
+        """
+        if (self.battle_mode or self.popup_handling or self.chapter_overlay_validator is not None
+                or self.ui_validator is not None):
+            raise WindowChanged('其他界面处理仍在进行，不能点击地图任务控件。')
+        self.ui_validator = validator
+        try:
+            return self.tap(point)
+        finally:
+            self.ui_validator = None
 
     def tap_chapter_overlay(self, point, validator):
         """仅为独立核验的章节浮层提供一次按钮点击，最后一帧仍须通过相同证据核对。

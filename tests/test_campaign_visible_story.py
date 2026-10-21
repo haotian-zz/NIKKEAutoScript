@@ -239,6 +239,36 @@ class VisibleStoryTests(unittest.TestCase):
             else:
                 self.assertIsNone(point)
 
+    def test_return_lobby_requires_exact_text_and_final_frame_control(self):
+        """非数字任务独立解析，控件改变后的最终帧不能沿用旧返回点击。"""
+        parse = self.ns['return_lobby_quest']
+        for text in ('返回【大厅】', '返回[大廳]', '返回大厅'):
+            self.assertTrue(parse(text))
+        for text in (None, '返回【大厅', '请返回大厅领取', '通关20-31', '前往大厅'):
+            self.assertFalse(parse(text))
+        self.ns['read_quest_text'] = Mock(return_value='返回【大厅】')
+        self.ns['quest_jump_point'] = Mock(return_value=(1749., 100.))
+        self.assertTrue(self.runner.return_lobby(self.field))
+        point, guard = self.session.tap_verified_ui.call_args.args
+        self.assertEqual(point, (1749., 100.))
+        self.ns['read_quest_text'].return_value = '通关【21-1】'
+        self.assertFalse(guard(self.field))
+        self.executor.battle.assert_not_called()
+
+    def test_return_lobby_precedes_scene_scanning_and_keeps_unstable_quest_blocked(self):
+        """返回任务优先交大厅处理；两帧变化时既不点控件，也不继续在旧图扫怪。"""
+        self.ns['read_stage'] = Mock(return_value=None)
+        self.ns['read_quest_text'] = Mock(return_value='返回【大厅】')
+        self.ns['quest_jump_point'] = Mock(return_value=(1749., 100.))
+        self.runner.scan = Mock()
+        self.assertEqual(self.runner.run(ticks=1), dict(state='continue', reason='story_return_lobby', chapter=20))
+        self.runner.scan.assert_not_called()
+        self.session.tap_verified_ui.reset_mock()
+        self.ns['read_quest_text'].side_effect = ['返回【大厅】', '通关【21-1】']
+        with self.assertRaises(self.ns['StoryVerificationError']):
+            self.runner.return_lobby(self.field)
+        self.session.tap_verified_ui.assert_not_called()
+
     def test_empty_view_can_request_current_quest_once_without_fighting(self):
         """定位任务只提供找方向辅助；同一任务不重复点击，也不能直接开战或换章。"""
         self.runner.quest = (20, 18)

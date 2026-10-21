@@ -70,26 +70,36 @@ def inside(point, bounds):
     return bool(np.isfinite([x, y]).all() and left <= x <= right and top <= y <= bottom)
 
 
-def pan_endpoints(region, drag, squad_ground=None):
+def pan_endpoints(region, drag, squad_ground=None, squad_box=None):
     """生成场景拖动端点，并在按下点落在小队脚下时整体平移手势到空地。
 
     region 是允许起终点出现的客户区矩形，drag 保持调用者计算的向量不变。squad_ground 为 None
     表示小队不在画面内，可直接使用区域中心。脚下安全椭圆取 120×150 像素半轴，覆盖实测圆环
     旋转后的外接范围并留识别余量；只在按下点进入椭圆时改点（见 pan_start_beside_squad）。
-    没有可行空地时抛 ValueError，禁止把手势发成走位点击。
+    squad_box可独立提供当前真实人物包围框，额外外扩80×100px避让；仅用于按下区域保护，
+    不把框中心当箭头或地面坐标。没有可行空地时抛ValueError，禁止把手势发成走位点击。
     """
     drag = np.asarray(drag, float)
     left, top, right, bottom = region
     center = np.array([(left + right) / 2, (top + bottom) / 2])
     start = np.rint(center - drag / 2).astype(int)
     end = np.rint(center + drag / 2).astype(int)
-    if squad_ground is not None:
-        ground = np.asarray(squad_ground, float)
+    if squad_ground is not None or squad_box is not None:
+        body = None
+        if squad_box is not None:
+            body = np.asarray(squad_box, float)
+            if (body.shape != (4,) or not np.isfinite(body).all() or np.any(body[:2] < 0)
+                    or np.any(body[2:] > [1776, 999]) or np.any(body[2:] <= body[:2])):
+                raise ValueError('小队人物包围框无效，未发送镜头手势。')
+            body = body+[-80., -100., 80., 100.]
+        ground = None if squad_ground is None else np.asarray(squad_ground, float)
         # 判据带安全余量：贴着椭圆边界的候选点取整后可能又落回圆环上，不能算安全。
         radii = np.array([120., 150.]) * SQUAD_CLEARANCE
 
         def on_squad(point):
-            return bool(np.sum(((np.asarray(point, float) - ground) / radii) ** 2) < 1.)
+            """真实地面椭圆与人物保护矩形取并集，只判断按下区域，不产生小队位置。"""
+            protected_ground = ground is not None and np.sum(((np.asarray(point, float)-ground)/radii)**2) < 1.
+            return bool(protected_ground or body is not None and inside(point, body))
 
         if on_squad(start):
             start, end = pan_start_beside_squad(region, drag, start, end, ground, on_squad)
@@ -198,18 +208,19 @@ def camera_response(chart, before, after, drag):
     return gain
 
 
-def pan_scene(session, drag, squad_ground=None):
+def pan_scene(session, drag, squad_ground=None, squad_box=None):
     """收起小地图并核对身份后，把客户区拖动端点换算为屏幕坐标发送一次手势。
 
     端点越界或驱动失败立即抛错；成功后等待场景稳定，本方法不发送小队移动点击。
     squad_ground 由调用方根据已定位的小队与当前镜头配准估算；按下点落在其上时整体平移
-    手势到空地，拖动向量保持不变。小队不在画面时传 None。
+    手势到空地，拖动向量保持不变。可信当前人物框可单独通过squad_box提供按下区域保护，
+    不为它构造地面坐标；调用方负责连续核验新鲜框。小队确实不在画面时两者均传None。
     """
     goto.map_close(session.win)
     field = goto.capture_client(session.win)
     session.identity(field)
     region, _ = pan_region(drag)
-    start, end = pan_endpoints(region, drag, squad_ground)
+    start, end = pan_endpoints(region, drag, squad_ground, squad_box)
     session.check()
     origin = np.array(session.win.gui.ClientToScreen(session.win.hwnd, (0, 0)))
     session.win.handler.mouse_swipe(tuple(origin + start), tuple(origin + end))

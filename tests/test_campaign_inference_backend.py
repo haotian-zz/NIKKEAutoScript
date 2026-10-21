@@ -13,6 +13,27 @@ from module.campaign.vision.inference_backend import LocalInference
 class InferenceBackendTests(unittest.TestCase):
     """隔离服务替身验证生产客户端，不需要GPU或真实网络。"""
 
+    def test_actor_camera_port_keeps_same_frame_and_model_contract(self):
+        """人物框原型只改变固定回环端口，仍须匹配原图、权重和有效框，不返回地面点。"""
+        field = np.zeros((999, 1776, 3), np.uint8)
+        item = dict(label='scene_squad_body', confidence=.95, box=[788., 437., 991., 548.])
+        connection = Mock()
+        response = connection.getresponse.return_value
+        response.status = 200
+        response.read.return_value = json.dumps(dict(schema=1, shape=list(field.shape),
+            model_sha256='actor', source_sha256=hashlib.sha256(field.tobytes()).hexdigest(),
+            detections=[item])).encode()
+        with patch('http.client.HTTPConnection', return_value=connection) as factory:
+            self.assertEqual(LocalInference('actor', ['scene_squad_body'], port=12279).scene(
+                field, ['scene_squad_body']), [item])
+        factory.assert_called_once_with('127.0.0.1', 12279, timeout=2.)
+        self.assertNotIn('ground', item)
+
+    def test_arbitrary_destination_port_is_rejected(self):
+        """不将隔离端口扩展为任意网络转发器，未知端口在创建连接前拒绝。"""
+        with self.assertRaises(ValueError):
+            LocalInference('actor', ['scene_squad_body'], port=9999)
+
     def test_bound_result_is_accepted(self):
         """同图同模型且框在图内，保留坐标；不额外做模型或阈值替换。"""
         image = np.zeros((30, 40, 3), np.uint8)

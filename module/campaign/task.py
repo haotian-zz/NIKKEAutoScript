@@ -234,6 +234,8 @@ class AutoPush(UI):
             return
         total_cleared, recovery, segment = 0, 0, 0
         require_advance = None
+        require_story_return = None
+        returned_chapters = set()
         resume_map = False
         try:
             while True:
@@ -242,6 +244,17 @@ class AutoPush(UI):
                         report('partial', f'本轮已确认清除 {total_cleared} 个敌人，当前入口需要处理')
                     return
                 entry = getattr(self, 'entry_stage', None)
+                if require_story_return is not None:
+                    origin_chapter, previous = require_story_return
+                    if (entry is None or previous is not None and entry <= previous
+                            or previous is None and entry[0] <= origin_chapter):
+                        save_wait_image(self.device, 'AutoPush_story_return_unconfirmed')
+                        report('partial' if total_cleared else 'blocked', '返回大厅后的主线任务尚未确认推进',
+                               '保留旧章待办；未以点击任务箭头作为进展，也不重复返回大厅')
+                        return
+                    logger.info(f'大厅已确认返回任务后的新主线目标：{entry}；旧章待办保留')
+                    self.renew_progress_guard()
+                    require_story_return = None
                 if require_advance is not None:
                     if entry is None or entry <= require_advance:
                         save_wait_image(self.device, 'AutoPush_no_progress')
@@ -290,6 +303,18 @@ class AutoPush(UI):
                 if code == 'chapter_cleared':
                     report('success', f'本章清怪巡检完成，本轮确认清除 {total_cleared} 个敌人', reason)
                     return
+                if continuous and code == 'story_return_lobby':
+                    origin_chapter = result.get('chapter')
+                    if not isinstance(origin_chapter, int) or origin_chapter in returned_chapters:
+                        report('partial' if total_cleared else 'blocked', '返回大厅任务重复或章节身份缺失，推图已停止',
+                               '旧章待办保留，不重复发送返回操作')
+                        return
+                    returned_chapters.add(origin_chapter)
+                    require_story_return = (origin_chapter, entry)
+                    target = pending_chapter(self.config)
+                    resume_map = False
+                    logger.info('主线要求返回大厅；重新核对实际任务后继续，先保留并选择旧章待办')
+                    continue
                 if continuous and code in ('tick_budget', 'segment_timeout') and cleared:
                     logger.info(f'{reason}，本段确认清除 {cleared} 个敌人，继续当前主线进度')
                     self.renew_progress_guard()

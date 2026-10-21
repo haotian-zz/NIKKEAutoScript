@@ -46,9 +46,12 @@ def prepare_cuda(repository):
 class LocalInference:
     """验证模型哈希、输入哈希及坐标契约，不把服务回包直接当作输入指令。"""
 
-    def __init__(self, model_sha256, labels):
-        """服务首次不可用后禁用本次实例的远端调用，避免每片都重复耗尽超时。"""
+    def __init__(self, model_sha256, labels, port=12280):
+        """服务首次不可用后禁用本次实例调用；只允许既有检测12280或隔离人物原型12279端口。"""
+        if port not in (12279, 12280):
+            raise ValueError('Unsupported local inference port')
         self.model_sha256, self.labels = model_sha256, labels
+        self.port = port
         self.available = True
 
     def predict(self, image, labels, guards):
@@ -72,7 +75,7 @@ class LocalInference:
         digest = hashlib.sha256(body).hexdigest()
         metadata = dict(shape=list(image.shape), labels=list(labels), guards=list(guards),
                         source_sha256=digest, model_sha256=self.model_sha256)
-        connection = http.client.HTTPConnection('127.0.0.1', 12280, timeout=2.)
+        connection = http.client.HTTPConnection('127.0.0.1', self.port, timeout=2.)
         try:
             connection.request('POST', route, body=body,
                                headers={'X-NKAS-Frame': json.dumps(metadata),
