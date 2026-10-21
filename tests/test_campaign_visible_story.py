@@ -304,6 +304,36 @@ class VisibleStoryTests(unittest.TestCase):
         self.session.tap_verified_ui.assert_called_once()
         self.executor.battle.assert_not_called()
 
+    def test_stable_main_marker_prioritizes_existing_ring_and_keeps_hidden_target_as_hint(self):
+        """任务只关联已有脚圈；脚圈被底栏排除或标记漂移时，不能用图标虚构点击。"""
+        self.runner.quest = (20, 18)
+        marker = dict(kind='scene', position=[1000., 650.], box=[965, 615, 1035, 685], confidence=.95)
+        self.ns['story_markers'] = Mock(return_value=[marker])
+        near = dict(self.target, id='near-but-blocked', click=[1200., 300.])
+        marked = dict(self.target, id='marked-ring', click=[1000., 750.])
+        target, hinted = self.runner.quest_target(self.field, self.field, [near, marked])
+        self.assertEqual(target['id'], 'marked-ring')
+        self.assertTrue(hinted)
+        target, hinted = self.runner.quest_target(self.field, self.field, [near])
+        self.assertIsNone(target)
+        self.assertTrue(hinted)
+        self.ns['story_markers'].side_effect = [[marker], [dict(marker, position=[1040., 650.])]]
+        self.assertEqual(self.runner.quest_target(self.field, self.field, [near, marked]), (None, False))
+
+    def test_visible_marked_ring_can_precede_unrelated_facility_recovery(self):
+        """旧目标受阻后，独立确认的新任务脚圈优先于平台试点，不绕过实际备战核验。"""
+        self.runner.quest = (20, 18)
+        self.runner.guided_quests.add(self.runner.quest)
+        self.runner.blocked_views = 1
+        self.ns['read_stage'] = Mock(return_value=self.runner.quest)
+        self.runner.scan = Mock(return_value=(self.field, [self.target]))
+        self.runner.quest_target = Mock(return_value=(self.target, True))
+        self.runner.wait_entry = Mock(return_value=True)
+        self.runner.fight_entry = Mock(return_value=True)
+        self.runner.run(ticks=1)
+        self.session.tap.assert_called_once_with(self.target['click'])
+        self.runner.fight_entry.assert_called_once_with(self.target)
+
     def test_low_scene_marker_only_moves_camera_and_requires_new_scan(self):
         """脚圈被底栏遮住时用稳定菱形规划镜头，不点击菱形或启动未核对战斗。"""
         marker = dict(kind='scene', position=[900., 830.], confidence=.95)

@@ -453,6 +453,34 @@ class VisibleStoryRunner:
         logger.info('已核验返回大厅任务并点击任务箭头；待大厅实际任务核对，不计作通关或清理完成。')
         return True
 
+    def quest_target(self, before, field, candidates):
+        """用稳定主线标记给已有真实脚圈排序，不从标记推算新的落点或授予关卡身份。
+
+        同章未完成任务才启用。标记至少两帧位置相差不超过10px；只有场内标记正下方
+        0.25～3倍图标高度、横差不超过0.75倍图标宽度的唯一已确认脚圈可优先。
+        无唯一关联时只报告有稳定提示，供有界镜头露出；离屏/弱形态提示不能直接关联落点。
+        """
+        if (self.quest is None or self.quest[0] != self.owner.current_chapter
+                or self.quest in self.owner.story_wins):
+            return None, False
+        previous = story_markers(before)
+        markers = [item for item in story_markers(field) if sum(
+            np.linalg.norm(np.asarray(item['position'])-old['position']) <= 10. for old in previous) == 1]
+        linked = {}
+        for marker in markers:
+            if marker['kind'] != 'scene':
+                continue
+            left, top, right, bottom = marker['box']
+            width, height = right-left, bottom-top
+            point = np.asarray(marker['position'])
+            matching = [item for item in candidates
+                        if abs(item['click'][0]-point[0]) <= .75*width
+                        and .25*height <= item['click'][1]-point[1] <= 3.*height]
+            if len(matching) == 1:
+                linked[matching[0]['id']] = matching[0]
+        target = next(iter(linked.values())) if len(linked) == 1 else None
+        return target, bool(markers)
+
     def guide_quest(self, field):
         """每个当前主线最多一次请求游戏定位任务，再从新帧扫描而不猜测敌人坐标。
 
@@ -623,7 +651,10 @@ class VisibleStoryRunner:
                 self.fight_entry()
                 continue
             candidates = [item for item in candidates if self.selectable(item)]
-            if self.blocked_views:
+            preferred, marked = self.quest_target(field, fresh, candidates)
+            if marked and preferred is None and self.reveal_marked_area(fresh):
+                continue
+            if self.blocked_views and preferred is None:
                 from module.campaign.structures import recover_visible_structure
                 recovery = recover_visible_structure(self, fresh)
                 if recovery != 'scouted':
@@ -632,7 +663,7 @@ class VisibleStoryRunner:
             if not candidates:
                 if self.guide_quest(fresh):
                     continue
-                if self.reveal_marked_area(fresh):
+                if not marked and self.reveal_marked_area(fresh):
                     continue
                 survey = ChapterSweep(self).run()
                 if survey['state'] == 'entry':
@@ -643,7 +674,7 @@ class VisibleStoryRunner:
                 fresh, candidates = survey['field'], survey['targets']
             observed_arrow = squad_arrow(fresh)
             anchor = np.asarray(goto.VIEWPORT_PIXEL if observed_arrow is None else observed_arrow)
-            target = min(candidates, key=lambda item: (
+            target = preferred or min(candidates, key=lambda item: (
                 stage_order(item['stage']) if item['stage'] is not None else (99, 99, '', 0),
                 float(np.linalg.norm(np.asarray(item['click']) - anchor))))
             self.session.begin_target(target['id'])
