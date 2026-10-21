@@ -81,6 +81,45 @@ class MinimapOcclusionTests(unittest.TestCase):
         session.tap_verified_ui.assert_not_called()
         session.owner.reopen_minimap_if_closed.assert_called_once()
 
+    def test_recenter_requires_actual_avatar_again_at_final_input(self):
+        """显式回中只点真实头像；最终帧头像消失则拒绝，仍恢复地图。"""
+        marker = dict(center=[85., 315.], radius=32.5)
+        for final_marker, expected_calls in ((marker, 1), (None, 0)):
+            session = Mock()
+            field = np.zeros((999, 1776, 3), np.uint8)
+            session.win.client.return_value = field
+            session.owner.observer.minimap_closed.return_value = True
+            sent = []
+
+            def send(point, validator):
+                """替身仅模拟正式输入前的最后一次视觉核验，不伪造核验通过。"""
+                if not validator(field):
+                    raise RuntimeError('avatar changed')
+                sent.append(point)
+
+            session.tap_verified_ui.side_effect = send
+            with patch.object(occlusion, 'squad_offscreen', side_effect=[marker, marker, final_marker]):
+                if final_marker is None:
+                    with self.assertRaisesRegex(RuntimeError, 'avatar changed'):
+                        occlusion.recenter_offscreen(session)
+                else:
+                    self.assertEqual(occlusion.recenter_offscreen(session), marker)
+            self.assertEqual(len(sent), expected_calls)
+            if sent:
+                self.assertEqual(sent[0], marker['center'])
+            session.owner.reopen_minimap_if_closed.assert_called_once()
+            session.win.handler.mouse_swipe.assert_not_called()
+
+    def test_recenter_missing_second_avatar_sends_no_avatar_click(self):
+        """初始地图已关闭但双帧头像不成立时，不点击历史位置或画面中心。"""
+        session = Mock()
+        session.win.client.return_value = np.zeros((999, 1776, 3), np.uint8)
+        session.owner.observer.minimap_closed.return_value = True
+        with patch.object(occlusion, 'squad_offscreen', side_effect=[dict(center=[85., 315.]), None]):
+            self.assertIsNone(occlusion.recenter_offscreen(session))
+        session.tap_verified_ui.assert_not_called()
+        session.owner.reopen_minimap_if_closed.assert_called_once()
+
 
 if __name__ == '__main__':
     unittest.main()

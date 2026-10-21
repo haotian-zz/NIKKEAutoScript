@@ -1,4 +1,4 @@
-"""临时移除紧凑小地图遮挡，读取真实离屏头像；不点击头像或生成小队地面位置。"""
+"""临时移除小地图遮挡，复核真实离屏头像；显式回中模式只点击已核验头像UI。"""
 
 import cv2
 import numpy as np
@@ -31,10 +31,28 @@ def compact_close_point(field):
 
 
 def unoccluded_offscreen(session):
-    """仅在双帧确认X后临时收起小地图，以原头像规则连续复核，正常返回前重新打开地图。
+    """临时移除遮挡并双帧读取真实离屏头像，恢复紧凑地图，不点击头像或场景。
 
-    每次最多一次收起和一次恢复，不拖镜头，不点击头像，不降低头像规则。取消及输入前控件
-    变化均保留正式闸门；恢复失败直接报错，禁止在未知地图状态继续行动。
+    只返回当前标记，不生成地面位置；控件不稳定、头像不一致及恢复失败均不能继续输入。
+    """
+    return _unoccluded_offscreen(session, recenter=False)
+
+
+def recenter_offscreen(session):
+    """双帧核验离屏头像并在最终输入前再核验一次，单击头像UI找回小队镜头。
+
+    调用方须显式选择此恢复步骤。头像落点来自实测圆环，不回退到画面中心；返回值仅证明
+    输入已发送，调用方仍须用新帧定位确认镜头与小队，不能据此认领移动、通行或机关改变。
+    """
+    return _unoccluded_offscreen(session, recenter=True)
+
+
+def _unoccluded_offscreen(session, recenter):
+    """仅在双帧确认X后临时收起地图，以原头像规则连续复核，离开前重新打开地图。
+
+    每次最多一次收起和一次恢复，不拖镜头，不降低头像规则。取消及输入前控件
+    变化均保留正式闸门；显式recenter才允许一次实际头像UI点击。恢复失败直接报错，禁止
+    在未知地图状态继续行动。像素坐标均为1776×999客户区，不是底图或地面位置。
     """
     field = session.win.client()
     session.identity(field)
@@ -76,6 +94,21 @@ def unoccluded_offscreen(session):
         if (first_marker is None or marker is None
                 or np.linalg.norm(np.asarray(marker['center'])-first_marker['center']) > 3.):
             return None
+        if recenter:
+            def verified_avatar(current):
+                """落点最终帧仍须是关闭地图中的同一个真实头像，不允许点已消失的UI。"""
+                if not session.owner.observer.minimap_closed(current):
+                    return False
+                actual = squad_offscreen(current)
+                return (actual is not None
+                        and np.linalg.norm(np.asarray(actual['center'])-marker['center']) <= 3.)
+
+            session.tap_verified_ui(marker['center'], verified_avatar)
+            session.pause(1.)
+            after = session.win.client()
+            session.identity(after)
+            session.record_evidence('offscreen_recenter_input', after, marker=marker,
+                                    outcome='camera_and_squad_unconfirmed', arrays=dict(field=after))
         return marker
     finally:
         session.owner.device.screenshot()
