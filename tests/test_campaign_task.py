@@ -231,14 +231,15 @@ class CampaignStartTests(unittest.TestCase):
         self.assertIn('3 个敌人', reports[-1][1])
         self.assertEqual(reports[-1][2], 'battle_defeat')
 
-    def test_pending_chapter_is_selected_once_before_continuous_progress(self):
-        """中断后先补旧章，完成并换章后的续段不再把相机送回旧章。"""
+    def test_continuous_follows_mainline_without_selecting_old_pending_chapter(self):
+        """旧章待办不能把连续主线送回过去章节；显式单章模式仍使用指定章节。"""
         fn, runner, factory, _ = self.continuous_runner(
             [('chapter_changed', 1), ('tick_budget', 0)], [(20, 31)])
         fn.__globals__['pending_chapter'] = Mock(return_value=20)
         fn(runner)
         self.assertEqual(factory.call_count, 2)
-        self.assertEqual([c.args[1] for c in runner.select_chapter.call_args_list], [20, None])
+        self.assertEqual([c.args[1] for c in runner.select_chapter.call_args_list], [None, None])
+        fn.__globals__['pending_chapter'].assert_not_called()
 
     def test_continuous_does_not_renew_empty_segment_or_target_budget(self):
         """无胜利的段预算与单目标输入耗尽都不能作为持续重跑的理由。"""
@@ -248,8 +249,8 @@ class CampaignStartTests(unittest.TestCase):
             self.assertEqual(factory.call_count, 1)
             runner.renew_progress_guard.assert_not_called()
 
-    def test_return_lobby_confirms_new_quest_and_reselects_pending_chapter(self):
-        """返回点击不续计时；大厅实际读到新章任务后才续，并重新选择旧章待办。"""
+    def test_return_lobby_confirms_new_quest_and_follows_current_mainline(self):
+        """返回点击不续计时；大厅实际读到新章任务后续跑当前主线，旧章记录不被调用修改。"""
         fn, runner, factory, _ = self.continuous_runner(
             [('story_return_lobby', 0), ('tick_budget', 0)], [None, (21, 1)])
         campaigns = list(factory.side_effect)
@@ -258,7 +259,8 @@ class CampaignStartTests(unittest.TestCase):
         fn.__globals__['pending_chapter'] = Mock(return_value=20)
         fn(runner)
         self.assertEqual(runner.ensure_main_map.call_count, 2)
-        self.assertEqual([c.args[1] for c in runner.select_chapter.call_args_list], [20, 20])
+        self.assertEqual([c.args[1] for c in runner.select_chapter.call_args_list], [None, None])
+        fn.__globals__['pending_chapter'].assert_not_called()
         runner.renew_progress_guard.assert_called_once()
 
     def test_return_lobby_without_new_quest_stops_without_renewal(self):

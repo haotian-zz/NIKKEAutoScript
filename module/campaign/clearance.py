@@ -1,4 +1,4 @@
-"""按实例保存尚未清空的章节，重启后继续补清，不能跟随大厅任务跳过旧章。"""
+"""按实例保留尚未清空的章节；主线推进不删除待办，指定章节清理可另行补做。"""
 
 import hashlib
 import json
@@ -49,5 +49,5 @@ class ClearanceJournal:
 
 
 def pending_chapter(config):
-    """持续推图入口优先读取本实例未清章节，而不是直接跟随已推进到新章的大厅任务。"""
+    """读取最早未清章节供清理入口使用；连续主线不据此回退，也不删除这些待办。"""
     return ClearanceJournal(config.config_name).pending()

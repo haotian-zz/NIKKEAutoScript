@@ -217,7 +217,7 @@ class EntryStageGuard:
 
 
 class VisibleStoryRunner:
-    """扫描全部敌人并核对实际遇敌身份；胜利后留在地图继续，换章前必须完成清怪巡检。"""
+    """核对实际遇敌身份并持续推进主线；单章清理保留完整巡检，旧章可选内容保留待办。"""
 
     def __init__(self, owner, session, executor):
         """观察簿绑定当前执行的证据目录，隔离实例及历史截图；不跨账号复用胜利或旧坐标。"""
@@ -620,8 +620,43 @@ class VisibleStoryRunner:
             self.session.pause(.35)
         raise SweepUnconfirmed('本章清怪已确认，但下一章入口未能核对；已停止。')
 
+    def follow_mainline(self, field, quest):
+        """持续模式确认两帧下一章主线任务后切章；旧章待办保留，不生成清空证明。
+
+        只接受紧邻下一章，最后输入帧仍须同一旧章及相同完整任务。点击一次后核对两帧
+        新章NORMAL身份，加载和未知状态受原地图等待及会话时限约束。
+        """
+        expected = (self.owner.current_chapter, 'normal')
+        if (not getattr(self.owner, 'continuous', False) or quest is None
+                or quest[0] != expected[0] + 1):
+            return None
+        self.session.pause(.35)
+        fresh = self.map_frame()
+        if (chapter_identity(field, self.owner.chapter_ocr) != expected
+                or chapter_identity(fresh, self.owner.chapter_ocr) != expected
+                or read_stage(fresh, self.owner.chapter_ocr, quest=True) != quest):
+            return None
+
+        def valid(latest):
+            """实际切章前仍核对旧章身份和完整新主线任务，不接受过时OCR结论。"""
+            return (chapter_identity(latest, self.owner.chapter_ocr) == expected
+                    and read_stage(latest, self.owner.chapter_ocr, quest=True) == quest)
+
+        self.session.begin_target('mainline_next_chapter')
+        self.session.record_evidence('mainline_next_chapter', fresh, quest=quest, old_chapter_pending=True)
+        self.session.tap_verified_ui((1715, 940), valid)
+        deadline, previous = time.monotonic() + 30., None
+        while time.monotonic() < deadline:
+            current = chapter_identity(self.map_frame(), self.owner.chapter_ocr)
+            if current == previous and current == (quest[0], 'normal'):
+                logger.info(f'主线任务与新章身份已连续确认：第 {quest[0]} 章；旧章可选内容仍待办。')
+                return dict(state='continue', reason='chapter_changed', old_chapter_pending=True)
+            previous = current
+            self.session.pause(.35)
+        raise StoryVerificationError('主线切章后未能连续确认新章身份，旧章待办保留。', 'story_chapter_unconfirmed')
+
     def run(self, ticks=48):
-        """当前主线先复用一次游戏任务定位，再清理可见敌人；全章巡检复核通过后才换章。
+        """当前主线先复用游戏任务定位；持续模式跟随已确认的新章，单章清理保留巡检。
 
         关卡顺序只作为辅助信息：已知遇敌编号从小到大、未知目标按距离排序；每次开战仍独立
         核对实际编号。总时限、单目标输入预算、停止信号及首次战败终止继续由正式会话执行。
@@ -634,6 +669,14 @@ class VisibleStoryRunner:
                 continue
             identity = chapter_identity(field, self.owner.chapter_ocr)
             if identity is not None and identity[0] > self.owner.current_chapter:
+                if getattr(self.owner, 'continuous', False):
+                    self.session.pause(.35)
+                    fresh = self.map_frame()
+                    if (identity[1] == 'normal'
+                            and chapter_identity(fresh, self.owner.chapter_ocr) == identity):
+                        return dict(state='continue', reason='chapter_changed', old_chapter_pending=True)
+                    raise StoryVerificationError('自动换章后身份无法连续确认，旧章待办保留。',
+                                                 'story_chapter_unconfirmed')
                 self.restore_chapter(identity)
                 continue
             current = read_stage(field, self.owner.chapter_ocr, quest=True)
@@ -644,6 +687,9 @@ class VisibleStoryRunner:
                     self.memory.reconsider(current, self.owner.story_wins)
                     self.deferred.clear()
                 self.quest = current
+                advanced = self.follow_mainline(field, current)
+                if advanced is not None:
+                    return advanced
                 if self.guide_quest(field):
                     continue
             fresh, candidates = self.scan(field)

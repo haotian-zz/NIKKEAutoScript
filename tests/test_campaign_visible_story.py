@@ -403,12 +403,43 @@ class VisibleStoryTests(unittest.TestCase):
         self.assertEqual(self.ns['chapter_identity'].call_count, 2)
 
     def test_automatic_transition_returns_to_uncleared_chapter(self):
-        """游戏自动前进时先返回旧章补清怪，不能据此跳过旧章巡检。"""
+        """指定单章清理时游戏自动前进仍返回旧章，不将换章当清空证明。"""
+        self.owner.continuous = False
         self.ns['chapter_identity'].return_value = (21, 'normal')
         self.runner.restore_chapter = Mock()
         self.runner.run(ticks=1)
         self.runner.restore_chapter.assert_called_once_with((21, 'normal'))
         self.runner.memory.observe.assert_not_called()
+
+    def test_continuous_automatic_transition_keeps_pending_and_accepts_two_frames(self):
+        """连续主线确认两帧新章后继续，不返回旧章，也不将其标成清空。"""
+        self.ns['chapter_identity'].return_value = (21, 'normal')
+        self.runner.restore_chapter = Mock()
+        result = self.runner.run(ticks=1)
+        self.assertEqual(result['reason'], 'chapter_changed')
+        self.runner.restore_chapter.assert_not_called()
+        self.runner.journal.complete.assert_not_called()
+        self.session.tap.assert_not_called()
+
+    def test_mainline_next_chapter_needs_fresh_quest_and_preserves_clearance(self):
+        """只有重复确认的新章主线可触发一次切章；最终输入校验及两帧新章身份仍有效。"""
+        self.ns['read_stage'] = Mock(return_value=(21, 1))
+        self.ns['chapter_identity'].side_effect = [(20, 'normal')] * 3 + [(21, 'normal')] * 2
+        def tap(point, validator):
+            """模拟输入闸门在最后一帧再次执行生产校验。"""
+            self.assertEqual(point, (1715, 940))
+            self.assertTrue(validator(self.field))
+        self.session.tap_verified_ui.side_effect = tap
+        result = self.runner.follow_mainline(self.field, (21, 1))
+        self.assertEqual(result['reason'], 'chapter_changed')
+        self.session.tap_verified_ui.assert_called_once()
+        self.runner.journal.complete.assert_not_called()
+        self.session.tap_verified_ui.reset_mock()
+        self.ns['chapter_identity'].side_effect = None
+        self.ns['chapter_identity'].return_value = (20, 'normal')
+        self.ns['read_stage'].return_value = (20, 31)
+        self.assertIsNone(self.runner.follow_mainline(self.field, (21, 1)))
+        self.session.tap_verified_ui.assert_not_called()
 
     def test_ex_identity_requires_title_and_is_not_silently_skipped(self):
         """EX 连续两帧标题通过后进入清怪范围；使用内部序号且不虚构普通关卡号。"""

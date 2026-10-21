@@ -7,7 +7,6 @@ import psutil
 from module.base.timer import Timer
 from module.base.watchdog import WaitGuard, save_wait_image
 from module.campaign.campaign import Campaign
-from module.campaign.clearance import pending_chapter
 from module.campaign.chapter_flow import ChapterOverlayFlow
 from module.campaign.session import CampaignSession
 from module.campaign.report import GOAL_REASONS
@@ -274,7 +273,7 @@ class AutoPush(UI):
             if mode not in ('single', 'continuous'):
                 raise ValueError('请选择单轮推图或持续推图')
             continuous = mode == 'continuous'
-            target = pending_chapter(self.config) if continuous else chapter_number(self.config.CampaignMap_Chapter)
+            target = None if continuous else chapter_number(self.config.CampaignMap_Chapter)
         except ValueError as exc:
             report('blocked', '推图设置无效', str(exc))
             self.config.task_delay(schedule=True)
@@ -360,9 +359,9 @@ class AutoPush(UI):
                         return
                     returned_chapters.add(origin_chapter)
                     require_story_return = (origin_chapter, entry)
-                    target = pending_chapter(self.config)
+                    target = None
                     resume_map = False
-                    logger.info('主线要求返回大厅；重新核对实际任务后继续，先保留并选择旧章待办')
+                    logger.info('主线要求返回大厅；重新核对实际任务后继续当前主线，旧章可选内容保留待办')
                     continue
                 if continuous and code in ('tick_budget', 'segment_timeout') and cleared:
                     logger.info(f'{reason}，本段确认清除 {cleared} 个敌人，继续当前主线进度')
