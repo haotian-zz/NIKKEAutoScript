@@ -223,6 +223,17 @@ DataChart:
       - InterceptionDropStats
       - InterceptionTaskCharts
 
+# ==================== Campaign ====================
+
+Campaign:
+  menu: 'collapse'
+  page: 'setting'
+  icon: 'map'
+  tasks:
+    AutoPush:
+      - Scheduler
+      - CampaignMap
+
 # ==================== Tool ====================
 
 Tool:
@@ -230,6 +241,8 @@ Tool:
   page: 'tool'
   icon: 'designtools'
   tasks:
+    AutoMainStory: []
+    AutoMainCollectible: []
     AutoTower:
       - AutoTower
     SemiCombat:

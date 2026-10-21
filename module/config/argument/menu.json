@@ -120,11 +120,21 @@
       "InterceptionTaskStats"
     ]
   },
+  "Campaign": {
+    "menu": "collapse",
+    "page": "setting",
+    "icon": "map",
+    "tasks": [
+      "AutoPush"
+    ]
+  },
   "Tool": {
     "menu": "collapse",
     "page": "tool",
     "icon": "designtools",
     "tasks": [
+      "AutoMainStory",
+      "AutoMainCollectible",
       "AutoTower",
       "SemiCombat",
       "Highlights",

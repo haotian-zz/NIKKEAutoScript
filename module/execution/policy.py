@@ -6,7 +6,7 @@ SAFE_TASKS = {
     'Conversation', 'Shop', 'RubbishShop', 'SimulationRoom', 'TribeTower', 'Interception',
     'RookieArena', 'SpecialArena', 'ChampionArena', 'SoloRaid', 'Coop', 'Liberation',
     'MissionPass', 'WarehouseStats', 'Event', 'Event2', 'OutpostStory', 'EpisodeViewing',
-    'Daily', 'Destruction', 'Notify',
+    'Daily', 'Destruction', 'Notify', 'AutoPush',
 }
 
 

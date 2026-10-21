@@ -44,6 +44,10 @@
       "name": "Data Charts",
       "help": ""
     },
+    "Campaign": {
+      "name": "Campaign",
+      "help": ""
+    },
     "Tool": {
       "name": "Tools",
       "help": ""
@@ -225,6 +229,18 @@
     "InterceptionTaskStats": {
       "name": "Interception",
       "help": ""
+    },
+    "AutoPush": {
+      "name": "Auto campaign",
+      "help": "Enter the selected chapter and continue uncleared progress. Stops for review when the map, battle, or execution limit requires attention."
+    },
+    "AutoMainStory": {
+      "name": "Auto Main Story",
+      "help": "Open the campaign field first. PC client only, at 1776×999 resolution."
+    },
+    "AutoMainCollectible": {
+      "name": "Auto Main Story Collectibles",
+      "help": "Open the campaign field first. PC client only, at 1776×999 resolution."
     },
     "AutoTower": {
       "name": "Auto Tower",
@@ -1557,6 +1573,72 @@
     "Password": {
       "name": "Password",
       "help": "Paste your password here. It will be auto-filled if login expires. This feature has security risks; use with caution."
+    }
+  },
+  "CampaignMap": {
+    "_info": {
+      "name": "Map selection",
+      "help": "Choose a main story chapter, then continue uncleared progress in that chapter."
+    },
+    "MapType": {
+      "name": "Map type",
+      "help": "Normal main story maps are currently supported.",
+      "main": "Main story"
+    },
+    "Chapter": {
+      "name": "Starting chapter",
+      "help": "Current progress follows the main quest. A selected chapter must be confirmed before combat; locked chapters stop with an explanation.",
+      "current": "Current main story progress",
+      "1": "Chapter 1",
+      "2": "Chapter 2",
+      "3": "Chapter 3",
+      "4": "Chapter 4",
+      "5": "Chapter 5",
+      "6": "Chapter 6",
+      "7": "Chapter 7",
+      "8": "Chapter 8",
+      "9": "Chapter 9",
+      "10": "Chapter 10",
+      "11": "Chapter 11",
+      "12": "Chapter 12",
+      "13": "Chapter 13",
+      "14": "Chapter 14",
+      "15": "Chapter 15",
+      "16": "Chapter 16",
+      "17": "Chapter 17",
+      "18": "Chapter 18",
+      "19": "Chapter 19",
+      "20": "Chapter 20",
+      "21": "Chapter 21",
+      "22": "Chapter 22",
+      "23": "Chapter 23",
+      "24": "Chapter 24",
+      "25": "Chapter 25",
+      "26": "Chapter 26",
+      "27": "Chapter 27",
+      "28": "Chapter 28",
+      "29": "Chapter 29",
+      "30": "Chapter 30",
+      "31": "Chapter 31",
+      "32": "Chapter 32",
+      "33": "Chapter 33",
+      "34": "Chapter 34",
+      "35": "Chapter 35",
+      "36": "Chapter 36",
+      "37": "Chapter 37",
+      "38": "Chapter 38",
+      "39": "Chapter 39",
+      "40": "Chapter 40",
+      "41": "Chapter 41",
+      "42": "Chapter 42",
+      "43": "Chapter 43",
+      "44": "Chapter 44",
+      "45": "Chapter 45",
+      "46": "Chapter 46",
+      "47": "Chapter 47",
+      "48": "Chapter 48",
+      "49": "Chapter 49",
+      "50": "Chapter 50"
     }
   },
   "Storage": {

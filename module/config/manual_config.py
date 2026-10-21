@@ -15,7 +15,7 @@ class ManualConfig:
        BlaDaily > BlaCDK > BlaExchange >
        WarehouseStats > SpecialArenaWatch >
        Notify >
-       AutoTower > SemiCombat > Highlights > BlaCDKManual > ScreenRotate > UpdateHosts
+       AutoPush > AutoTower > SemiCombat > Highlights > BlaCDKManual > ScreenRotate > UpdateHosts
        """
 
     GENERAL_SHOP_PRIORITY = """GRATIS"""
@@ -24,7 +24,7 @@ class ManualConfig:
     # 整行置灰只读的任务（仅当时间字段对该任务完全不生效时使用）
     SCHEDULE_LOCKED_TASKS = set()
     # 不允许切换周期的任务：Restart 承担每日服务器刷新重启职责、Reward 是每日固定收获，
-    # 两者仅执行时间可改；Restart 的启用状态额外被强制常开（override.yaml）
+    # 两者仅执行时间可改；启用状态可按实例配置。
     SCHEDULE_CADENCE_LOCKED_TASKS = {
         'Restart', 'Reward',
     }

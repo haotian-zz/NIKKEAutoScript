@@ -1,7 +1,5 @@
-# ==================== NKAS ====================
-
 Restart:
   Scheduler:
     Enable:
       value: true
-      display: disabled
+      display: show

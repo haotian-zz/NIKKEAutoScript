@@ -929,6 +929,36 @@
       "Storage": {}
     }
   },
+  "AutoPush": {
+    "Scheduler": {
+      "Enable": false,
+      "NextRun": "1989-12-27 00:00:00",
+      "Command": "AutoPush",
+      "Cadence": "daily",
+      "ServerUpdate": "04:00",
+      "WeeklyDay": 2,
+      "WeeklyTime": "04:00",
+      "MonthlyDay": 1,
+      "MonthlyTime": "04:00"
+    },
+    "CampaignMap": {
+      "MapType": "main",
+      "Chapter": "current"
+    },
+    "Storage": {
+      "Storage": {}
+    }
+  },
+  "AutoMainStory": {
+    "Storage": {
+      "Storage": {}
+    }
+  },
+  "AutoMainCollectible": {
+    "Storage": {
+      "Storage": {}
+    }
+  },
   "AutoTower": {
     "AutoTower": {
       "Enable": true

@@ -483,7 +483,7 @@
           true,
           false
         ],
-        "display": "disabled"
+        "display": "show"
       },
       "NextRun": {
         "type": "datetime",
@@ -4051,6 +4051,162 @@
         "display": "readonly"
       }
     },
+    "Storage": {
+      "Storage": {
+        "type": "storage",
+        "value": {},
+        "valuetype": "ignore",
+        "display": "disabled"
+      }
+    }
+  },
+  "AutoPush": {
+    "Scheduler": {
+      "Enable": {
+        "type": "checkbox",
+        "value": false,
+        "option": [
+          true,
+          false
+        ]
+      },
+      "NextRun": {
+        "type": "datetime",
+        "value": "1989-12-27 00:00:00",
+        "validate": "datetime"
+      },
+      "Command": {
+        "type": "input",
+        "value": "AutoPush",
+        "display": "hide"
+      },
+      "Cadence": {
+        "type": "select",
+        "value": "daily",
+        "option": [
+          "daily",
+          "weekly",
+          "monthly"
+        ],
+        "display": "hide_keep"
+      },
+      "ServerUpdate": {
+        "type": "input",
+        "value": "04:00",
+        "display": "hide_keep",
+        "validate": "^([01]\\d|2[0-3]):[0-5]\\d(\\s*,\\s*([01]\\d|2[0-3]):[0-5]\\d)*$"
+      },
+      "WeeklyDay": {
+        "type": "input",
+        "value": "2",
+        "display": "hide_keep",
+        "validate": "^[1-7](\\s*,\\s*[1-7])*$"
+      },
+      "WeeklyTime": {
+        "type": "input",
+        "value": "04:00",
+        "display": "hide_keep",
+        "validate": "^([01]\\d|2[0-3]):[0-5]\\d$"
+      },
+      "MonthlyDay": {
+        "type": "input",
+        "value": "1",
+        "display": "hide_keep",
+        "validate": "^([1-9]|1\\d|2[0-8])$"
+      },
+      "MonthlyTime": {
+        "type": "input",
+        "value": "04:00",
+        "display": "hide_keep",
+        "validate": "^([01]\\d|2[0-3]):[0-5]\\d$"
+      }
+    },
+    "CampaignMap": {
+      "MapType": {
+        "type": "select",
+        "value": "main",
+        "option": [
+          "main"
+        ]
+      },
+      "Chapter": {
+        "type": "select",
+        "value": "current",
+        "option": [
+          "current",
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30,
+          31,
+          32,
+          33,
+          34,
+          35,
+          36,
+          37,
+          38,
+          39,
+          40,
+          41,
+          42,
+          43,
+          44,
+          45,
+          46,
+          47,
+          48,
+          49,
+          50
+        ]
+      }
+    },
+    "Storage": {
+      "Storage": {
+        "type": "storage",
+        "value": {},
+        "valuetype": "ignore",
+        "display": "disabled"
+      }
+    }
+  },
+  "AutoMainStory": {
+    "Storage": {
+      "Storage": {
+        "type": "storage",
+        "value": {},
+        "valuetype": "ignore",
+        "display": "disabled"
+      }
+    }
+  },
+  "AutoMainCollectible": {
     "Storage": {
       "Storage": {
         "type": "storage",

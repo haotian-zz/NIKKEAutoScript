@@ -1,11 +1,13 @@
 <script setup lang="ts">
-import { computed, defineAsyncComponent, watch } from 'vue'
+import { computed, defineAsyncComponent, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import AppComboSelect from '../components/AppComboSelect.vue'
 import AppIcon from '../components/AppIcon.vue'
 import AppSelect from '../components/AppSelect.vue'
 import LinkifiedText from '../components/LinkifiedText.vue'
 import LiveLog from '../components/LiveLog.vue'
+import CampaignPanel from '../components/CampaignPanel.vue'
+import CampaignSettingsGroup from '../components/CampaignSettingsGroup.vue'
 import FieldItemTable from '../components/config/FieldItemTable.vue'
 import FieldNotify from '../components/config/FieldNotify.vue'
 import FieldPathPicker from '../components/config/FieldPathPicker.vue'
@@ -14,6 +16,7 @@ import FieldVddStatus from '../components/config/FieldVddStatus.vue'
 import { highlightTextarea, isStructuredTextarea, onTextareaInput, vAutosize } from '../composables/useTextarea'
 import { useRouteInfo } from '../composables/useRouteInfo'
 import { t } from '../i18n'
+import { api } from '../api/client'
 import { onTextInput } from '../utils'
 import { useBlaBindBotStore } from '../stores/blaBindBot'
 import { useBlaLoginStore } from '../stores/blaLogin'
@@ -34,11 +37,25 @@ const { isWideField, save, saveValue, datetimeValue, scheduleDatetimeSave, flush
 const instancesStore = useInstancesStore()
 const { lifecycle } = instancesStore
 const selectedInstance = computed(() => instancesStore.instances.find(item => item.name === workspace.selectedName))
+const isCampaign = computed(() => ['AutoPush', 'AutoMainStory', 'AutoMainCollectible'].includes(selectedTask.value))
 const { blaLoginBusy } = storeToRefs(useBlaLoginStore())
 const { startBlaLogin } = useBlaLoginStore()
 const { bindBusy } = storeToRefs(useBlaBindBotStore())
 const { openBind } = useBlaBindBotStore()
 const toast = useToastStore()
+const campaignStarting = ref(false)
+
+/** 手动推图立即入队，沿用任务服务与输入互斥，无需改动下次运行时间。 */
+async function startCampaign() {
+  if (campaignStarting.value) return
+  campaignStarting.value = true
+  try {
+    await api.post(`/api/${encodeURIComponent(workspace.selectedName)}/task/AutoPush/run`)
+    await instancesStore.loadInstances()
+  } catch (reason) { toast.error = String(reason) }
+  finally { campaignStarting.value = false }
+}
+
 
 const serialDeviceOptions = computed(() => serialDevices.value.map(device => ({ value: device.serial, label: `${device.serial} (${device.status})` })))
 
@@ -60,18 +77,21 @@ watch(selectedTask, task => { if (task === 'PCClient') loadClientProfiles() }, {
 </script>
 
 <template>
-  <section class="view" :class="{ 'tool-view': selectedPage === 'tool' }" @scroll.passive="onViewScroll">
+  <section class="view" :class="{ 'tool-view': selectedPage === 'tool', 'campaign-view': isCampaign }" @scroll.passive="onViewScroll">
     <div class="task-layout">
       <div>
         <article v-if="taskSchema" class="card task-hero">
           <div class="task-icon"><AppIcon :name="selectedPage === 'tool' ? 'designtools' : 'gear'" :size="22" /></div>
           <div style="flex:1"><h2>{{ taskSchema?.name || selectedTask }}{{ selectedTask === 'PhysicalDevice' ? '(BETA)' : '' }}</h2><div class="sub">{{ taskSchema?.help || '' }}</div></div>
           <button v-if="selectedPage === 'tool'" class="btn" :class="selectedInstance?.state === 1 ? 'danger' : 'primary'" @click="selectedInstance?.state === 1 ? lifecycle('stop') : startTool()"><template v-if="selectedInstance?.state === 1"><AppIcon name="stop" :size="14" /> {{ t('停止') }}</template><template v-else><AppIcon name="play" :size="14" /> {{ t('启动') }}</template></button>
+          <button v-else-if="selectedTask === 'AutoPush'" class="btn" :class="selectedInstance?.state === 1 ? 'danger' : 'primary'" :disabled="campaignStarting" @click="selectedInstance?.state === 1 ? lifecycle('stop') : startCampaign()"><AppIcon :name="selectedInstance?.state === 1 ? 'stop' : 'play'" :size="14" /> {{ selectedInstance?.state === 1 ? t('停止') : t('开始推图') }}</button>
         </article>
         <!-- 未选中任务时原空白 hero 没有信息量，换成引导提示（移动端任务列表收在右侧抽屉里） -->
         <article v-else class="card group-card">
           <div class="group-body special-empty" style="padding:16px 22px">{{ selectedPage === 'tool' ? t('请从列表选择工具') : t('请从任务列表选择任务') }}</div>
         </article>
+        <CampaignSettingsGroup v-if="isCampaign && selectedPage === 'tool'" />
+        <CampaignPanel v-if="isCampaign && selectedPage === 'tool'" :name="workspace.selectedName" />
         <div class="cfg-groups">
           <article v-for="group in taskSchema?.groups || []" :id="groupId(group)" :key="group.key" class="card group-card" :class="{ collapsed: collapsed[group.key] }">
             <button class="group-head" @click="collapsed[group.key] = !collapsed[group.key]">
@@ -149,6 +169,10 @@ watch(selectedTask, task => { if (task === 'PCClient') loadClientProfiles() }, {
             </div>
           </article>
         </div>
+        <template v-if="selectedTask === 'AutoPush'">
+          <CampaignSettingsGroup />
+          <CampaignPanel :name="workspace.selectedName" />
+        </template>
         <article v-if="selectedTask && schemaReady && !taskSchema" class="card group-card">
           <div class="group-body special-empty" style="padding:16px 22px">{{ t('未知任务') }}: {{ selectedTask }}</div>
         </article>
@@ -156,6 +180,7 @@ watch(selectedTask, task => { if (task === 'PCClient') loadClientProfiles() }, {
       </div>
       <aside class="card anchor-nav">
         <div class="side-label">{{ t('本页分组') }}</div>
+        <button v-if="isCampaign" class="anchor-nav-item" :class="{ active: activeGroup === 'CampaignSettings' }" @click="jumpToGroup({ key: 'CampaignSettings' })">{{ t('推图设置') }}</button>
         <button v-for="group in taskSchema?.groups || []" :key="group.key" class="anchor-nav-item" :class="{ active: activeGroup === group.key }" @click="jumpToGroup(group)">{{ group.name }}</button>
       </aside>
     </div>

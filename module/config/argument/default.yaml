@@ -1,3 +1,7 @@
+Restart:
+  Scheduler:
+    Enable: true
+
 # ==================== Reward ====================
 
 Reward:

@@ -89,7 +89,12 @@ class NikkeAutoScript:
             if self.config.Client_Platform == 'win':
                 from module.device.win.device import Device
 
-                device = Device(config=self.config)
+                if self.config.task.command in ('AutoMainStory', 'AutoMainCollectible'):
+                    from module.campaign.campaign import Campaign
+
+                    device = Device(config=self.config, resolution=Campaign.RESOLUTION)
+                else:
+                    device = Device(config=self.config)
             if self.config.Client_Platform == 'adb':
                 from module.device.adb.device import Device
 
@@ -199,6 +204,11 @@ class NikkeAutoScript:
 
     def run(self, command, skip_first_screenshot=False):
         try:
+            if command in ('auto_main_story', 'auto_main_collectible'):
+                self.config.init_task(inflection.camelize(command))
+                if self.config.Client_Platform != 'win':
+                    logger.error('自动主线任务目前仅支持 PC 客户端，请使用 PC 实例运行。')
+                    raise RequestHumanTakeover
             for retry in range(4):
                 try:
                     # All game entry points share this check; independent tasks never create a device.
@@ -556,6 +566,28 @@ class NikkeAutoScript:
         from module.blablalink.blablalink import Blablalink
 
         Blablalink(config=self.config).run('exchange')
+
+    def auto_push(self):
+        """执行实例中单独启用的推图任务，复用设备、输入互斥和执行简报。"""
+        from module.campaign.task import AutoPush
+
+        AutoPush(self.config, device=self.device).run()
+
+    def auto_main_story(self):
+        """自动主线（剧情）任务入口。
+
+        与收集品任务共用 Campaign，具体做什么由任务配置决定；延迟导入是为了不在调度器启动时
+        就加载地图资源和 YOLO 相关依赖。
+        """
+        from module.campaign.campaign import Campaign
+
+        Campaign(config=self.config, device=self.device).run()
+
+    def auto_main_collectible(self):
+        """自动主线（收集品）任务入口，与剧情任务共用同一套推图流程。"""
+        from module.campaign.campaign import Campaign
+
+        Campaign(config=self.config, device=self.device).run()
 
     def auto_tower(self):
         from module.daemon.auto_tower import AutoTower
@@ -932,7 +964,7 @@ class NikkeAutoScript:
                 self.device.stuck_record_clear()
                 self.device.click_record_clear()
                 from module.base.watchdog import WaitGuard
-                limit = 3600 if task == 'SoloRaid' else 1800 if task in ('Event', 'Event2', 'SimulationRoom') else 900
+                limit = 3600 if task in ('SoloRaid', 'AutoPush') else 1800 if task in ('Event', 'Event2', 'SimulationRoom') else 900
                 self.device._execution_guard = WaitGuard(self.device, f'{task}总执行时限',
                                                         timeout=limit, warn_after=120)
             success = self.run(command, skip_first_screenshot=skip_first_screenshot)

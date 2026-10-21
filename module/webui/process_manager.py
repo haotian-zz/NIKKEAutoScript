@@ -49,6 +49,8 @@ class ProcessManager:
         self._preview_queue: queue.Queue = State.manager.Queue(maxsize=2)
         self.latest_preview: Tuple[float, bytes] = None
         self.preview_source = None
+        self.latest_campaign = None
+        self._campaign_started_at = 0
         self._process: Process = None
         self._process_locks: Dict[str, threading.Lock] = {}
         self.thd_log_queue_handler: threading.Thread = None
@@ -64,6 +66,8 @@ class ProcessManager:
             ExecutionStore().interrupt(self.config_name, '上一次执行进程已退出，操作结果尚未确认',
                                        include_queued=False)
             self.preview_source = None
+            self.latest_campaign = None
+            self._campaign_started_at = time.time()
             if func is None:
                 func = get_config_mod(self.config_name)
             self._retry_worker = func == 'execution_retry'
@@ -106,16 +110,24 @@ class ProcessManager:
         self.thd_preview_handler.start()
 
     def _thread_preview_handler(self) -> None:
-        while self.alive:
+        while True:
             try:
                 item = self._preview_queue.get(timeout=1)
             except queue.Empty:
+                if not self.alive:
+                    break
                 continue
             except (EOFError, OSError):
                 # Worker died and the queue pipe broke; keep the last frame.
                 break
             if isinstance(item, tuple) and len(item) == 2:
-                item, self.preview_source = item
+                item, source = item
+                if isinstance(source, dict) and 'campaign' in source:
+                    snapshot = source['campaign']
+                    if snapshot and snapshot.get('captured_at', 0) >= self._campaign_started_at:
+                        self.latest_campaign = snapshot
+                else:
+                    self.preview_source = source
             if isinstance(item, bytes):
                 self.latest_preview = (time.time(), item)
 
