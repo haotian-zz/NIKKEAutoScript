@@ -384,6 +384,20 @@ class CampaignStartTests(unittest.TestCase):
         self.assertEqual(fn(runner), (21, 1))
         reader.ocr.assert_not_called()
 
+    def test_lobby_stability_window_starts_after_cold_ocr_initialization(self):
+        """模型首次加载七秒后仍须允许第二次新帧确认，不能把冷启动误作任务消失。"""
+        clock = SimpleNamespace(now=0.)
+        fn = load('confirm_lobby_quest', time=SimpleNamespace(monotonic=lambda: clock.now), MAIN_CHECK=object())
+        def read():
+            """首帧模拟实际OCR冷加载耗时，返回真实可解析任务。"""
+            clock.now = max(clock.now, 7.)
+            return (21, 1)
+        runner = SimpleNamespace(device=Mock(), appear=Mock(return_value=True),
+                                 quest_stage=Mock(side_effect=read), lobby_sortie_instruction=False)
+        runner.device.sleep.side_effect = lambda seconds: setattr(clock, 'now', clock.now+seconds)
+        self.assertEqual(fn(runner), ((21, 1), False))
+        self.assertEqual(runner.device.screenshot.call_count, 2)
+
     def test_sortie_instruction_is_distinct_from_a_numbered_stage(self):
         """完整出击指令独立保存，活动或残缺文字不得虚构下一关，也不接受弱分文本。"""
         for text, accepted in [('前往地面【出击】', True), ('前往地面【出擊】', True),

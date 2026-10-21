@@ -59,8 +59,15 @@ class AutoPush(UI):
 
         每帧重核大厅锚点，数字任务与完整出击指令分别比较；没有确认时不发送入口点击。
         """
-        deadline, previous = time.monotonic() + 4., None
+        self.device.screenshot()
+        if not self.appear(MAIN_CHECK, offset=30):
+            return None
+        current = self.quest_stage()
+        previous = ('sortie',) if getattr(self, 'lobby_sortie_instruction', False) else current
+        # 首次OCR可能初始化模型；稳定窗口从组件已可读取后起算，不能读对首帧却无第二帧机会。
+        deadline = time.monotonic() + 4.
         while time.monotonic() < deadline:
+            self.device.sleep(.3)
             self.device.screenshot()
             if not self.appear(MAIN_CHECK, offset=30):
                 return None
@@ -70,7 +77,6 @@ class AutoPush(UI):
             if identity is not None and identity == previous:
                 return current, sortie
             previous = identity
-            self.device.sleep(.3)
         return None
 
     def recover_settlement(self):
