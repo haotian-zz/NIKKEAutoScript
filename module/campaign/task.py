@@ -2,6 +2,7 @@
 import re
 
 import cv2
+import psutil
 
 from module.base.timer import Timer
 from module.base.watchdog import WaitGuard, save_wait_image
@@ -212,7 +213,22 @@ class AutoPush(UI):
             self.device.sleep(0.5)
 
     def runtime_ready(self):
-        """在导航前检查 ONNX 依赖与模型完整性，失败时写入可补做的待处理原因。"""
+        """在导航前检查严重内存压力、ONNX依赖与模型，失败时保留明确可补做原因。
+
+        系统可用内存低于512MiB时不初始化检测器或发送游戏操作；这是低余量保护，
+        不是按总内存或显卡档次限制。读取资源状态失败时仍由原模型/输入闸门处理。
+        """
+        try:
+            available = psutil.virtual_memory().available
+        except OSError as exc:
+            logger.warning(f'无法读取系统可用内存，保留既有组件检查：{exc}')
+            available = None
+        if available is not None and available < 512*1024**2:
+            amount = max(0, int(available/1024**2))
+            logger.warning(f'自动推图启动停止：系统可用内存仅{amount}MiB，未初始化检测模型或发送游戏操作。')
+            report('blocked', '系统可用内存不足，自动推图暂未启动',
+                   f'当前可用{amount}MiB，最低启动余量512MiB；释放内存后可重试，当前地图和任务待办保留')
+            return False
         try:
             from module.campaign.vision.detection import configure_inference, detector
             configure_inference(self.config.config_name)

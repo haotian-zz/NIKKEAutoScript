@@ -22,6 +22,7 @@ def load(name, **namespace):
     node = copy.deepcopy(node)
     node.decorator_list = []
     namespace.setdefault('pending_chapter', Mock(return_value=None))
+    namespace.setdefault('psutil', SimpleNamespace(virtual_memory=lambda: SimpleNamespace(available=8*1024**3)))
     exec(compile(ast.Module(body=[node], type_ignores=[]), name, 'exec'), namespace)
     return namespace[name]
 
@@ -173,6 +174,21 @@ class CampaignStartTests(unittest.TestCase):
         self.assertEqual(factory.call_count, 1)
         self.assertEqual(reports[-1][0], 'blocked')
         self.assertEqual(reports[-1][2], '没有可达的目标')
+
+    def test_critical_memory_pressure_stops_before_loading_detector(self):
+        """真实低余量必须先于模型初始化被拦住，保留具体资源原因而非误报模型依赖失败。"""
+        reports = []
+        fn = load('runtime_ready', psutil=SimpleNamespace(virtual_memory=lambda: SimpleNamespace(available=128*1024**2)),
+                  report=lambda *a: reports.append(a), logger=Mock())
+        detector = Mock()
+        configure = Mock()
+        with patch.dict(sys.modules, {'module.campaign.vision.detection':
+                         SimpleNamespace(configure_inference=configure, detector=detector)}):
+            self.assertFalse(fn(SimpleNamespace(config=SimpleNamespace(config_name='test'))))
+        configure.assert_not_called()
+        detector.assert_not_called()
+        self.assertEqual(reports[-1][0], 'blocked')
+        self.assertIn('128MiB', reports[-1][2])
 
     def continuous_runner(self, outcomes, stages):
         """用确认胜利和主线任务序列驱动正式循环，避免依赖真实游戏状态。"""
