@@ -276,7 +276,12 @@ class VisibleStoryTests(unittest.TestCase):
         self.ns['read_stage'] = Mock(return_value=(20, 18))
         self.assertTrue(self.runner.guide_quest(self.field))
         self.assertFalse(self.runner.guide_quest(self.field))
-        self.session.tap.assert_called_once_with((1749., 100.), interval=2.)
+        self.session.tap_verified_ui.assert_called_once()
+        point, guard = self.session.tap_verified_ui.call_args.args
+        self.assertEqual(point, (1749., 100.))
+        self.assertTrue(guard(self.field))
+        self.ns['read_stage'].return_value = (20, 21)
+        self.assertFalse(guard(self.field))
         self.executor.battle.assert_not_called()
         self.assertIsNone(self.runner.memory.previous)
 
@@ -287,6 +292,17 @@ class VisibleStoryTests(unittest.TestCase):
         self.ns['read_stage'] = Mock(return_value=(20, 21))
         self.assertFalse(self.runner.guide_quest(self.field))
         self.session.tap.assert_not_called()
+        self.session.tap_verified_ui.assert_not_called()
+
+    def test_current_quest_locator_precedes_nearest_visible_enemy_selection(self):
+        """已有可见敌人也先用一次游戏任务定位，避免距离近但隔着光幕的目标抢先。"""
+        self.ns['read_stage'] = Mock(return_value=(20, 18))
+        self.ns['quest_jump_point'] = Mock(return_value=(1749., 100.))
+        self.runner.scan = Mock()
+        self.assertEqual(self.runner.run(ticks=1)['reason'], 'tick_budget')
+        self.runner.scan.assert_not_called()
+        self.session.tap_verified_ui.assert_called_once()
+        self.executor.battle.assert_not_called()
 
     def test_low_scene_marker_only_moves_camera_and_requires_new_scan(self):
         """脚圈被底栏遮住时用稳定菱形规划镜头，不点击菱形或启动未核对战斗。"""

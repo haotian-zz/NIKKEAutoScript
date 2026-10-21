@@ -454,7 +454,7 @@ class VisibleStoryRunner:
         return True
 
     def guide_quest(self, field):
-        """无可选普通怪时，最多一次请求游戏定位当前任务，再从新帧扫描而不猜测敌人坐标。
+        """每个当前主线最多一次请求游戏定位任务，再从新帧扫描而不猜测敌人坐标。
 
         同一完整任务号只尝试一次；两帧任务身份和右箭头都须一致。定位之后旧相机关联作废，
         若途中遭遇其他怪，主循环仍核对实际备战编号；此操作不替代本章末尾的清怪巡检。
@@ -462,7 +462,6 @@ class VisibleStoryRunner:
         if (self.quest is None or self.quest[0] != self.owner.current_chapter
                 or self.quest in self.guided_quests or self.quest in self.owner.story_wins):
             return False
-        self.guided_quests.add(self.quest)
         point = quest_jump_point(field)
         if point is None:
             return False
@@ -477,8 +476,19 @@ class VisibleStoryRunner:
         self.session.begin_target('quest_guide')
         self.session.record_evidence('quest_guide', fresh, quest=self.quest, control=confirmed)
         self.memory.previous = None
+        expected_quest = self.quest
+
+        def validate(latest):
+            """游戏任务定位在真正输入前仍须匹配同章任务和实际蓝箭头，不能沿用旧提示。"""
+            current = read_stage(latest, self.owner.chapter_ocr, quest=True)
+            control = quest_jump_point(latest)
+            return (current == expected_quest and control is not None
+                    and np.linalg.norm(np.asarray(confirmed)-control) <= 5.
+                    and chapter_identity(latest, self.owner.chapter_ocr) == (self.owner.current_chapter, 'normal'))
+
+        self.guided_quests.add(self.quest)
         try:
-            if not self.session.tap(confirmed, interval=2.):
+            if not self.session.tap_verified_ui(confirmed, validate):
                 return False
         except TargetTriggered:
             return True
@@ -583,7 +593,7 @@ class VisibleStoryRunner:
         raise SweepUnconfirmed('本章清怪已确认，但下一章入口未能核对；已停止。')
 
     def run(self, ticks=48):
-        """优先清理全部可见敌人，视野内目标耗尽后逐行巡检全章，清空复核通过后才换章。
+        """当前主线先复用一次游戏任务定位，再清理可见敌人；全章巡检复核通过后才换章。
 
         关卡顺序只作为辅助信息：已知遇敌编号从小到大、未知目标按距离排序；每次开战仍独立
         核对实际编号。总时限、单目标输入预算、停止信号及首次战败终止继续由正式会话执行。
@@ -606,6 +616,8 @@ class VisibleStoryRunner:
                     self.memory.reconsider(current, self.owner.story_wins)
                     self.deferred.clear()
                 self.quest = current
+                if self.guide_quest(field):
+                    continue
             fresh, candidates = self.scan(field)
             if goto.battle_popup_score(fresh) > .8:
                 self.fight_entry()
