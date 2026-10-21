@@ -328,6 +328,20 @@ class VisibleStoryTests(unittest.TestCase):
         self.runner.memory.identify.assert_called_once_with('ring-1', None, 'unreachable')
         self.executor.battle.assert_not_called()
 
+    def test_structure_scout_keeps_recovery_priority_over_another_enemy_click(self):
+        """受阻后的设施换视角仍需继续找设施，不立即插入另一次敌人点击打断恢复。"""
+        self.runner.blocked_views = 1
+        self.ns['read_stage'] = Mock(return_value=(20, 25))
+        self.runner.scan = Mock(return_value=(self.field, [self.target]))
+        recover = Mock(return_value='scouted')
+        with patch.dict(sys.modules, {'module.campaign.structures':
+                                     SimpleNamespace(recover_visible_structure=recover)}):
+            self.runner.run(ticks=1)
+        self.assertEqual(self.runner.blocked_views, 1)
+        recover.assert_called_once_with(self.runner, self.field)
+        self.session.tap.assert_not_called()
+        self.executor.battle.assert_not_called()
+
     def test_entry_inspection_requires_two_actual_reads(self):
         """实际遇敌连续两次相同才能交战斗，不沿用原先点击的目标号。"""
         self.ns['goto'].battle_popup_score.return_value = 1.

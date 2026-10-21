@@ -182,6 +182,9 @@ class VisibleStoryRunner:
         self.manual_ex_seen = False
         self.guided_quests = set()
         self.marker_pans = 0
+        self.blocked_views = 0
+        self.structure_inputs = 0
+        self.structure_pans = 0
         self.journal = ClearanceJournal(owner.config.config_name)
         self.journal.begin(owner.current_chapter)
 
@@ -306,6 +309,7 @@ class VisibleStoryRunner:
         logger.info(f'地图战斗已确认胜利：{stage_text(stage)}；留在地图继续扫描，不要求每次胜利都改变任务栏。')
         self.deferred.clear()
         self.marker_pans = 0
+        self.blocked_views = self.structure_inputs = self.structure_pans = 0
         return True
 
     def scan(self, field):
@@ -482,6 +486,12 @@ class VisibleStoryRunner:
                 self.fight_entry()
                 continue
             candidates = [item for item in candidates if self.selectable(item)]
+            if self.blocked_views:
+                from module.campaign.structures import recover_visible_structure
+                recovery = recover_visible_structure(self, fresh)
+                if recovery != 'scouted':
+                    self.blocked_views = 0
+                continue
             if not candidates:
                 if self.guide_quest(fresh):
                     continue
@@ -518,6 +528,7 @@ class VisibleStoryRunner:
                     self.deferred.add(target['id'])
             else:
                 self.memory.identify(target['id'], None, 'unreachable')
+                self.blocked_views += 1
                 logger.info('敌人落点二十秒内未进入备战，记录暂不可达并扫描其他目标。')
                 self.deferred.add(target['id'])
         return dict(state='continue', reason='tick_budget')
