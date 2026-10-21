@@ -33,6 +33,7 @@ def definitions():
                                            {'reason': 'chapter_clearance_unconfirmed'}),
                      squad_arrow=Mock(return_value=None), squad_offscreen=Mock(return_value=None),
                      story_markers=story_markers, pan_scene=Mock())
+    namespace.update(read_title=Mock(return_value=None), title_crop=Mock(return_value=None))
     from module.campaign.vision.native_motion import ClickProgress, NativeMotion, combine_motion
     namespace.update(ClickProgress=ClickProgress, NativeMotion=NativeMotion, combine_motion=combine_motion,
                      MinimapStability=Mock(return_value=SimpleNamespace(observe=lambda field: dict(state='unknown'))))
@@ -114,6 +115,29 @@ class VisibleStoryTests(unittest.TestCase):
             reader.paddleocr.recognize.return_value = [dict(rec_text='20-31B0SS', rec_score=score)]
             self.assertEqual(self.ns['read_stage'](self.field, reader), (20, 25))
         self.assertEqual(reader.ocr.call_count, 2)
+
+    def test_dedicated_title_keeps_observed_identity_and_confidence_gate(self):
+        """新识别器使用实际完整标题；低分、坏编号和EX不能被期望任务修正或强行接受。"""
+        reader = Mock()
+        self.ns['read_title'].return_value = dict(rec_text='21-1STAGE', rec_score=.98)
+        self.assertEqual(self.ns['read_stage'](self.field, reader), (21, 1))
+        reader.paddleocr.recognize.assert_not_called()
+        reader.ocr.assert_not_called()
+        reader.paddleocr.recognize.return_value = []
+        reader.ocr.return_value = dict(text='')
+        for text, score in [('21-1STAGE', .899), ('21-1STAGE', float('nan')),
+                            ('2H1STAGE', .99), ('EX STAGE', .99)]:
+            self.ns['read_title'].return_value = dict(rec_text=text, rec_score=score)
+            self.assertIsNone(self.ns['read_stage'](self.field, reader))
+
+    def test_tight_title_fallback_preserves_anchor_and_score(self):
+        """没有专用权重时，裁字回退仍保留完整标题与0.9门槛，不依靠当前任务补号。"""
+        reader = Mock()
+        self.ns['title_crop'].return_value = np.zeros((50, 200, 3), np.uint8)
+        reader.paddleocr.recognize.side_effect = [[dict(rec_text='2H1STAGE', rec_score=.93)],
+                                                [dict(rec_text='21-1STAGE', rec_score=.98)]]
+        self.assertEqual(self.ns['read_stage'](self.field, reader), (21, 1))
+        reader.ocr.assert_not_called()
 
     def test_entry_requires_two_matching_frames(self):
         """第一帧正确不放行；第二帧仍为预期关卡才允许战斗。"""

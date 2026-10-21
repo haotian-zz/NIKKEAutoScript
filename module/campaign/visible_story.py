@@ -10,6 +10,7 @@ from module.campaign.navigation import controls as goto
 from module.campaign.navigation.movement_feedback import TargetTriggered
 from module.campaign.vision import battle
 from module.campaign.vision.chapter import chapter_identity
+from module.campaign.vision.entry_title import read_title, title_crop
 from module.campaign.scene_memory import SceneEnemyMemory, stable_candidates
 from module.campaign.clearance import ClearanceJournal
 from module.campaign.chapter_flow import ChapterOverlayFlow
@@ -90,14 +91,21 @@ def parse_entry_title(text):
 def read_stage(field, reader, quest=False):
     """任务栏与备战标题优先识别固定单行，仅处理当前截图，不用任务号替代实际备战。
 
-    备战单行须完整STAGE/BOSS锚点及0.9分；低分、版式不符或歧义时保留旧宽区域OCR，
-    关卡解析仍拒绝残缺分支。任务栏保持原0.9分和通关动词约束，EX独立核对路径不变。
+    备战先使用CPU专用识别器；未安装权重或未通过时依次尝试原单行、字形裁切与宽区域OCR。
+    单行均须完整STAGE/BOSS锚点及0.9分，不补写数字。任务栏及EX的独立核对路径不变。
     """
     if field.shape != (999, 1776, 3):
         raise ValueError('主线关卡核对需要 1776×999 BGR 客户区。')
     x1, y1, x2, y2 = QUEST_AREA if quest else ENTRY_AREA
     crop = field[y1:y2, x1:x2]
     if not quest:
+        title = read_title(field)
+        if title is not None:
+            text, score = title['rec_text'], float(title['rec_score'])
+            stage = parse_entry_title(text) if np.isfinite(score) and score >= .9 else None
+            logger.info(f'备战标题专用识别：{text!r}，分数 {score:.3f}')
+            if stage is not None:
+                return stage
         left, top, right, bottom = ENTRY_TITLE_AREA
         title = cv2.resize(field[top:bottom, left:right], None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
         results = reader.paddleocr.recognize([title])
@@ -107,6 +115,14 @@ def read_stage(field, reader, quest=False):
             logger.info(f'备战标题单行识别：{text!r}，分数 {score:.3f}')
             if stage is not None:
                 return stage
+        normalized = title_crop(field, stretch=2)
+        if normalized is not None:
+            results = reader.paddleocr.recognize([normalized])
+            if len(results) == 1:
+                text, score = results[0].get('rec_text', ''), float(results[0].get('rec_score', 0.))
+                stage = parse_entry_title(text) if np.isfinite(score) and score >= .9 else None
+                if stage is not None:
+                    return stage
         crop = cv2.resize(crop, None, fx=2, fy=2)
         return parse_stage(reader.ocr(crop, direct_ocr=True, threshold=.9)['text'])
     text = read_quest_text(field, reader)
