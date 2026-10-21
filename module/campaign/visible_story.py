@@ -256,6 +256,8 @@ class VisibleStoryRunner:
         self.blocked_views = 0
         self.structure_inputs = 0
         self.structure_pans = 0
+        self.facilities = None
+        self.facility_survey_attempted = False
         self.entry_outcome = None
         self.journal = ClearanceJournal(owner.config.config_name)
         self.journal.begin(owner.current_chapter)

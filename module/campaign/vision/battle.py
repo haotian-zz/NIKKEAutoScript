@@ -15,7 +15,7 @@ import cv2
 import numpy as np
 
 from module.campaign.navigation.controls import ENTER_BATTLE_TPL
-from module.campaign.vision.minimap import map_visible, minimap_control_visible
+from module.campaign.vision.minimap import map_visible, minimap_control_visible, minimap_closed_control_visible
 from module.simulation_room.assets import END_FIGHTING
 from module.ui.assets import SKIP
 
@@ -179,7 +179,7 @@ def field_visible(image):
         return True
     x1, y1, x2, y2 = MINIMAP_CONTROL_ROI
     control = image[y1:y2, x1:x2]
-    if not minimap_control_visible(control):
+    if not (minimap_control_visible(control) or minimap_closed_control_visible(control)):
         return False
     return bool((cv2.cvtColor(control, cv2.COLOR_BGR2HSV)[:, :, 2] < CONTROL_DARK_VALUE).mean() > .5)
 

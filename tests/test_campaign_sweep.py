@@ -72,6 +72,17 @@ class CameraMotionTests(unittest.TestCase):
         with patch.object(sweep_module, 'scene_registration', return_value=self.registration([17., 31.])):
             np.testing.assert_allclose(camera_motion(None, None, [480., 0.]), [17., 31.])
 
+    def test_oblique_collection_does_not_relax_clearance_or_overlap(self):
+        """设施采集可观测斜向边缘，但默认清怪仍拒绝；反向和跳图仍禁止。"""
+        with patch.object(sweep_module, 'scene_registration', return_value=self.registration([-77., -89.])):
+            with self.assertRaises(SweepUnconfirmed):
+                camera_motion(None, None, [-480., 0.])
+            np.testing.assert_allclose(camera_motion(None, None, [-480., 0.], allow_oblique=True), [-77., -89.])
+        for delta in ([200., 0.], [-700., 100.]):
+            with patch.object(sweep_module, 'scene_registration', return_value=self.registration(delta)):
+                with self.assertRaises(SweepUnconfirmed):
+                    camera_motion(None, None, [-480., 0.], allow_oblique=True)
+
 
 class SceneRegistrationTests(unittest.TestCase):
     """独立合成纹理和已知真实平移验证生产背景配准及红圈跟踪。"""

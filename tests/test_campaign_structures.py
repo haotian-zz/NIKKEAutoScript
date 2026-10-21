@@ -26,6 +26,9 @@ class StructureTests(unittest.TestCase):
         self.runner = Mock(structure_inputs=0, structure_pans=0)
         self.runner.map_frame.return_value = self.field
         self.runner.session = Mock()
+        patcher = patch.object(structure, 'facility_catalog', return_value=None)
+        patcher.start()
+        self.addCleanup(patcher.stop)
         patcher = patch.object(structure, 'locate_squad', return_value=dict(
             status='needs_review', identity=[21, 'normal'], map_sha256=None, position=None))
         patcher.start()
@@ -79,6 +82,23 @@ class StructureTests(unittest.TestCase):
                 structure.recover_visible_structure(self.runner, self.field)
         self.runner.session.tap.assert_not_called()
         pan.assert_not_called()
+
+    def test_used_persistent_facility_is_not_clicked_with_a_fresh_input_budget(self):
+        """新任务的输入次数归零也不能再次点击当前受阻目标已经试过的持久设施。"""
+        target = fixture()
+        catalog = Mock()
+        catalog.observe.return_value = [dict(target, facility_id='persisted-platform')]
+        catalog.eligible.return_value = False
+        self.runner.facility_survey_attempted = True
+        self.runner.structure_pans = 4
+        with patch.object(structure, 'facility_catalog', return_value=catalog), \
+                patch.object(structure, 'detect_objects', return_value=[target]), \
+                patch.object(structure, 'squad_arrow', return_value=np.array([600., 400.])), \
+                patch.object(structure.goto, 'battle_popup_score', return_value=0.):
+            with self.assertRaises(structure.StructureUnconfirmed):
+                structure.recover_visible_structure(self.runner, self.field)
+        self.runner.session.tap.assert_not_called()
+        catalog.attempt.assert_not_called()
 
     def test_localization_does_not_preserve_a_stale_facility_click(self):
         """地图复核后设施移动或消失时拒绝旧落点，不能把定位成功当作交互许可。"""

@@ -6,7 +6,7 @@ import time
 import cv2
 import numpy as np
 
-from module.campaign.vision.minimap import map_visible, minimap_control_visible
+from module.campaign.vision.minimap import map_visible, minimap_control_visible, minimap_closed_control_visible
 from module.campaign.vision.matching import ACCEPT_COARSE_MARGIN, ACCEPT_PARAMETER_SPREAD_PX, ACCEPT_ROAD_IOU, MapMatcher, ROI
 from module.campaign.vision.barriers import mark_blocks, project_barriers, scene_anchor
 from module.campaign.map.map_state import StaticMap
@@ -59,7 +59,7 @@ class CampaignObserver:
         区域没有青蓝色地图，即认为处于关闭态；控件不可见或面板可见时返回 False，不确定不算关闭。
         """
         control = image[76:120, 20:64]
-        if not minimap_control_visible(control):
+        if not minimap_closed_control_visible(control):
             return False
         if not map_visible(image[118:273, 27:207]):
             icon = cv2.cvtColor(control, cv2.COLOR_BGR2HSV)

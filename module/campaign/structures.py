@@ -1,6 +1,7 @@
 """可见设施的有界恢复：两帧确认后尝试开关或平台，不将点击当作开门或传送成功。"""
 
 import time
+import json
 
 import numpy as np
 
@@ -8,6 +9,9 @@ from module.campaign.navigation import controls as goto
 from module.campaign.navigation.camera_navigation import pan_scene
 from module.campaign.navigation.movement_feedback import TargetTriggered
 from module.campaign.navigation.hybrid_localization import locate_squad, position_feedback
+from module.campaign.facility_memory import FacilityMemory, stable_facilities
+from module.campaign.map.catalog import chapter_map
+from module.campaign.map.annotations import validate_annotations
 from module.campaign.vision.enemy_ring import clickable_ring
 from module.campaign.vision.objects import detect_objects, nearby_platforms, visible_platforms
 from module.campaign.vision.perception import squad_arrow
@@ -19,6 +23,26 @@ from module.logger import logger
 class StructureUnconfirmed(RuntimeError):
     """目标受阻且有界设施探索耗尽，保留未完成并交出现场，禁止继续空跑。"""
     reason = 'structure_interaction_unconfirmed'
+
+
+def facility_catalog(runner):
+    """在首次设施恢复时加载实例设施簿；外部标注通过既有底图校验后再导入。
+
+    普通寻敌不承担地图资源与特征内存开销。目录绑定当前章节难度及底图，任务退出时由
+    runner生命周期释放内存，磁盘特征仅用于后续重新配准，不授予历史落点输入许可。
+    """
+    if runner.facilities is None:
+        try:
+            package, metadata = chapter_map(runner.session.expected_identity[0])
+        except OSError:
+            package, metadata = None, None
+        runner.facilities = FacilityMemory(runner.owner.config.config_name, runner.session.expected_identity,
+                                           None if metadata is None else metadata['image_sha256'])
+        if package is not None and (package/'annotations.json').exists():
+            document = json.loads((package/'annotations.json').read_text(encoding='utf8'))
+            validate_annotations(document, metadata['image_sha256'], metadata['size'])
+            runner.facilities.import_annotations(document)
+    return runner.facilities
 
 
 def actionable(objects):
@@ -117,6 +141,8 @@ def recover_visible_structure(runner, field, allow_unanchored=False):
     if learned is not None:
         return learned
     session = runner.session
+    catalog = facility_catalog(runner)
+    blocked_goal = 'quest:'+str(runner.quest)
     first = structure_observations(field, squad_arrow(field), allow_unanchored)
     session.pause(.25)
     fresh = runner.map_frame()
@@ -144,6 +170,12 @@ def recover_visible_structure(runner, field, allow_unanchored=False):
                             arrays=dict(field=fresh, previous_field=previous_field),
                             inputs=runner.structure_inputs, pans=runner.structure_pans)
     session.preview(fresh)
+    if catalog is not None:
+        registered = catalog.observe(fresh, stable_facilities(first, second))
+        candidates = [dict(item, facility_id=known['facility_id']) for item in candidates
+                      for known in registered if known['kind'] == item['kind']
+                      and np.linalg.norm(np.asarray(known['position'])-item['position']) < 1.
+                      and catalog.eligible(known['facility_id'], blocked_goal)]
     if arrow is None and not allow_unanchored:
         raise StructureUnconfirmed('目标受阻，设施恢复未确认画面内小队位置；已保留原图，停止探索。')
     ground = None if arrow is None else np.asarray(arrow) + [0., goto.ARROW_GROUND_OFFSET]
@@ -168,11 +200,14 @@ def recover_visible_structure(runner, field, allow_unanchored=False):
             matches = stable_structures([target], current)
             if len(matches) != 1:
                 raise StructureUnconfirmed('地图定位后设施未在新鲜画面保持唯一确认，未发送旧落点。')
-            target = matches[0]
+            target = dict(matches[0], **({'facility_id': target['facility_id']}
+                                        if 'facility_id' in target else {}))
         session.begin_target('structure_attempt')
         session.record_evidence('structure_attempt', fresh, target=target, arrays=dict(field=fresh),
                                 squad_anchor='unobserved' if ground is None else 'arrow_ground')
         runner.structure_inputs += 1
+        if catalog is not None:
+            catalog.attempt(target['facility_id'], blocked_goal)
         logger.info(f"尝试可见设施：{target['kind']}／{target['state']}，位置 {target['position']}；"
                     '交互结果保持未确认，下一步重新扫描实际道路和敌人。')
         try:
@@ -189,6 +224,8 @@ def recover_visible_structure(runner, field, allow_unanchored=False):
                                     after=after_location, result=location_result, arrays=dict(field=observed))
         session.record_evidence('structure_observed', observed, attempted=target,
                                 state='unconfirmed', position_feedback=location_result, arrays=dict(field=observed))
+        if catalog is not None:
+            catalog.feedback(target['facility_id'], location_result)
         # 镜头或小队可能已经移动，旧观察身份不得阻止新画面的独立目标复核。
         runner.memory.previous = None
         runner.deferred.clear()
@@ -197,6 +234,13 @@ def recover_visible_structure(runner, field, allow_unanchored=False):
         return 'attempted'
     if ground is None:
         raise StructureUnconfirmed('无小队锚点的设施交互预算已用尽，停止恢复，不发送镜头动作。')
+    if catalog is not None and not runner.facility_survey_attempted and not candidates:
+        from module.campaign.facility_survey import FacilitySurvey
+        runner.facility_survey_attempted = True
+        result = FacilitySurvey(runner, catalog).run()
+        if result['state'] == 'entry':
+            return 'entry'
+        return 'scouted'
     if runner.structure_pans < 4:
         directions = ((-360., 0.), (0., -240.), (360., 0.), (0., 240.))
         drag = np.asarray(directions[runner.structure_pans])

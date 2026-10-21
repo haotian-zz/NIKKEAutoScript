@@ -135,6 +135,40 @@ def map_visible(image):
     hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
     return ((hsv[:, :, 0] >= 85) & (hsv[:, :, 0] <= 115) & (hsv[:, :, 1] > 40)).mean() >= 0.45
 
+def minimap_closed_control_visible(image):
+    """独立识别关闭态图钉，不能用放大镜的大孔洞规则判断地图是否已关闭。
+
+    输入44×44按钮裁图。图钉外廓须为上圆下尖的纵向形状，内部小孔位于上半部；圆环、
+    放大镜、白色X和单纯亮背景均不满足。这里只判控件，调用方还须确认蓝色面板不存在。
+    """
+    if image.shape != (44, 44, 3):
+        return False
+    white = cv2.inRange(cv2.cvtColor(image, cv2.COLOR_BGR2HSV), (0, 0, 185), (179, 90, 255))
+    contours, hierarchy = cv2.findContours(white, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
+    if hierarchy is None:
+        return False
+    for contour, relation in zip(contours, hierarchy[0]):
+        child = relation[2]
+        x, y, width, height = cv2.boundingRect(contour)
+        if (child < 0 or not 16 <= width <= 28 or not 22 <= height <= 36
+                or not 1.15 <= height/width <= 1.9
+                or np.linalg.norm(np.array([x+width/2, y+height/2])-22) > 7.
+                or not .45 <= cv2.contourArea(contour)/(width*height) <= .8):
+            continue
+        bottom = contour[:, 0][contour[:, 0, 1] >= y+.8*height]
+        if (not len(bottom) or np.ptp(bottom[:, 0]) > .55*width
+                or abs(float(np.mean(bottom[:, 0]))-(x+width/2)) > .3*width):
+            continue
+        while child >= 0:
+            hole = contours[child]
+            hx, hy, hw, hh = cv2.boundingRect(hole)
+            if (8 <= cv2.contourArea(hole) <= 80
+                    and np.linalg.norm(np.array([hx+hw/2, hy+hh/2])-[x+width/2, y+.35*height]) < 4.):
+                return True
+            child = hierarchy[0][child][0]
+    return False
+
+
 def minimap_control_visible(image):
     """识别地图放大／缩小控件的白色外框，避免亮背景改变白色总量导致误判。
 

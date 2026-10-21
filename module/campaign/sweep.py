@@ -28,12 +28,13 @@ class SweepUnconfirmed(RuntimeError):
     reason = 'chapter_clearance_unconfirmed'
 
 
-def camera_motion(before, after, drag):
+def camera_motion(before, after, drag, allow_oblique=False):
     """在背景几何内点范围内估计镜头响应，拒绝反向、过大或大幅横向漂移的未知变换。
 
     返回客户区内容位移向量。小于 3px 才能作为单次边界候选；调用方须连续验证两次。
     网格至少六点处于双帧内点凸包，横纵跨度各 200px、凸包面积 60000px²，避免固定采样
     恰好落在地图外空白或仅有单行支持。位移上限保留至少约一半视野重叠，不以大幅跳图连接覆盖。
+    allow_oblique仅供保留partial的设施探索，允许边缘约束下的斜向响应；不能据此确认矩形条带覆盖。
     """
     try:
         matrix, source_hull, destination_hull = scene_registration(before, after)
@@ -61,7 +62,7 @@ def camera_motion(before, after, drag):
     if np.max(np.linalg.norm(shifts, axis=1)) < 3.:
         return np.zeros(2)
     axis = int(np.argmax(np.abs(drag)))
-    if delta @ np.asarray(drag) <= 0 or abs(delta[1 - axis]) > 80.:
+    if delta @ np.asarray(drag) <= 0 or (not allow_oblique and abs(delta[1 - axis]) > 80.):
         raise SweepUnconfirmed(f'镜头响应与巡检手势不一致：手势 {list(drag)}，'
                                f'实际位移 {np.round(delta, 2).tolist()}。')
     return delta
@@ -130,17 +131,14 @@ class ChapterSweep:
         if self.found is not None:
             return None
         field = before['field']
-        arrow = squad_arrow(field)
-        if arrow is None and squad_offscreen(field) is None:
-            raise SweepUnconfirmed('未确认小队位置或离屏标记，停止镜头巡检以避免发送走位。')
-        ground = None if arrow is None else np.asarray(arrow) + [0., goto.ARROW_GROUND_OFFSET]
+        ground = self.pan_anchor(field)
         self.session.begin_target('chapter_sweep_pan')
         pan_scene(self.session, np.asarray(drag, float), squad_ground=ground)
         self.steps += 1
         after = self.sample()
         if self.found is not None:
             return None
-        delta = camera_motion(before['frame'], after['frame'], drag)
+        delta = self.measure_motion(before['frame'], after['frame'], drag)
         axis = int(np.argmax(np.abs(drag)))
         if abs(delta[axis]) >= 3.:
             self.axes.add(axis)
@@ -150,6 +148,17 @@ class ChapterSweep:
         self.session.record_evidence('chapter_sweep_motion', after['field'], drag=drag,
                                      actual=delta.tolist(), pans=self.steps, rows=self.rows)
         return delta
+
+    def measure_motion(self, before, after, drag):
+        """清怪扫描使用严格轴向响应；设施子类可观察斜向运动，但必须保留覆盖存疑。"""
+        return camera_motion(before, after, drag)
+
+    def pan_anchor(self, field):
+        """仅真实箭头或离屏标记允许拖镜头；离屏时返回None，不构造画面中心地面坐标。"""
+        arrow = squad_arrow(field)
+        if arrow is None and squad_offscreen(field) is None:
+            raise SweepUnconfirmed('未确认小队位置或离屏标记，停止镜头巡检以避免发送走位。')
+        return None if arrow is None else np.asarray(arrow)+[0., goto.ARROW_GROUND_OFFSET]
 
     def edge(self, drag):
         """沿一轴走到连续两次几何静止的边界；新敌人、取消与输入故障立即结束当前巡检。"""
