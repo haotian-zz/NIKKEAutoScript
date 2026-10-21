@@ -89,25 +89,53 @@ class MinimapStability:
 
     @staticmethod
     def read(field):
-        """确认紧凑面板控件后读取圆环、道路及有效域；不接受展开地图或其他页面。"""
+        """确认固定面板与唯一精定位圆环，再提取用于帧间比较的道路及有效域。
+
+        这里不复用底图配准的高亮剔除：亮蓝色道路本身可超过225亮度，不能被当作光效
+        擦除。只屏蔽固定控件、红色标记及小队圆环；仍须后续二维角点和道路支持核验。
+        """
         from module.campaign.vision.minimap import map_visible, minimap_control_visible
-        from module.campaign.vision.perception import minimap_masks
+        from module.campaign.vision.perception import detect_markers
+        if field is None or field.shape != (999, 1776, 3):
+            raise ValueError('Expected a 1776x999 compact-map frame')
         if (not minimap_control_visible(field[76:120, 20:64])
                 or not map_visible(field[118:273, 27:207])):
             raise ValueError('Compact minimap not visible')
-        _, road, valid, player = minimap_masks(field)
-        return road, valid, np.asarray(player, float)
+        panel = cv2.resize(field, (1920, 1080))[96:307, 25:243]
+        players, _ = detect_markers(panel, np.eye(3))
+        if len(players) != 1:
+            raise ValueError(f'Expected one compact-map squad ring, got {len(players)}')
+        player = np.asarray(players[0], float)
+        hsv = cv2.cvtColor(panel, cv2.COLOR_BGR2HSV)
+        road = cv2.inRange(hsv, (85, 65, 115), (115, 255, 255))
+        road = cv2.morphologyEx(road, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+        road = cv2.morphologyEx(road, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8))
+        valid = np.full(road.shape, 255, np.uint8)
+        valid[:3] = valid[-3:] = 0
+        valid[:, :3] = valid[:, -3:] = 0
+        valid[:29, :42] = valid[:29, -34:] = valid[-31:, -76:] = 0
+        icons = cv2.inRange(hsv, (135, 45, 80), (179, 255, 255))
+        icons |= cv2.inRange(hsv, (0, 65, 160), (10, 255, 255))
+        valid[cv2.dilate(icons, np.ones((7, 7), np.uint8)) > 0] = 0
+        cv2.circle(valid, tuple(np.rint(player).astype(int)), 21, 0, -1)
+        road[valid == 0] = 0
+        if np.count_nonzero(road) < 200:
+            raise ValueError('Too little minimap road evidence')
+        return road, valid, player
 
     def snapshot(self, field):
         """只将可辨识的二维轮廓纳入比较，避免长直路滚动但外观不变时误称静止。"""
         try:
             road, valid, player = self.reader(field)
-        except ValueError:
+        except ValueError as exc:
+            self.last_error = str(exc)
             return None
+        self.last_error = None
         mask = cv2.erode(valid, np.ones((7, 7), np.uint8))
         points = cv2.goodFeaturesToTrack(road, 40, .03, 4, mask=mask)
         if (points is None or len(points) < 6 or min(np.ptp(points[:, 0], axis=0)) < 32
                 or cv2.contourArea(cv2.convexHull(points)) < 1500):
+            self.last_error = 'Road lacks two-dimensional corner support'
             return None
         return road, valid, player
 
@@ -116,7 +144,8 @@ class MinimapStability:
         current, previous = self.snapshot(field), self.reference
         if current is None or previous is None:
             self.reference = current
-            return dict(state='unknown', reason='minimap_unobserved')
+            return dict(state='unknown', reason='minimap_unobserved',
+                        detail=self.last_error or 'Reference not yet available')
         road, valid, player = current
         old_road, old_valid, old_player = previous
         common = (valid > 0) & (old_valid > 0)
@@ -141,7 +170,7 @@ def combine_motion(scene, minimap):
     稳定小地图消歧。更大位移不被小地图覆盖，避免以别名道路图案否认真实行走。
     """
     if minimap['state'] != 'stationary':
-        return scene
+        return dict(scene, minimap_feedback=minimap)
     if scene['state'] == 'moving':
         delta = scene.get('movement_vector')
         if delta is None or abs(delta[0]) > 3 or abs(delta[1]) > 18:

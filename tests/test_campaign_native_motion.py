@@ -1,6 +1,7 @@
 """原生点击反馈的真实图像几何与有界状态回归，不加载模型或输入驱动。"""
 
 import unittest
+from unittest.mock import patch
 
 import cv2
 import numpy as np
@@ -79,6 +80,21 @@ class NativeMotionTests(unittest.TestCase):
             result = progress.update(now, observation)
         self.assertEqual(result, 'stalled')
         self.assertEqual(observation['reason'], 'independent_minimap_stable')
+
+    def test_bright_blue_minimap_road_is_valid_observation_evidence(self):
+        """亮蓝道路超过225亮度仍保留二维角点，不能复用配准光效遮罩擦除整条道路。"""
+        road, _, player = self.minimap()
+        panel = np.zeros((211, 218, 3), np.uint8)
+        panel[road > 0] = (245, 170, 40)
+        large = np.zeros((1080, 1920, 3), np.uint8)
+        large[96:307, 25:243] = panel
+        field = cv2.resize(large, (1776, 999))
+        with patch('module.campaign.vision.minimap.minimap_control_visible', return_value=True), \
+                patch('module.campaign.vision.minimap.map_visible', return_value=True), \
+                patch('module.campaign.vision.perception.detect_markers', return_value=([player], [])):
+            mini = MinimapStability(field)
+            self.assertIsNotNone(mini.reference)
+            self.assertEqual(mini.observe(field)['state'], 'stationary')
 
     def test_map_scroll_or_ring_displacement_cannot_confirm_stationary(self):
         """跟随镜头造成道路移动，或镜头不动但圆心移动，都不能被静止交叉确认覆盖。"""
