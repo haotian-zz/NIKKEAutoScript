@@ -16,7 +16,7 @@ from module.campaign.vision import battle
 from module.campaign.vision.chapter import chapter_identity
 from module.campaign.vision.chapter_completion import overlay_anchor
 from module.campaign.window import CampaignWindow
-from module.campaign.visible_story import read_quest_text
+from module.campaign.visible_story import read_quest_text, return_lobby_quest
 from module.exception import GameStuckError, RequestHumanTakeover
 from module.execution.context import report
 from module.logger import logger
@@ -28,6 +28,8 @@ from module.ui.ui import UI
 
 # 切日后大厅可能连续弹出多个奖励／活动页，超过上限仍未见大厅则交人工确认。
 LOBBY_POPUP_LIMIT = 5
+# 大厅任务仍为“返回大厅”时等待剧情触发及任务更新的上限（秒）。
+LOBBY_RETURN_WAIT = 30.
 
 
 def chapter_number(value):
@@ -55,6 +57,7 @@ class AutoPush(UI):
             text = reader.ocr(self.device.image, threshold=.9)['text']
         self.lobby_sortie_instruction = bool(re.fullmatch(r'前往地面(?:【出[击擊]】|\[出[击擊]\])',
                                                          re.sub(r'\s+', '', text)))
+        self.lobby_return_pending = return_lobby_quest(text)
         match = re.search(r'(?:通关|CLEAR).*?([1-9]\d?)\s*[-－]\s*([1-9]\d?)', text, re.I)
         return tuple(map(int, match.groups())) if match else None
 
@@ -98,7 +101,8 @@ class AutoPush(UI):
             current = self.quest_stage()
             previous = ('sortie',) if getattr(self, 'lobby_sortie_instruction', False) else current
             # 首次OCR可能初始化模型；稳定窗口从组件已可读取后起算，不能读对首帧却无第二帧机会。
-            deadline = time.monotonic() + 4.
+            started = time.monotonic()
+            deadline = started + 4.
             restart = False
             while time.monotonic() < deadline:
                 self.device.sleep(.3)
@@ -111,6 +115,10 @@ class AutoPush(UI):
                 identity = ('sortie',) if sortie else current
                 if identity is not None and identity == previous:
                     return current, sortie
+                if getattr(self, 'lobby_return_pending', False):
+                    # 实录 2026-10-21（21 章通关）：回到大厅后任务栏仍是“返回大厅”，几秒后才自动播剧情
+                    # （截图时自动跳过）再更新任务；继续等待，最多 LOBBY_RETURN_WAIT 秒。
+                    deadline = max(deadline, min(started+LOBBY_RETURN_WAIT, time.monotonic()+4.))
                 previous = identity
             if not restart:
                 return None

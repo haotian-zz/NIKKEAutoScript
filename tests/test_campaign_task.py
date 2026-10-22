@@ -26,6 +26,8 @@ def load(name, **namespace):
     namespace.setdefault('read_quest_text', Mock(return_value=None))
     namespace.setdefault('battle_popup_score', Mock(return_value=0.))
     namespace.setdefault('ENTRY_CLOSE_POINT', (1147, 513))
+    namespace.setdefault('LOBBY_RETURN_WAIT', 30.)
+    namespace.setdefault('return_lobby_quest', Mock(return_value=False))
     exec(compile(ast.Module(body=[node], type_ignores=[]), name, 'exec'), namespace)
     return namespace[name]
 
@@ -411,6 +413,26 @@ class CampaignStartTests(unittest.TestCase):
         runner.appear.return_value = False
         clock.side_effect = [0., .1]
         self.assertIsNone(fn(runner))
+
+    def test_lobby_still_showing_return_waits_for_story_and_new_quest(self):
+        """实录21章通关：回大厅后任务仍是“返回大厅”，约十秒后剧情（截图时跳过）结束才出现新任务。"""
+        clock = SimpleNamespace(now=0.)
+        main = object()
+        fn = load('confirm_lobby_quest', time=SimpleNamespace(monotonic=lambda: clock.now), MAIN_CHECK=main,
+                  logger=Mock())
+        runner = lobby_runner(main, appear=Mock(return_value=True), lobby_sortie_instruction=False)
+
+        def read():
+            """前十秒任务栏仍是返回大厅，之后是新章第一关。"""
+            runner.lobby_return_pending = clock.now < 10.
+            return None if runner.lobby_return_pending else (22, 1)
+        runner.quest_stage = Mock(side_effect=read)
+        runner.device.sleep.side_effect = lambda seconds: setattr(clock, 'now', clock.now+seconds)
+        self.assertEqual(fn(runner), ((22, 1), False))
+        clock.now = 0.
+        runner.quest_stage = Mock(side_effect=lambda: setattr(runner, 'lobby_return_pending', True))
+        self.assertIsNone(fn(runner))
+        self.assertLessEqual(clock.now, 30.6)
 
     def test_fixed_lobby_line_avoids_empty_broad_detection(self):
         """固定单行高分可读取有效主线时，无需再次调用会受淡入干扰的大区域文字检测。"""
