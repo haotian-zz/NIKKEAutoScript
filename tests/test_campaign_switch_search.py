@@ -193,6 +193,45 @@ class SwitchSearchTests(unittest.TestCase):
         self.assertEqual(pan.call_count, 1)
         self.assertEqual(detect.call_count, search.FACILITY_QUICK_FRAMES)
 
+    def test_catalog_hint_is_centered_then_confirmed_by_fresh_detection(self):
+        """目录记得的关闭机关在画面上部被挡住：先移到画面中下部，新鲜两帧检测到才作为机关返回。"""
+        catalog = Mock()
+        catalog.observe.return_value = []
+        catalog.eligible.return_value = True
+        catalog.expected = [dict(facility_id='scene-0003', kind='ground_mechanism', state='off',
+                                 position=[1200., 340.])]
+        frames = [[], [], [fixture(position=(890., 640.))], [fixture(position=(890., 640.))]]
+        with patch.object(search, 'detect_objects', side_effect=frames), \
+                patch.object(search, 'pan_scene') as pan:
+            result = search.SwitchSearch(self.runner, catalog, pans=8).run()
+        self.assertEqual(result['state'], 'found')
+        self.assertEqual(result['target']['position'], [890., 640.])
+        drag = pan.call_args_list[0].args[1]
+        self.assertLess(drag[0], 0.)
+        self.assertGreater(drag[1], 0.)
+
+    def test_unconfirmed_hint_is_tried_once_then_spiral_continues(self):
+        """线索处新鲜检测不到：不点击、不再看同一线索，继续走下一个航点。"""
+        catalog = Mock()
+        catalog.observe.return_value = []
+        catalog.eligible.return_value = True
+        catalog.expected = [dict(facility_id='scene-0003', kind='ground_mechanism', state='off',
+                                 position=[1200., 340.])]
+        with patch.object(search, 'detect_objects', return_value=[]), \
+                patch.object(search, 'pan_scene'):
+            result = search.SwitchSearch(self.runner, catalog, pans=2).run()
+        self.assertEqual(result['state'], 'exhausted')
+        self.assertEqual(result['views'], 4)
+        self.runner.session.tap.assert_not_called()
+
+    def test_unmeasured_pan_keeps_both_frames_as_evidence(self):
+        """配准失败按增益估算继续，但前后两帧存为不回绕证据，供查失败原因。"""
+        with patch.object(search, 'detect_objects', return_value=[]), patch.object(search, 'pan_scene'):
+            result = search.SwitchSearch(self.runner, pans=1).run()
+        self.assertEqual(result['state'], 'exhausted')
+        events = [call.args[0] for call in self.runner.session.record_evidence.call_args_list]
+        self.assertIn('switch_search_unmeasured', events)
+
     def test_battle_popup_returns_entry_without_more_pans(self):
         """途中真实备战弹窗立即交回战斗流程。"""
         with patch.object(search.goto, 'battle_popup_score', return_value=.95), \

@@ -32,8 +32,15 @@ from module.logger import logger
 # 因此螺旋按配准实测位移走到各航点，不按拖动次数。
 HORIZONTAL_DRAG = 700.
 VERTICAL_DRAG = 520.
-# 航点间距约0.8屏（客户区像素，镜头位移），相邻两屏留约两成重叠；第一圈覆盖四周约1.3屏。
-SPIRAL_UNIT = np.array([1420., 800.])
+# 航点间距（客户区像素，镜头位移）。斜俯视镜头下画面上部的物体常被前方建筑挡住，只有中下部
+# 约0.55屏算可靠覆盖，竖向按它取间距；横向无此问题，约0.8屏留两成重叠。
+# 实录 2026-10-22（22-27）：西北航点里开关落在画面上部、被箱子挡住大半，检测器读不到；
+# 同一开关落在画面中下部时置信度0.95。
+SPIRAL_UNIT = np.array([1420., 550.])
+# 目录线索（已知关闭机关的投影）要移到的画面位置，以及线索离画面多远内才去看。
+HINT_VIEW = np.array([888., 640.])
+HINT_MARGIN = 300.
+HINT_PANS = 3
 # 离航点不足约四分之一屏即算到达；每个航点最多拖几次；位移不足多少像素算撞到地图边界。
 WAYPOINT_TOLERANCE = np.array([450., 250.])
 WAYPOINT_PANS = 6
@@ -136,7 +143,7 @@ class SwitchSearch:
         self.views, self.pans, self.catalog_errors = 0, 0, 0
         # 镜头相对起点的累计位移（按实测配准累加，配准失败时按增益估算）及上次取帧位置。
         self.camera, self.gain, self.looked = np.zeros(2), INITIAL_GAIN, None
-        self.unmeasured = 0
+        self.unmeasured, self.hinted = 0, set()
 
     def look(self, step, goal=False):
         """取两帧（不一致补到四帧）检测关闭机关并登记目录；返回(状态, 候选, 新鲜帧)。
@@ -173,10 +180,11 @@ class SwitchSearch:
                 enemies.append(dict(kind='enemy_ring', state='pending', position=center.tolist(),
                                     confidence=float(confidence), search_key=key))
         self.views += 1
-        registered = []
+        registered, relocated = [], False
         if self.catalog is not None:
             try:
                 registered = self.catalog.observe(fresh, voted_facilities(frames, FACILITY_VOTES))
+                relocated = True
             except FacilityUnconfirmed:
                 self.catalog_errors += 1
         candidates = []
@@ -188,12 +196,22 @@ class SwitchSearch:
                     known[0], 'quest:'+str(self.runner.quest))):
                 continue
             candidates.append(dict(item, search_key=key, **({'facility_id': known[0]} if known else {})))
+        hints = []
+        if relocated and not candidates:
+            goal_key = 'quest:'+str(self.runner.quest)
+            low, high = -HINT_MARGIN, np.array([fresh.shape[1], fresh.shape[0]])+HINT_MARGIN
+            hints = [dict(hint, confidence=0.) for hint in getattr(self.catalog, 'expected', [])
+                     if hint['facility_id'] not in self.hinted
+                     and np.all(np.asarray(hint['position']) >= low) and np.all(np.asarray(hint['position']) <= high)
+                     and self.catalog.eligible(hint['facility_id'], goal_key)]
         self.session.record_evidence('switch_search_view', fresh, step=step, detections=second,
-                                     candidates=candidates, enemies=enemies, frames=len(frames),
+                                     candidates=candidates, enemies=enemies, frames=len(frames), hints=hints,
                                      camera=np.round(self.camera).tolist(),
                                      elapsed=round(time.monotonic()-started, 2), arrays=dict(field=fresh))
         self.session.preview(fresh)
-        state, pool = ('found', candidates) if candidates else ('enemy', enemies)
+        # 新鲜机关 > 目录线索（移过去确认只需一两次拖动）> 敌人。
+        state, pool = (('found', candidates) if candidates else ('hint', hints) if hints and not goal
+                       else ('enemy', enemies))
         if not pool:
             return 'none', None, fresh
         if goal:
@@ -215,8 +233,10 @@ class SwitchSearch:
         after = self.runner.map_frame(track=False)
         shift = content_shift(before, after)
         if shift is None:
-            # 配准失败（烟雾、加载）时按当前增益估算，只用于决定下一次拖动，不作为点击依据。
+            # 配准失败时按当前增益估算，只用于决定下一次拖动，不作为点击依据；前后两帧留证查原因。
             self.unmeasured += 1
+            self.session.record_evidence('switch_search_unmeasured', after, drag=np.round(drag).tolist(),
+                                         arrays=dict(field=after, previous_field=before))
             return after, -drag*self.gain
         gain = float(shift @ drag / max(drag @ drag, 1.))
         if np.linalg.norm(shift) >= STUCK_SHIFT and .1 <= gain <= 2.:
@@ -250,6 +270,30 @@ class SwitchSearch:
         """在当前镜头取帧并记下取帧位置。"""
         self.looked = self.camera.copy()
         return self.look(step)
+
+    def check_hint(self, hint, step):
+        """把目录线索移到画面中下部再新鲜取帧；确认到关闭机关才返回found，否则返回None继续螺旋。"""
+        self.hinted.add(hint['facility_id'])
+        position = np.asarray(hint['position'], float)
+        logger.info(f"螺旋第 {step} 屏：目录记录的关闭机关 {hint['facility_id']} 应在 "
+                    f"{np.round(position).astype(int).tolist()}，移过去用新鲜检测确认。")
+        field = self.runner.map_frame(track=False)
+        self.session.record_evidence('switch_search_hint', field, hint=hint, arrays=dict(field=field))
+        for _ in range(HINT_PANS):
+            error = HINT_VIEW-position
+            if np.all(np.abs(error) <= WAYPOINT_TOLERANCE/2):
+                break
+            drag = error/self.gain
+            drag *= min(1., HORIZONTAL_DRAG/max(abs(drag[0]), 1.), VERTICAL_DRAG/max(abs(drag[1]), 1.))
+            drag *= pan_region(drag)[1]
+            field, moved = self.pan(drag, field)
+            self.camera = self.camera+moved
+            position = position-moved
+        state, target, field = self.view(step)
+        if state != 'none':
+            return state, target, field
+        logger.info(f"目录线索 {hint['facility_id']} 处未新鲜确认到关闭机关，继续螺旋。")
+        return None
 
     def revisit(self, step):
         """按实测位移把镜头移回第step个航点，重新取帧确认敌人；不沿用旧帧坐标。"""
@@ -290,6 +334,9 @@ class SwitchSearch:
             if not self.fresh_view():
                 continue
             state, target, field = self.view(step)
+            while state == 'hint':
+                checked = self.check_hint(target, step)
+                state, target, field = checked if checked is not None else ('none', None, field)
             if state == 'entry':
                 return dict(state='entry', field=field, views=self.views, pans=self.pans)
             if state == 'found' or (state == 'enemy' and not self.continuous):

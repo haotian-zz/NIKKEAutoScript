@@ -139,6 +139,7 @@ class FacilityMemory:
                     raise FacilityUnconfirmed('设施关键帧特征不完整，未复用旧像素。')
                 self.frames[number] = RingFrame(np.empty((0, 2)), keys, descriptors, np.zeros(2), [], [])
         self.current = {}
+        self.expected = []
         self.unresolved = []
         self.last_bridge_at = 0.
 
@@ -349,10 +350,29 @@ class FacilityMemory:
                 record['activated'] = 'observed_off'
             current[identifier] = dict(item, facility_id=identifier)
         self.current = current
+        self.expected = self._expected(matches, current)
         self.unresolved = unresolved
         self.data['unresolved'] = unresolved
         self.save()
         return list(current.values())
+
+    def _expected(self, matches, current):
+        """已知仍关闭的地面机关投影到本帧的位置，作为“去哪里看”的线索；本帧已检测到的不列入。
+
+        线索只来自可靠配准的历史关键帧，不授予点击许可：调用方须把镜头移过去后用新鲜检测确认。
+        """
+        hints = []
+        for identifier, record in self.data['facilities'].items():
+            if (record['kind'] != 'ground_mechanism' or record.get('activated') != 'observed_off'
+                    or identifier in current):
+                continue
+            for number, matrix, _, _ in matches:
+                old = next((item for item in record['observations'] if item['view'] == number), None)
+                if old is not None:
+                    hints.append(dict(facility_id=identifier, kind='ground_mechanism', state='off',
+                                      position=project(matrix, old['position']).tolist()))
+                    break
+        return hints
 
     def track_background(self, field, force=False):
         """保留移动途中的静态桥接关键帧，不修改设施身份、状态或尝试记录。

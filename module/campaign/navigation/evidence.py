@@ -25,7 +25,8 @@ KEEP_EVENTS = frozenset(('goal_view_result', 'switch_search_view', 'switch_searc
                          'switch_activated', 'structure_wait_timeout', 'gate_enemy_attempt', 'structure_probe',
                          'facility_survey_view', 'chapter_sweep_motion',
                          # 巡检因离屏头像未确认而中止时要看到当时画面（实录 2026-10-22 22-27）。
-                         'offscreen_map_state', 'offscreen_unoccluded', 'offscreen_unoccluded_confirm'))
+                         'offscreen_map_state', 'offscreen_unoccluded', 'offscreen_unoccluded_confirm',
+                         'switch_search_unmeasured', 'switch_search_hint'))
 KEEP_LIMIT = 300
 
 

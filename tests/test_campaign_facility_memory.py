@@ -107,6 +107,16 @@ class FacilityMemoryTests(unittest.TestCase):
         save.assert_not_called()
         self.assertEqual(len(self.catalog.data['views']), views)
 
+    def test_known_off_switch_is_projected_as_hint_until_seen_again(self):
+        """历史关闭机关在新视野中被挡住时，按配准投影出应在位置作线索；本帧检测到时不重复列出。"""
+        switch = observed((800., 500.), 'off', 'ground_mechanism')
+        identifier = self.catalog.observe(self.field, [switch])[0]['facility_id']
+        self.catalog.observe(self.panned, [])
+        self.assertEqual([hint['facility_id'] for hint in self.catalog.expected], [identifier])
+        np.testing.assert_allclose(self.catalog.expected[0]['position'], [980., 500.], atol=3.)
+        self.catalog.observe(self.panned, [observed((980., 500.), 'off', 'ground_mechanism')])
+        self.assertEqual(self.catalog.expected, [])
+
     def test_second_instance_reuses_shared_positions_without_attempts(self):
         """另一个实例首次进入同章同底图时复用设施位置与关键帧，尝试与开关状态从未确认开始。"""
         identifier = self.catalog.observe(
