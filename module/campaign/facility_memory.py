@@ -371,6 +371,11 @@ class FacilityMemory:
                             and attempt.get('state_epoch', 0) == self.data.get('state_epoch', 0)
                             for attempt in record['attempts']))
 
+    def switch_activated(self):
+        """点下的关闭机关已在原位确认开启：道路可能整体改变，此前对各受阻目标的尝试都重新可用。"""
+        self.data['state_epoch'] = self.data.get('state_epoch', 0)+1
+        self.save()
+
     def attempt(self, identifier, blocked_goal):
         """输入前持久登记尝试；中途取消也不会把同一个未知结果设施当成完全未试过。"""
         record = self.data['facilities'][identifier]

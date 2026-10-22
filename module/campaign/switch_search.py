@@ -80,15 +80,16 @@ def gate_enemies(first, second, markers):
 class SwitchSearch:
     """有界螺旋镜头搜索；任何真实备战弹窗立即交回战斗流程，不把找到当作开门。"""
 
-    def __init__(self, runner, catalog=None, pans=20, seconds=180., skip=(), enemies=True, blocked=()):
+    def __init__(self, runner, catalog=None, pans=20, seconds=180., skip=(), enemies=True, blocked=(), start=0):
         """skip是本受阻点已尝试过且未解决的搜索键，避免同状态下重复点同一个机关；
         enemies为False时只找关闭机关（本受阻点守关敌人尝试已达上限）；
-        blocked是刚停滞目标在原地画面中的落点，原地第一屏不把它及附近脚圈当守关敌人。"""
+        blocked是刚停滞目标在原地画面中的落点，原地第一屏不把它及附近脚圈当守关敌人；
+        start是上次被守关敌人打断后应续看的屏号：之前各屏只重放镜头移动、不再取帧选目标。"""
         self.runner, self.session, self.catalog = runner, runner.session, catalog
         self.enemies = enemies
         self.blocked = [np.asarray(point, float) for point in blocked]
         self.drags = spiral_drags()[:pans]
-        self.seconds, self.skip = seconds, set(skip)
+        self.seconds, self.skip, self.start = seconds, set(skip), start
         self.views, self.pans, self.catalog_errors = 0, 0, 0
 
     def look(self, step, goal=False):
@@ -155,7 +156,8 @@ class SwitchSearch:
     def run(self):
         """原地先看一屏，再按螺旋逐步拖镜头；返回dict(state=found/enemy/entry/exhausted, ...)。"""
         started = time.monotonic()
-        logger.info(f'目标受阻：开始螺旋寻找关闭机关，最多 {len(self.drags)} 次镜头移动。')
+        logger.info(f'目标受阻：开始螺旋寻找关闭机关，最多 {len(self.drags)} 次镜头移动'
+                    + (f'，前 {self.start} 屏已看过只移动镜头。' if self.start else '。'))
         for step in range(len(self.drags)+1):
             self.session.check()
             if time.monotonic()-started > self.seconds:
@@ -167,6 +169,10 @@ class SwitchSearch:
                 self.session.begin_target('switch_search_pan')
                 pan_scene(self.session, self.drags[step-1], squad_ground=ground)
                 self.pans += 1
+            # 实录 2026-10-22（22-27）：第3屏的敌人与目标同在光幕后，打不到；每次停滞后螺旋从第0屏
+            # 重来，又在第3屏选中同一批敌人，三轮都没走到西侧开关所在的第6屏。
+            if step < self.start:
+                continue
             state, target, field = self.look(step)
             if state == 'entry':
                 return dict(state='entry', field=field, views=self.views, pans=self.pans)
@@ -174,7 +180,7 @@ class SwitchSearch:
                 what = '关闭机关' if state == 'found' else '未清敌人脚圈'
                 logger.info(f"螺旋搜索第 {step} 屏发现{what} {target['position']}"
                             f"（{target['confidence']:.2f}），交由原生寻路前往；开门或开战须另行复核。")
-                return dict(state=state, target=target, field=field, views=self.views, pans=self.pans)
+                return dict(state=state, target=target, field=field, views=self.views, pans=self.pans, step=step)
         logger.info(f'螺旋搜索未发现可用关闭机关：{self.views} 屏，{self.pans} 次镜头移动，'
                     f'目录无法重定位 {self.catalog_errors} 次。')
         return dict(state='exhausted', views=self.views, pans=self.pans, catalog_errors=self.catalog_errors)

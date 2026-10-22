@@ -149,6 +149,12 @@ SWITCH_NEAR = 40.
 def recenter_squad(runner):
     """小队不在画面时点击已核验的离屏头像找回镜头；地图恢复失败按设施未确认停止。"""
     from module.campaign.vision.minimap_occlusion import recenter_offscreen
+    # 实录 2026-10-22（22-27）：任务定位后小队就站在光幕旁、仍在画面内，没有离屏头像；
+    # 原先一律报“未读到稳定的离屏小队头像”，看起来像找回失败。
+    if squad_arrow(runner.map_frame()) is not None:
+        logger.info('小队已在画面内，螺旋从当前镜头开始。')
+        runner.memory.previous = None
+        return None
     try:
         marker = recenter_offscreen(runner.session)
     except RuntimeError as exc:
@@ -216,6 +222,26 @@ def watch_switch(runner, target):
     return field, 'unconfirmed'
 
 
+def reset_switch_marks(runner, catalog):
+    """确认踩亮一个开关后清空所有受阻标记：打不到的敌人、续看屏号、已试机关与设施、单目标预算。
+
+    用户要求（2026-10-22）：在碰到下一个开关前可以留标记，一旦触碰开关就全部重置，因为之前
+    走不到的地方都可能已经能到了。开关在原位变为开启是已验证的道路状态改变，不是参数放宽。
+    """
+    runner.switch_skip.clear()
+    for name in ('switch_searches', 'gate_enemy_tries', 'spiral_resume', 'blocked_since'):
+        marks = getattr(runner, name, None)
+        if isinstance(marks, dict):
+            marks.clear()
+    views = getattr(runner, 'goal_views', None)
+    if isinstance(views, set):
+        views.clear()
+    runner.structure_inputs = runner.structure_pans = runner.blocked_views = 0
+    if catalog is not None:
+        catalog.switch_activated()
+    logger.info('开关已确认开启：清空受阻标记（打不到的敌人、已看屏、已试设施），按新道路重新判断。')
+
+
 def survey_for_switch(runner, catalog):
     """第二级：全章设施巡检，遇到本受阻目标未试过的关闭机关即停下；返回巡检结果或None。
 
@@ -239,6 +265,10 @@ def attack_gate_enemy(runner, searched, blocked_goal):
     """
     session, target, fresh = runner.session, searched['target'], searched['field']
     runner.switch_skip.add(target['search_key'])
+    resume = getattr(runner, 'spiral_resume', None)
+    if isinstance(resume, dict) and 'step' in searched:
+        # 下次螺旋从下一屏续看；这批敌人若走不到，不会再被同一屏重新选中。标记到踩亮开关为止。
+        resume[blocked_goal] = searched['step']+1
     tries = runner.gate_enemy_tries
     tries[blocked_goal] = tries.get(blocked_goal, 0) + 1
     # 实录 2026-10-21（21-32）：首领两侧普通敌人和首领同在光幕后，搜索先选中它们，
@@ -343,9 +373,11 @@ def recover_visible_structure(runner, field, allow_unanchored=False):
             searches[blocked_goal] = searches.get(blocked_goal, 0) + 1
             enemies = runner.gate_enemy_tries.get(blocked_goal, 0) < GATE_ENEMY_TRIES
             blocked = getattr(runner, 'blocked_click', None)
+            resume = getattr(runner, 'spiral_resume', None)
             searched = SwitchSearch(runner, catalog, pans=SPIRAL_PANS, seconds=SPIRAL_SECONDS,
                                     skip=runner.switch_skip, enemies=enemies,
-                                    blocked=[blocked] if isinstance(blocked, (list, tuple, np.ndarray)) else []).run()
+                                    blocked=[blocked] if isinstance(blocked, (list, tuple, np.ndarray)) else [],
+                                    start=resume.get(blocked_goal, 0) if isinstance(resume, dict) else 0).run()
             session.record_evidence('switch_search_result', searched.get('field', fresh),
                                     **{key: value for key, value in searched.items() if key != 'field'})
         if searched['state'] == 'entry':
@@ -411,6 +443,8 @@ def recover_visible_structure(runner, field, allow_unanchored=False):
             observed = wait_structure_settle(runner)
         else:
             observed = wait_structure_settle(runner, fresh)
+        if switch_state == 'activated':
+            reset_switch_marks(runner, catalog)
         location_result = dict(state='unknown', transfer='unconfirmed', activated=(
             'confirmed' if switch_state == 'activated' else 'unconfirmed'))
         if before_location is not None and goto.battle_popup_score(observed) <= .8:

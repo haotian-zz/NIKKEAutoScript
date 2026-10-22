@@ -116,6 +116,18 @@ class SwitchSearchTests(unittest.TestCase):
         self.assertEqual(target['position'], [1041., 467.])
         self.assertEqual(target['search_key'][0], 'goal')
 
+    def test_resumed_spiral_only_pans_through_seen_screens(self):
+        """续看第4屏：前4次拖动照常重放镜头，但第0～3屏不取帧，不会再选中那批敌人。"""
+        ring = [(np.array([974., 147.]), .88)]
+        with patch.object(search, 'detect_objects', return_value=[]) as detect, \
+                patch.object(search, 'ring_centers', return_value=ring), \
+                patch.object(search, 'pan_scene') as pan:
+            result = search.SwitchSearch(self.runner, pans=8, start=4).run()
+        self.assertEqual(result['state'], 'enemy')
+        self.assertEqual(result['step'], 4)
+        self.assertEqual(pan.call_count, 4)
+        self.assertEqual(detect.call_count, search.FACILITY_FRAMES)
+
     def test_battle_popup_returns_entry_without_more_pans(self):
         """途中真实备战弹窗立即交回战斗流程。"""
         with patch.object(search.goto, 'battle_popup_score', return_value=.95), \
@@ -227,9 +239,55 @@ class RecoveryOrderTests(unittest.TestCase):
         self.assertEqual(look.call_args.kwargs, dict(goal=True))
         self.runner.session.tap.assert_called_once_with([1041., 467.])
         watch.assert_called_once()
+        # 开关确认开启后全部受阻标记清空（含刚踩的搜索键和已看目标旁），按新道路重新判断。
         self.assertEqual(self.runner.switch_searches, {})
+        self.assertEqual(self.runner.switch_skip, set())
+        self.assertEqual(self.runner.goal_views, set())
+        self.assertEqual(self.runner.structure_inputs, 0)
+
+    def test_unconfirmed_switch_keeps_marks(self):
+        """点了开关但原位没确认开启：标记保留，同一状态下不重复点同一处。"""
+        switch = dict(fixture(position=(1041., 467.)), search_key=('goal', 13, 6))
+        self.goal_runner()
+        look = Mock(return_value=('found', switch, self.field))
+        with patch.object(structure, 'recenter_squad'), \
+                patch.object(structure, 'watch_switch', return_value=(self.field, 'unconfirmed')):
+            self.recover(dict(state='exhausted'), look)
         self.assertIn(('goal', 13, 6), self.runner.switch_skip)
         self.assertEqual(self.runner.goal_views, {'quest:(21, 15)'})
+        self.assertEqual(self.runner.structure_inputs, 1)
+
+    def test_stalled_gate_enemy_resumes_spiral_until_switch_activated(self):
+        """实录22-27：第3屏敌人在光幕后走不到；下次螺旋从第4屏续看，踩亮开关后全部标记清空。"""
+        enemy = dict(kind='enemy_ring', state='pending', position=[974., 147.], confidence=.88,
+                     search_key=('enemy', 3, 12, 2))
+        self.runner.spiral_resume = {}
+        self.runner.blocked_since = {}
+        self.runner.wait_entry.return_value = False
+        result, finder = self.recover(dict(state='enemy', target=enemy, field=self.field, step=3))
+        self.assertEqual(result, 'scouted')
+        self.assertEqual(finder.call_args.kwargs['start'], 0)
+        self.assertEqual(self.runner.spiral_resume, {'quest:(21, 15)': 4})
+        switch = dict(fixture(position=(400., 300.)), search_key=(6, 5, 4))
+        catalog = Mock()
+        catalog.observe.return_value = []
+        with patch.object(structure, 'facility_catalog', return_value=catalog), \
+                patch.object(structure, 'watch_switch', return_value=(self.field, 'activated')):
+            result, finder = self.recover(dict(state='found', target=switch, field=self.field, step=6))
+        self.assertEqual(finder.call_args.kwargs['start'], 4)
+        self.assertEqual(result, 'attempted')
+        self.assertEqual(self.runner.spiral_resume, {})
+        self.assertEqual(self.runner.gate_enemy_tries, {})
+        self.assertEqual(self.runner.switch_skip, set())
+        self.assertEqual(self.runner.switch_searches, {})
+        catalog.switch_activated.assert_called_once()
+
+    def test_recenter_skipped_when_squad_already_visible(self):
+        """实录22-27：任务定位后小队仍在画面内，没有离屏头像可点，不算找回失败。"""
+        with patch.object(structure, 'squad_arrow', return_value=np.array([885., 420.])), \
+                patch('module.campaign.vision.minimap_occlusion.recenter_offscreen') as offscreen:
+            self.assertIsNone(structure.recenter_squad(self.runner))
+        offscreen.assert_not_called()
 
     def test_empty_goal_view_recenters_squad_then_spirals(self):
         """目标旁没有开关：点头像回到小队再螺旋；同一目标下一次受阻不再看目标旁。"""

@@ -279,6 +279,8 @@ class VisibleStoryRunner:
         # 刚受阻、设施恢复尚未开始：先把画面内其余可见敌人逐个试一遍（可能就是挡路的支线怪）。
         self.try_visible = False
         self.gate_enemy_tries = {}
+        # 受阻目标 → 螺旋下次续看的屏号（被守关敌人打断后不从第0屏重来）；踩亮开关后清空。
+        self.spiral_resume = {}
         self.blocked_since, self.blocked_click = {}, None
         self.entry_outcome = None
         self.journal = ClearanceJournal(owner.config.config_name)
