@@ -53,13 +53,18 @@ class NavigationPopupTests(unittest.TestCase):
 
 
 class NavigationHomeFallbackTests(unittest.TestCase):
-    def navigate(self, known_cooldown=False):
+    def navigate(self, known_cooldown=False, loading=False, home_reached=True):
         class Page:
             def __init__(self, check):
                 self.check_button, self.links, self.parent = check, {}, None
         target, main = Page('target'), Page('main')
         main.links[target] = 'go-target'
         state = {'page': 'main' if known_cooldown else 'unknown', 'loops': 0, 'checks': 0}
+        if loading:
+            state['page'] = 'loading'
+        def screenshot():
+            if state['page'] == 'loading':
+                state['page'] = 'target'
         clicks = []
         def check_guard():
             state['loops'] += 1
@@ -82,12 +87,14 @@ class NavigationHomeFallbackTests(unittest.TestCase):
                 return True
             return False
         timer = SimpleNamespace(start=lambda: timer, reset=lambda: timer, reached=lambda: True)
+        home_timer = SimpleNamespace(start=lambda: home_timer, reset=lambda: home_timer, reached=lambda: home_reached)
         method = next(node for node in ast.walk(source)
                       if isinstance(node, ast.FunctionDef) and node.name == 'ui_goto')
-        namespace = dict(logger=Mock(), Timer=lambda *a, **kw: timer, GOTO_MAIN='home',
+        namespace = dict(logger=Mock(), Timer=lambda *a, **kw: home_timer if a[0] == 'home-wait' else timer,
+                         GOTO_MAIN='home', UNKNOWN_HOME_SECONDS='home-wait',
                          WaitGuard=lambda *a, **kw: SimpleNamespace(check=check_guard))
         exec(compile(ast.Module(body=[method], type_ignores=[]), 'ui_goto', 'exec'), namespace)
-        ui = SimpleNamespace(ui_pages=[main, target], device=SimpleNamespace(screenshot=lambda: None, click=click),
+        ui = SimpleNamespace(ui_pages=[main, target], device=SimpleNamespace(screenshot=screenshot, click=click),
                              appear=appear, appear_then_click=click_home, ui_additional=lambda: False)
         namespace['ui_goto'](ui, target)
         return clicks
@@ -97,6 +104,10 @@ class NavigationHomeFallbackTests(unittest.TestCase):
 
     def test_known_page_cooldown_does_not_trigger_home_fallback(self):
         self.assertEqual(self.navigate(known_cooldown=True), ['go-target'])
+
+    def test_loading_frame_before_page_check_does_not_click_home(self):
+        # 方舟切到竞技场时，底栏大厅按钮比竞技场标识早一帧出现；此时点大厅会把刚到的页面带回大厅
+        self.assertEqual(self.navigate(loading=True, home_reached=False), [])
 
 
 if __name__ == '__main__':

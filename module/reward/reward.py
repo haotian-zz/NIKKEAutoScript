@@ -9,6 +9,8 @@ from module.reward.assets import *
 from module.ui.page import *
 from module.ui.ui import UI
 
+ENSURE_BACK_SECONDS = 15
+
 
 class NoRewards(Exception):
     pass
@@ -181,7 +183,9 @@ class Reward(UI):
                 return True
 
     def ensure_back(self, skip_first_screenshot=True):
+        # 不在特竞页面（例如已被带回大厅）时点空白永远回不来，限时后交给后续 ui_ensure 导航
         click_timer = Timer(0.3)
+        timeout = Timer(ENSURE_BACK_SECONDS, count=10).start()
         while 1:
             if skip_first_screenshot:
                 skip_first_screenshot = False
@@ -193,6 +197,10 @@ class Reward(UI):
                 continue
 
             if self.appear(SPECIAL_ARENA_CHECK, offset=(5, 5), static=False):
+                break
+
+            if timeout.reached():
+                logger.warning('未回到特殊竞技场页面，交给后续导航恢复')
                 break
 
             if click_timer.reached():

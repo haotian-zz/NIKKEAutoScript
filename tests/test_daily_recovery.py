@@ -123,6 +123,16 @@ class RookieEntryTests(unittest.TestCase):
         self.assertEqual(script.ui_ensure.call_count, 2)
 
 
+class EnsureBackTests(unittest.TestCase):
+    def test_lobby_instead_of_special_arena_gives_up(self):
+        # 特竞入口点击后被带回大厅时，点空白永远看不到特竞页面，必须限时交还给后续导航
+        ns = methods('module/reward/reward.py', {'ensure_back'}, {'Timer': LobbyTimer, 'logger': Mock(),
+                     'SPECIAL_ARENA_CHECK': 'special', 'ENSURE_BACK_SECONDS': 15})
+        runner = SimpleNamespace(device=Mock(), handle_reward=Mock(return_value=False), appear=Mock(return_value=False))
+        ns['ensure_back'](runner)
+        ns['logger'].warning.assert_called_once()
+
+
 class ChampionEntryTests(unittest.TestCase):
     def test_unrecognized_entry_state_ends_instead_of_spinning(self):
         """2026-10-22: the champion entry read COMING SOON, matched no known stage and spun until 900 s."""

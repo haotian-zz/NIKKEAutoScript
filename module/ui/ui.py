@@ -49,6 +49,8 @@ from module.ui.page import (
 )
 
 
+UNKNOWN_HOME_SECONDS = 5
+
 class UI(InfoHandler):
     ui_pages = [
         page_unknown,
@@ -214,6 +216,8 @@ class UI(InfoHandler):
         guard = WaitGuard(self.device, f'导航到{destination}', timeout=90)
         logger.hr(f'UI goto {destination}')
         confirm_timer = Timer(confirm_wait, count=int(confirm_wait // 0.5)).start()
+        # 切页加载时底栏的大厅按钮会先于目标页标识出现，持续认不出页面才走大厅回退
+        home_timer = Timer(UNKNOWN_HOME_SECONDS, count=6).start()
 
         while 1:
             # GOTO_MAIN.clear_offset()
@@ -248,19 +252,24 @@ class UI(InfoHandler):
                     self.device.click(button)
                     # self.ui_button_interval_reset(button)
                     confirm_timer.reset()
+                    home_timer.reset()
                     clicked = True
                     break
 
             if clicked:
                 continue
             if self.ui_additional():
+                home_timer.reset()
                 continue
             # Some locked-mode selection pages have no matching page template.
             # Use their Home control only after popups and recognized pages are handled.
             if self.appear(GOTO_MAIN, offset=offset) and not any(
                 page.check_button and self.appear(page.check_button, offset=offset) for page in self.ui_pages
             ):
-                self.appear_then_click(GOTO_MAIN, offset=offset, interval=2)
+                if home_timer.reached() and self.appear_then_click(GOTO_MAIN, offset=offset, interval=2):
+                    home_timer.reset()
+            else:
+                home_timer.reset()
 
     def ui_ensure(self, destination, confirm_wait=0, skip_first_screenshot=True):
         logger.hr('UI ensure')
