@@ -39,18 +39,48 @@ def facility_frame(field, objects):
                      np.zeros(2), [], [])
 
 
+def accepted_facility(item):
+    """只接收已知设施语义及完整客户区检测框，不将HUD或低分框纳入状态记忆。"""
+    return (item['kind'] in ('ground_mechanism', 'elevator', 'barrier')
+            and item['confidence'] >= (.9 if item['kind'] == 'elevator' else .8)
+            and clickable_ring(item['box']))
+
+
+def voted_facilities(frames, minimum=2):
+    """同一镜头下多帧投票：同类同状态、≤12px 的检测出现在至少 minimum 帧即接受。
+
+    实录 2026-10-21（21-32）：烟雾里的关闭机关三帧漏检一帧，严格两帧连续命中只有约一半
+    概率保留，螺旋或巡检扫过也会丢失。门槛和完整入屏要求不变；返回该设施最后一次出现的
+    检测，任一帧内 30px 内存在同类竞争时拒绝。
+    """
+    frames = [[item for item in frame if accepted_facility(item)] for frame in frames]
+    result = []
+    for index in range(len(frames)-1, -1, -1):
+        for item in frames[index]:
+            def same(other):
+                return (other['kind'] == item['kind'] and other['state'] == item['state']
+                        and np.linalg.norm(np.asarray(other['position'])-item['position']) <= 12.)
+            if any(same(old) for old in result):
+                continue
+            hits = sum(any(same(other) for other in frame) for frame in frames)
+            competing = False
+            for frame in frames:
+                near = [other for other in frame if other['kind'] == item['kind']
+                        and np.linalg.norm(np.asarray(other['position'])-item['position']) < 30.]
+                if sum(map(same, near)) > 1 or not all(map(same, near)):
+                    competing = True
+            if hits >= minimum and not competing:
+                result.append(item)
+    return result
+
+
 def stable_facilities(first, second):
     """登记连续两帧唯一同类同状态设施，平台跨视角的start/end变化留给身份关联处理。
 
     机关及屏障至少0.8，平台至少0.9；完整入屏、位移≤12px，30px内存在同类竞争时拒绝。
     已开启机关也要登记，以免将后来重新看到的设施误当作新的未使用机关。
     """
-    def accepted(item):
-        """只接收已知设施语义及完整客户区检测框，不将HUD或低分框纳入状态记忆。"""
-        return (item['kind'] in ('ground_mechanism', 'elevator', 'barrier')
-                and item['confidence'] >= (.9 if item['kind'] == 'elevator' else .8)
-                and clickable_ring(item['box']))
-
+    accepted = accepted_facility
     result = []
     for item in filter(accepted, second):
         nearby = [old for old in filter(accepted, first)
@@ -79,8 +109,13 @@ class FacilityMemory:
         name = hashlib.sha256(json.dumps(self.scope, sort_keys=True).encode()).hexdigest()[:24]
         self.folder = root/name
         self.path = self.folder/'catalog.json'
+        # 设施位置与关键帧和账号无关，按章节、难度、底图共享；尝试记录与开关状态属于账号，不共享。
+        shared_scope = dict(identity=list(identity), map_sha256=map_sha256)
+        self.shared = root/'shared'/hashlib.sha256(json.dumps(shared_scope, sort_keys=True).encode()).hexdigest()[:24]
         self.data = dict(schema=1, scope=self.scope, facilities={}, views=[], connections=[], survey={}, state_epoch=0)
         self.frames = {}
+        if not self.path.exists():
+            self._seed_shared()
         if self.path.exists():
             self.data = json.loads(self.path.read_text(encoding='utf8'))
             if (self.data.get('schema') != 1 or self.data.get('scope') != self.scope
@@ -104,6 +139,67 @@ class FacilityMemory:
     def save(self):
         """原子替换小型目录；关键帧先落盘，目录只引用已完成的不可变特征文件。"""
         self.folder.mkdir(parents=True, exist_ok=True)
+        temporary = self.path.with_suffix('.tmp')
+        temporary.write_text(json.dumps(self.data, ensure_ascii=False, indent=2), encoding='utf8')
+        temporary.replace(self.path)
+        self._publish_shared()
+
+    def _shared_document(self):
+        """共享副本只含设施类别、来源和逐视野观测位置，去掉尝试、激活状态与未决记录。"""
+        facilities = {identifier: dict(id=identifier, kind=record['kind'], source=record['source'],
+                                       observations=[dict(view=old['view'], position=old['position'])
+                                                     for old in record['observations']],
+                                       **({'map_position': record['map_position']}
+                                          if 'map_position' in record else {}),
+                                       # 屏障的状态是部件外观（光幕/立柱），身份关联要用。
+                                       **({'last_state': record['last_state']}
+                                          if record['kind'] == 'barrier' and 'last_state' in record else {}))
+                      for identifier, record in self.data['facilities'].items()}
+        return dict(schema=1, scope=dict(identity=self.scope['identity'], map_sha256=self.scope['map_sha256']),
+                    facilities=facilities, views=self.data['views'],
+                    connections=self.data['connections'], survey=self.data.get('survey', {}))
+
+    def _publish_shared(self):
+        """本实例视野不少于共享副本时整体替换；不同实例编号互不兼容，不做逐条合并。"""
+        path = self.shared/'catalog.json'
+        try:
+            if path.exists() and len(json.loads(path.read_text(encoding='utf8')).get('views', [])) > len(self.data['views']):
+                return
+            self.shared.mkdir(parents=True, exist_ok=True)
+            for view in self.data['views']:
+                source = self.folder/f"view-{view['id']:03d}.npz"
+                target = self.shared/source.name
+                if source.exists() and (not target.exists() or target.stat().st_size != source.stat().st_size):
+                    target.write_bytes(source.read_bytes())
+            temporary = path.with_suffix('.tmp')
+            temporary.write_text(json.dumps(self._shared_document(), ensure_ascii=False, indent=2), encoding='utf8')
+            temporary.replace(path)
+        except (OSError, ValueError):
+            # 共享副本只是加速，失败不影响本实例记录。
+            pass
+
+    def _seed_shared(self):
+        """本实例首次进入该章时以共享副本起步：位置与关键帧复用，尝试和激活状态从未确认开始。"""
+        path = self.shared/'catalog.json'
+        try:
+            document = json.loads(path.read_text(encoding='utf8'))
+        except (OSError, ValueError):
+            return
+        if (document.get('schema') != 1 or document.get('scope') != dict(
+                identity=self.scope['identity'], map_sha256=self.scope['map_sha256'])):
+            return
+        self.folder.mkdir(parents=True, exist_ok=True)
+        for view in document.get('views', []):
+            name = f"view-{view['id']:03d}.npz"
+            if not (self.shared/name).exists():
+                return
+            (self.folder/name).write_bytes((self.shared/name).read_bytes())
+        self.data.update(views=document['views'], connections=document.get('connections', []),
+                         survey=document.get('survey', {}),
+                         facilities={identifier: dict(record, observations=[dict(old, state='unknown', at=0.)
+                                                                           for old in record['observations']],
+                                                      attempts=[], activated='unconfirmed')
+                                     for identifier, record in document['facilities'].items()})
         temporary = self.path.with_suffix('.tmp')
         temporary.write_text(json.dumps(self.data, ensure_ascii=False, indent=2), encoding='utf8')
         temporary.replace(self.path)

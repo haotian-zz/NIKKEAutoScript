@@ -16,7 +16,7 @@ import time
 
 import numpy as np
 
-from module.campaign.facility_memory import FacilityUnconfirmed, stable_facilities
+from module.campaign.facility_memory import FacilityUnconfirmed, voted_facilities
 from module.campaign.navigation import controls as goto
 from module.campaign.navigation.camera_navigation import pan_scene
 from module.campaign.vision.enemy_ring import scene_ring_candidates
@@ -31,6 +31,12 @@ VERTICAL_DRAG = 520.
 # 任务菱形正下方这一带的脚圈就是受阻的主线目标本身，不当作守关敌人。
 QUEST_RING_DX = 120.
 QUEST_RING_DY = 700.
+# 每屏取帧数与投票门槛：烟雾会让单帧漏检（实录21-32三帧漏一帧）。
+FACILITY_FRAMES = 4
+FACILITY_VOTES = 2
+# 原地第一屏中，刚撞墙目标附近的脚圈与它同在障碍后（实录21-32首领两侧普通敌人）。
+BLOCKED_RADIUS = 300.
+FACILITY_KINDS = ('ground_mechanism', 'elevator', 'barrier')
 
 
 def spiral_drags(rings=4):
@@ -44,9 +50,9 @@ def spiral_drags(rings=4):
     return [np.asarray(drag) for drag in drags]
 
 
-def off_switches(first, second):
-    """两帧同位置、完整入屏、无同类竞争的关闭地面机关；开启机关和平台不在此列。"""
-    return [item for item in stable_facilities(first, second)
+def off_switches(frames):
+    """多帧投票同位置、完整入屏、无同类竞争的关闭地面机关；开启机关和平台不在此列。"""
+    return [item for item in voted_facilities(frames, FACILITY_VOTES)
             if item['kind'] == 'ground_mechanism' and item['state'] == 'off']
 
 
@@ -74,11 +80,13 @@ def gate_enemies(first, second, markers):
 class SwitchSearch:
     """有界螺旋镜头搜索；任何真实备战弹窗立即交回战斗流程，不把找到当作开门。"""
 
-    def __init__(self, runner, catalog=None, pans=20, seconds=180., skip=(), enemies=True):
+    def __init__(self, runner, catalog=None, pans=20, seconds=180., skip=(), enemies=True, blocked=()):
         """skip是本受阻点已尝试过且未解决的搜索键，避免同状态下重复点同一个机关；
-        enemies为False时只找关闭机关（本受阻点守关敌人尝试已达上限）。"""
+        enemies为False时只找关闭机关（本受阻点守关敌人尝试已达上限）；
+        blocked是刚停滞目标在原地画面中的落点，原地第一屏不把它及附近脚圈当守关敌人。"""
         self.runner, self.session, self.catalog = runner, runner.session, catalog
         self.enemies = enemies
+        self.blocked = [np.asarray(point, float) for point in blocked]
         self.drags = spiral_drags()[:pans]
         self.seconds, self.skip = seconds, set(skip)
         self.views, self.pans, self.catalog_errors = 0, 0, 0
@@ -88,16 +96,22 @@ class SwitchSearch:
         field = self.runner.map_frame()
         if goto.battle_popup_score(field) > .8:
             return 'entry', None, field
-        first = detect_objects(field, ('ground_mechanism', 'elevator', 'barrier'))
+        frames = [detect_objects(field, FACILITY_KINDS)]
         first_rings = ring_centers(field)
-        self.session.pause(.25)
-        fresh = self.runner.map_frame()
-        if goto.battle_popup_score(fresh) > .8:
-            return 'entry', None, fresh
-        second = detect_objects(fresh, ('ground_mechanism', 'elevator', 'barrier'))
+        fresh = field
+        for _ in range(FACILITY_FRAMES-1):
+            self.session.pause(.25)
+            fresh = self.runner.map_frame()
+            if goto.battle_popup_score(fresh) > .8:
+                return 'entry', None, fresh
+            frames.append(detect_objects(fresh, FACILITY_KINDS))
+        second = frames[-1]
         enemies = []
         for center, confidence in (gate_enemies(first_rings, ring_centers(fresh), story_markers(fresh))
                                    if self.enemies else ()):
+            # 实录 2026-10-21（21-32）：原地第一屏选中的“守关敌人”就是刚撞墙的同一个目标。
+            if not step and any(np.linalg.norm(center-point) <= BLOCKED_RADIUS for point in self.blocked):
+                continue
             key = ('enemy', step, *np.round(center/80.).astype(int).tolist())
             if key not in self.skip:
                 enemies.append(dict(kind='enemy_ring', state='pending', position=center.tolist(),
@@ -106,11 +120,11 @@ class SwitchSearch:
         registered = []
         if self.catalog is not None:
             try:
-                registered = self.catalog.observe(fresh, stable_facilities(first, second))
+                registered = self.catalog.observe(fresh, voted_facilities(frames, FACILITY_VOTES))
             except FacilityUnconfirmed:
                 self.catalog_errors += 1
         candidates = []
-        for item in off_switches(first, second):
+        for item in off_switches(frames):
             key = (step, *np.round(np.asarray(item['position'])/80.).astype(int).tolist())
             known = [entry['facility_id'] for entry in registered if entry['kind'] == item['kind']
                      and np.linalg.norm(np.asarray(entry['position'])-item['position']) < 1.]

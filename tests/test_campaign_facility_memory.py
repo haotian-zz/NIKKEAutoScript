@@ -10,7 +10,7 @@ import cv2
 import numpy as np
 
 with patch.dict('sys.modules', {'module.logger': SimpleNamespace(logger=Mock())}):
-    from module.campaign.facility_memory import FacilityMemory, FacilityUnconfirmed
+    from module.campaign.facility_memory import FacilityMemory, FacilityUnconfirmed, voted_facilities
 
 
 def observed(position=(800., 500.), state='start', kind='elevator'):
@@ -93,6 +93,29 @@ class FacilityMemoryTests(unittest.TestCase):
         restarted = FacilityMemory('isolated', (21, 'normal'), 'sha-A', root=self.temporary.name)
         self.assertTrue(restarted.track_background(last, force=True))
         self.assertFalse(restarted.eligible(identifier, 'blocked-A'))
+
+    def test_second_instance_reuses_shared_positions_without_attempts(self):
+        """另一个实例首次进入同章同底图时复用设施位置与关键帧，尝试与开关状态从未确认开始。"""
+        identifier = self.catalog.observe(
+            self.field, [observed(kind='ground_mechanism', state='off')])[0]['facility_id']
+        self.catalog.attempt(identifier, 'quest:(21, 32)')
+        other = FacilityMemory('another-account', (21, 'normal'), 'sha-A', root=self.temporary.name)
+        record = other.data['facilities'][identifier]
+        self.assertEqual(record['attempts'], [])
+        self.assertEqual(record['activated'], 'unconfirmed')
+        self.assertTrue(other.eligible(identifier, 'quest:(21, 32)'))
+        item = other.observe(self.panned, [observed((980., 500.), 'off', 'ground_mechanism')])[0]
+        self.assertEqual(item['facility_id'], identifier)
+        isolated = FacilityMemory('another-account', (21, 'normal'), 'sha-B', root=self.temporary.name)
+        self.assertEqual(isolated.data['facilities'], {})
+
+    def test_votes_survive_one_smoke_miss_but_reject_flashes_and_low_scores(self):
+        """实录21-32：烟雾三帧漏一帧仍接受；单帧闪现、低分误检（坦克舱盖约0.6）不接受。"""
+        switch = observed((960., 492.), 'off', 'ground_mechanism')
+        hatch = dict(observed((567., 258.), 'off', 'ground_mechanism'), confidence=.6)
+        accepted = voted_facilities([[], [switch, hatch], [dict(switch, position=[961., 493.])], [hatch]])
+        self.assertEqual([item['position'] for item in accepted], [[961., 493.]])
+        self.assertEqual(voted_facilities([[switch], [], [], []]), [])
 
     def test_neighboring_facilities_keep_distinct_histories(self):
         """两个近邻设施平移后各自关联，尝试其中一个不封禁另一个。"""

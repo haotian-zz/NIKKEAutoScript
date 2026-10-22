@@ -130,6 +130,28 @@ def wait_structure_settle(runner, before=None):
 
 # 每个受阻目标最多尝试几个搜索发现的守关敌人；每次开战后允许为同一目标再搜一次。
 GATE_ENEMY_TRIES = 3
+# 受阻后逐级放大的耗时：原地两圈螺旋（约1分钟）→ 全章设施巡检（一次性，结果持久化）→ 平台与换视角。
+SPIRAL_PANS = 8
+SPIRAL_SECONDS = 60.
+SURVEY_SECONDS = 360.
+# 同一受阻目标的总时限；超过即停止并报告，不等任务一小时总时限。
+BLOCKED_GOAL_SECONDS = 900.
+
+
+def survey_for_switch(runner, catalog):
+    """第二级：全章设施巡检，遇到本受阻目标未试过的关闭机关即停下；返回巡检结果或None。
+
+    实录 2026-10-21（21-32）：开关在光幕东侧烟雾高台，螺旋九次拖动只看到坦克舱盖误检；
+    全章巡检排在平台尝试之后，一次都没轮到。巡检不完整只记录原因，已登记部分保留在目录。
+    """
+    from module.campaign.facility_survey import FacilitySurvey
+    from module.campaign.sweep import SweepUnconfirmed
+    runner.facility_survey_attempted = True
+    try:
+        return FacilitySurvey(runner, catalog, seconds=SURVEY_SECONDS, first_off=True).run()
+    except (SweepUnconfirmed, FacilityUnconfirmed) as exc:
+        logger.info(f'全章设施巡检未完整：{exc}；已登记的设施保留在目录。')
+        return None
 
 
 def attack_gate_enemy(runner, searched, blocked_goal):
@@ -173,6 +195,12 @@ def recover_visible_structure(runner, field, allow_unanchored=False):
     session = runner.session
     catalog = facility_catalog(runner)
     blocked_goal = 'quest:'+str(runner.quest)
+    blocked_since = getattr(runner, 'blocked_since', None)
+    if isinstance(blocked_since, dict):
+        elapsed = time.monotonic()-blocked_since.setdefault(blocked_goal, time.monotonic())
+        if elapsed > BLOCKED_GOAL_SECONDS:
+            raise StructureUnconfirmed(f'目标受阻已 {elapsed/60:.0f} 分钟，螺旋搜索、全章巡检和设施尝试均未打通，'
+                                       '停止并保留现场与设施目录。')
     first = structure_observations(field, squad_arrow(field), allow_unanchored)
     session.pause(.25)
     fresh = runner.map_frame()
@@ -230,13 +258,27 @@ def recover_visible_structure(runner, field, allow_unanchored=False):
         from module.campaign.switch_search import SwitchSearch
         searches[blocked_goal] = searches.get(blocked_goal, 0) + 1
         enemies = runner.gate_enemy_tries.get(blocked_goal, 0) < GATE_ENEMY_TRIES
-        searched = SwitchSearch(runner, catalog, skip=runner.switch_skip, enemies=enemies).run()
+        blocked = getattr(runner, 'blocked_click', None)
+        searched = SwitchSearch(runner, catalog, pans=SPIRAL_PANS, seconds=SPIRAL_SECONDS,
+                                skip=runner.switch_skip, enemies=enemies,
+                                blocked=[blocked] if isinstance(blocked, (list, tuple, np.ndarray)) else []).run()
         session.record_evidence('switch_search_result', searched.get('field', fresh),
                                 **{key: value for key, value in searched.items() if key != 'field'})
         if searched['state'] == 'entry':
             return 'entry'
         if searched['state'] == 'enemy':
             return attack_gate_enemy(runner, searched, blocked_goal)
+        if searched['state'] != 'found' and catalog is not None and not runner.facility_survey_attempted:
+            surveyed = survey_for_switch(runner, catalog) or {}
+            if surveyed.get('state') == 'entry':
+                return 'entry'
+            if surveyed.get('state') == 'facility_visible' and 'target' in surveyed:
+                fresh = runner.map_frame()
+                if goto.battle_popup_score(fresh) > .8:
+                    return 'entry'
+                logger.info(f"全章巡检发现未试过的关闭机关 {surveyed['target']['position']}，交由原生寻路前往。")
+                searched = dict(state='found', field=fresh,
+                                target=dict(surveyed['target'], search_key=('survey', surveyed['facility_id'])))
         if searched['state'] == 'found':
             fresh = searched['field']
             candidates = [searched['target']]
@@ -298,8 +340,8 @@ def recover_visible_structure(runner, field, allow_unanchored=False):
     if catalog is not None and not runner.facility_survey_attempted and not candidates:
         from module.campaign.facility_survey import FacilitySurvey
         runner.facility_survey_attempted = True
-        result = FacilitySurvey(runner, catalog).run()
-        if result['state'] == 'entry':
+        result = FacilitySurvey(runner, catalog).run() or {}
+        if result.get('state') == 'entry':
             return 'entry'
         return 'scouted'
     if runner.structure_pans < 4:

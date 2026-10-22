@@ -4,10 +4,11 @@ import time
 
 import numpy as np
 
-from module.campaign.facility_memory import FacilityUnconfirmed, facility_frame, stable_facilities
+from module.campaign.facility_memory import FacilityUnconfirmed, facility_frame, voted_facilities
 from module.campaign.navigation import controls as goto
 from module.campaign.sweep import ChapterSweep, HORIZONTAL_STEP, VERTICAL_STEP, SweepUnconfirmed, camera_motion
 from module.campaign.vision.objects import detect_objects
+from module.campaign.vision.story_marker import story_markers
 from module.logger import logger
 
 
@@ -21,7 +22,7 @@ class FacilitySurvey(ChapterSweep):
     def __init__(self, runner, catalog, seconds=180., wanted=None, first_off=False):
         """绑定当前实例目录；wanted复核指定历史设施，显式first_off只找当前未试的关闭机关。"""
         super().__init__(runner)
-        self.catalog, self.seconds, self.wanted = catalog, min(240., max(1., seconds)), wanted
+        self.catalog, self.seconds, self.wanted = catalog, min(420., max(1., seconds)), wanted
         self.first_off = bool(first_off)
         self.visible = []
         self.occlusion_checked = False
@@ -37,20 +38,27 @@ class FacilitySurvey(ChapterSweep):
         if goto.battle_popup_score(field) > .8:
             self.found = dict(state='entry')
             return None
-        first = detect_objects(field, ('ground_mechanism', 'elevator', 'barrier'))
-        self.session.pause(.25)
-        field = self.runner.map_frame()
-        if goto.battle_popup_score(field) > .8:
-            self.found = dict(state='entry')
-            return None
-        second = detect_objects(field, ('ground_mechanism', 'elevator', 'barrier'))
-        stable = stable_facilities(first, second)
+        from module.campaign.switch_search import FACILITY_FRAMES, FACILITY_KINDS, FACILITY_VOTES, ring_centers
+        frames = [detect_objects(field, FACILITY_KINDS)]
+        for _ in range(FACILITY_FRAMES-1):
+            self.session.pause(.25)
+            field = self.runner.map_frame()
+            if goto.battle_popup_score(field) > .8:
+                self.found = dict(state='entry')
+                return None
+            frames.append(detect_objects(field, FACILITY_KINDS))
+        second = frames[-1]
+        # 烟雾会让单帧漏检，按多帧投票登记；同屏敌人脚圈与任务标记一并记录，供全章概览。
+        stable = voted_facilities(frames, FACILITY_VOTES)
         self.visible = self.catalog.observe(field, stable)
+        enemies = [dict(position=center.tolist(), confidence=float(score)) for center, score in ring_centers(field)]
+        markers = story_markers(field)
         self.proof['views'] += 1
         self.proof['facilities'] = sorted(self.catalog.data['facilities'])
         self.proof['unresolved'] = self.catalog.unresolved
         self.session.record_evidence('facility_survey_view', field, pans=self.steps, rows=self.rows,
-                                     facilities=self.visible, detections=second, arrays=dict(field=field))
+                                     facilities=self.visible, detections=second, enemies=enemies,
+                                     markers=markers, arrays=dict(field=field))
         self.session.preview(field)
         if self.first_off:
             candidates = [item for item in self.visible

@@ -265,6 +265,7 @@ class VisibleStoryRunner:
         # 受阻目标 → 已做螺旋机关搜索次数；已点过但未解决的搜索键（同状态下不重复点击）。
         self.switch_searches, self.switch_skip = {}, set()
         self.gate_enemy_tries = {}
+        self.blocked_since, self.blocked_click = {}, None
         self.entry_outcome = None
         self.journal = ClearanceJournal(owner.config.config_name)
         self.journal.begin(owner.current_chapter)
@@ -805,6 +806,7 @@ class VisibleStoryRunner:
                     self.deferred.add(target['id'])
             else:
                 self.memory.attempt(target['id'], 'stalled', self.entry_outcome)
+                self.blocked_click = list(target['click'])
                 self.blocked_views += 1
                 logger.info('原生寻路已确认连续停滞，进入有界设施诊断；道路可达性保持未确认。')
                 self.deferred.add(target['id'])

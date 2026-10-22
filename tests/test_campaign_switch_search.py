@@ -46,9 +46,9 @@ class SwitchSearchTests(unittest.TestCase):
             (0., search.VERTICAL_DRAG), (0., search.VERTICAL_DRAG),
             (search.HORIZONTAL_DRAG, 0.), (search.HORIZONTAL_DRAG, 0.)])
 
-    def test_switch_found_after_pans_needs_two_frames(self):
-        """前三屏无开关、第四屏单帧闪现也不算，第五屏两帧稳定才返回。"""
-        frames = [[], [], [], [], [], [], [fixture()], [], [fixture()], [fixture(position=(1287., 652.))]]
+    def test_switch_found_after_pans_needs_two_of_four_frames(self):
+        """前三屏无开关、第四屏单帧闪现也不算；第五屏烟雾漏检一帧，四帧中三帧命中即返回。"""
+        frames = [[]]*12 + [[fixture()], [], [], []] + [[fixture()], [], [fixture()], [fixture(position=(1287., 652.))]]
         with patch.object(search, 'detect_objects', side_effect=frames), \
                 patch.object(search, 'pan_scene') as pan:
             result = search.SwitchSearch(self.runner).run()
@@ -83,6 +83,16 @@ class SwitchSearchTests(unittest.TestCase):
         self.assertEqual(result['target']['position'], [833., 472.])
         self.assertEqual(result['target']['search_key'][0], 'enemy')
         pan.assert_not_called()
+
+    def test_just_stalled_target_is_not_returned_as_gate_enemy(self):
+        """实录21-32：原地第一屏的“守关敌人”(1105,721)就是刚撞墙的目标(1108,721)，须排除。"""
+        ring = [(np.array([1105., 721.]), .91)]
+        with patch.object(search, 'detect_objects', return_value=[]), \
+                patch.object(search, 'ring_centers', return_value=ring), \
+                patch.object(search, 'pan_scene') as pan:
+            result = search.SwitchSearch(self.runner, pans=1, blocked=[[1108., 721.]]).run()
+        self.assertEqual(result['state'], 'enemy')
+        self.assertEqual(pan.call_count, 1)
 
     def test_ring_under_quest_marker_or_single_frame_is_not_a_gate_enemy(self):
         """任务菱形正下方的脚圈就是受阻首领本身；只出现一帧的脚圈也不算。"""
@@ -162,6 +172,30 @@ class RecoveryOrderTests(unittest.TestCase):
         self.assertEqual(self.runner.switch_searches, {'quest:(21, 15)': 0})
         result, finder = self.recover(dict(state='exhausted'))
         self.assertFalse(finder.call_args.kwargs['enemies'])
+
+    def test_exhausted_spiral_escalates_to_chapter_survey_switch(self):
+        """实录21-32：螺旋没找到，全章巡检找到未试过的关闭机关，作为本次唯一输入去踩。"""
+        catalog = Mock()
+        catalog.observe.return_value = []
+        self.runner.facility_survey_attempted = False
+        switch = dict(fixture(position=(960., 492.)), facility_id='scene-0007')
+        survey = Mock(return_value=dict(state='facility_visible', facility_id='scene-0007', target=switch))
+        with patch.object(structure, 'facility_catalog', return_value=catalog), \
+                patch.object(structure, 'survey_for_switch', survey):
+            result, finder = self.recover(dict(state='exhausted', views=9, pans=8))
+        self.assertEqual(finder.call_args.kwargs['pans'], structure.SPIRAL_PANS)
+        self.assertEqual(result, 'attempted')
+        self.runner.session.tap.assert_called_once_with([960., 492.])
+        catalog.attempt.assert_called_once_with('scene-0007', 'quest:(21, 15)')
+        self.assertIn(('survey', 'scene-0007'), self.runner.switch_skip)
+
+    def test_blocked_goal_past_time_limit_stops_and_reports(self):
+        """同一受阻目标超过总时限即停止，不再搜索或点击。"""
+        self.runner.blocked_since = {'quest:(21, 15)': 0.}
+        with patch.object(structure.time, 'monotonic', return_value=structure.BLOCKED_GOAL_SECONDS+1.):
+            with self.assertRaisesRegex(structure.StructureUnconfirmed, '分钟'):
+                self.recover(dict(state='exhausted'))
+        self.runner.session.tap.assert_not_called()
 
     def test_exhausted_search_rescans_then_falls_back_to_platform(self):
         """搜索无果不点旧帧平台；下一次受阻不再搜索，改为新鲜确认的平台。"""
