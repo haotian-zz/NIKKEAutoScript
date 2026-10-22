@@ -20,6 +20,7 @@ from module.campaign.vision.offscreen import squad_offscreen
 from module.campaign.vision.story_marker import story_markers
 from module.campaign.vision.native_motion import ClickProgress, MinimapStability, NativeMotion, combine_motion
 from module.campaign.navigation.camera_navigation import pan_scene
+from module.campaign.window import UiControlChanged
 from module.logger import logger
 
 QUEST_AREA = (1565, 88, 1710, 114)
@@ -600,8 +601,8 @@ class VisibleStoryRunner:
             point = target.tolist()
 
             def validate(latest):
-                """真正输入前最新帧在原位置仍有同一主线菱形。"""
-                return any(item['kind'] != 'cue' and np.linalg.norm(np.asarray(item['position'])-target) <= 10.
+                """真正输入前最新帧在原位置仍有主线菱形；发光动画可能只剩白色内框（cue）。"""
+                return any(np.linalg.norm(np.asarray(item['position'])-target) <= 15.
                            for item in story_markers(latest))
 
             self.session.begin_target('marker_jump')
@@ -609,6 +610,10 @@ class VisibleStoryRunner:
             try:
                 tapped = self.session.tap_verified_ui(point, validate)
             except TargetTriggered:
+                return True
+            except UiControlChanged:
+                # 实录 2026-10-21：右下边缘菱形闪烁，输入前复核恰好漏帧；不点击，下一轮重新观测。
+                logger.info('任务菱形在输入前复核未通过，未点击；下一轮重新观测。')
                 return True
             if tapped:
                 self.memory.previous = None

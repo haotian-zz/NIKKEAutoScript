@@ -25,7 +25,7 @@ from module.campaign.vision.minimap import terrain
 from module.campaign.vision.observation import EXPANDED_ROI
 from module.campaign.vision.perception import expanded_minimap_masks, project_centers
 from module.campaign.vision.surface_motion import project
-from module.campaign.window import CampaignWindow, WindowChanged
+from module.campaign.window import CampaignWindow, UiControlChanged, WindowChanged
 from module.config.config import TaskEnd
 from module.logger import logger
 
@@ -392,7 +392,7 @@ class CampaignSession(NavigationSession):
                 if not self.chapter_overlay_validator(self.input_frame):
                     raise WindowChanged('章节浮层在发送输入前已变化或未确认，未发送点击。')
             if self.ui_validator is not None and not self.ui_validator(self.input_frame):
-                raise WindowChanged('地图任务控件在发送输入前已变化或未确认，未发送点击。')
+                raise UiControlChanged('地图任务控件在发送输入前已变化或未确认，未发送点击。')
         if self.target_inputs >= TARGET_INPUT_BUDGET:
             raise InputBudgetExceeded(f'同一个目标已操作 {TARGET_INPUT_BUDGET} 次仍未完成，停止并交人工复核。')
         self.inputs += 1

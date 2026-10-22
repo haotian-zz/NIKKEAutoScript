@@ -25,6 +25,13 @@ class WindowChanged(RuntimeError):
     """
 
 
+
+class UiControlChanged(WindowChanged):
+    """单个地图控件在真正输入前的最新帧复核未通过（动画闪烁或已消失），本次点击未发送。
+
+    仍属 WindowChanged，默认继续停止；只有明确可回退的控件（如边缘任务菱形）才单独捕获。
+    """
+
 class CampaignWindow:
     """移动闭环看到的「受控窗口」，底层是任务调度的 `Device`。
 

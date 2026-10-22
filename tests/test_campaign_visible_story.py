@@ -32,7 +32,8 @@ def definitions():
                      SweepUnconfirmed=type('SweepUnconfirmed', (RuntimeError,),
                                            {'reason': 'chapter_clearance_unconfirmed'}),
                      squad_arrow=Mock(return_value=None), squad_offscreen=Mock(return_value=None),
-                     story_markers=story_markers, pan_scene=Mock())
+                     story_markers=story_markers, pan_scene=Mock(),
+                     UiControlChanged=type('UiControlChanged', (RuntimeError,), {}))
     namespace.update(read_title=Mock(return_value=None), title_crop=Mock(return_value=None))
     from module.campaign.vision.native_motion import ClickProgress, NativeMotion, combine_motion
     namespace.update(ClickProgress=ClickProgress, NativeMotion=NativeMotion, combine_motion=combine_motion,
@@ -401,6 +402,16 @@ class VisibleStoryTests(unittest.TestCase):
         self.assertTrue(self.runner.reveal_marked_area(self.field))
         self.ns['pan_scene'].assert_called_once()
         self.assertEqual(self.session.tap_verified_ui.call_count, 1)
+
+    def test_blinking_edge_marker_failing_final_check_is_not_a_run_stop(self):
+        """实录右下边缘菱形闪烁：输入前复核失败只放弃这次点击，不抛出停止整轮的窗口异常。"""
+        marker = dict(kind='edge', position=[1688., 828.], confidence=.91)
+        self.ns['story_markers'] = Mock(return_value=[marker])
+        self.ns['squad_arrow'].return_value = [1100., 400.]
+        self.session.tap_verified_ui.side_effect = self.ns['UiControlChanged']('blink')
+        self.assertTrue(self.runner.reveal_marked_area(self.field))
+        self.assertEqual(self.runner.marker_jumps, 1)
+        self.ns['pan_scene'].assert_not_called()
 
     def test_changing_marker_does_not_move_camera(self):
         """两帧标记不一致时不按旧菱形规划镜头。"""
