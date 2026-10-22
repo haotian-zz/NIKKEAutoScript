@@ -93,6 +93,28 @@ class VisibleStoryTests(unittest.TestCase):
                          ['ring-1', 'ring-2'])
         self.session.tap.assert_called_once_with([1500., 800.])
 
+    def test_manual_entry_recorded_at_tapped_ring_not_squad(self):
+        """实录22-36：点远处 EX 后备战直接弹出、小队没走过去；按点击前那帧的脚圈记位置，途中弹出才用小队脚下。"""
+        runner = self.ns['VisibleStoryRunner'](self.owner, self.session, self.executor)
+        runner.map_frame = Mock(return_value=self.field)
+        catalog = Mock()
+        before = np.ones_like(self.field)
+        runner.tap_frame = before
+        self.ns['goto'].ARROW_GROUND_OFFSET = 90.
+        with patch.dict(sys.modules, {'module.campaign.structures': SimpleNamespace(facility_catalog=lambda r: catalog),
+                                      'module.campaign.facility_memory': SimpleNamespace(
+                                          FacilityUnconfirmed=type('FacilityUnconfirmed', (Exception,), {}))}):
+            runner.remember_manual_entry((20, 0, 'EX', 1), self.target)
+            field, position, stage = catalog.remember_manual.call_args.args
+            self.assertIs(field, before)
+            np.testing.assert_allclose(position, [600., 700.])
+            self.ns['squad_arrow'].return_value = np.array([888., 400.])
+            runner.remember_manual_entry((20, 0, 'EX', 2))
+            field, position, stage = catalog.remember_manual.call_args.args
+            self.assertIs(field, self.field)
+            np.testing.assert_allclose(position, [888., 490.])
+            self.ns['squad_arrow'].return_value = None
+
     def test_parse_only_complete_unique_stage(self):
         """任务必须含通关动词，多个编号和零值均不得作为关卡身份。"""
         parse = self.ns['parse_stage']
@@ -262,7 +284,7 @@ class VisibleStoryTests(unittest.TestCase):
         self.assertFalse(self.runner.fight_entry(self.target))
         self.runner.close_entry.assert_called_once()
         self.runner.memory.identify.assert_called_once_with('ring-1', (20, 0, 'EX', 1), 'manual_required')
-        self.runner.remember_manual_entry.assert_called_once_with((20, 0, 'EX', 1))
+        self.runner.remember_manual_entry.assert_called_once_with((20, 0, 'EX', 1), self.target)
         self.executor.battle.assert_not_called()
         self.runner.memory.victory.assert_not_called()
 

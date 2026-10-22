@@ -18,6 +18,9 @@ MAX_OBSERVATIONS = 4
 # 先按特征投票挑出最可能重叠的几个关键帧再做严格配准；都配不上才补查其余关键帧。
 # 实测 2026-10-22（22章64个关键帧）：逐个严格配准约3秒，投票约0.06秒，票数前几名基本都是真重叠。
 CANDIDATE_VIEWS = 8
+# 另外总带上票数最高的几个锚点帧：设施身份和需手动关卡只能经锚点帧投影，候选全是桥接帧时
+# 会认不出已登记的位置（实录 2026-10-22，22-36 同一个 EX 记了两次）。
+ANCHOR_CANDIDATES = 4
 VOTE_SAMPLE = 600
 VOTE_DISTANCE = 200.
 
@@ -395,7 +398,10 @@ class FacilityMemory:
         nearest, distance = index.knnSearch(frame.descriptors.astype(np.float32), 1, params=dict(checks=32))
         votes = np.bincount(owners[nearest[distance[:, 0] < VOTE_DISTANCE**2, 0]], minlength=max(numbers)+1)
         ranked = sorted(numbers, key=lambda number: -votes[number])
-        return ranked[:CANDIDATE_VIEWS], ranked[CANDIDATE_VIEWS:]
+        anchors = self.anchors()
+        first = ranked[:CANDIDATE_VIEWS] + [number for number in ranked[CANDIDATE_VIEWS:]
+                                            if number in anchors and votes[number]][:ANCHOR_CANDIDATES]
+        return first, [number for number in ranked if number not in first]
 
     def anchors(self):
         """被设施观测引用的锚点关键帧编号；其余都是可淘汰的桥接帧。"""

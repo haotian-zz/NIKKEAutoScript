@@ -10,7 +10,12 @@ import cv2
 import numpy as np
 
 with patch.dict('sys.modules', {'module.logger': SimpleNamespace(logger=Mock())}):
-    from module.campaign.facility_memory import FacilityMemory, FacilityUnconfirmed, voted_facilities
+    from module.campaign.facility_memory import FacilityMemory, FacilityUnconfirmed, facility_frame, voted_facilities
+
+
+def facility_frame_for(field):
+    """无设施时的关键帧特征。"""
+    return facility_frame(field, [])
 
 
 def observed(position=(800., 500.), state='start', kind='elevator'):
@@ -242,6 +247,21 @@ class FacilityMemoryTests(unittest.TestCase):
         np.testing.assert_allclose(self.catalog.manual_projected[0]['position'], [980., 500.], atol=3.)
         again = self.catalog.remember_manual(self.panned, [985., 505.], (22, 0, 'EX', 1))
         self.assertEqual(again[0]['facility_id'], identifier)
+
+    def test_vote_candidates_always_include_anchor_views(self):
+        """候选全是桥接帧时也带上票数最高的锚点帧，已登记设施仍能投影。"""
+        rng = np.random.default_rng(904)
+        gray = cv2.resize(rng.integers(0, 256, (500, 2400), dtype=np.uint8), (4800, 999))
+        canvas = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+        identifier = self.catalog.remember_manual(canvas[:, 0:1776], [900., 500.], (22, 0, 'EX', 1))[0]['facility_id']
+        for x in (100, 200, 300):
+            self.catalog.observe(canvas[:, x:x+1776], [])
+        names = FacilityMemory.observe.__globals__
+        with patch.dict(names, CANDIDATE_VIEWS=1, ANCHOR_CANDIDATES=1):
+            first, _ = self.catalog._vote_order(facility_frame_for(canvas[:, 350:350+1776]))
+            self.assertIn(0, first)
+            self.catalog.observe(canvas[:, 350:350+1776], [])
+        self.assertEqual([entry['facility_id'] for entry in self.catalog.manual_projected], [identifier])
 
 
 if __name__ == '__main__':

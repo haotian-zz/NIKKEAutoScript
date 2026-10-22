@@ -282,6 +282,8 @@ class VisibleStoryRunner:
         self.known_switch_tries = {}
         # 已核对过是否为需手动关卡（EX）位置的目标编号。
         self.manual_checked = set()
+        # 最近一次点击画面内目标时的那帧；需手动关卡按它记位置。
+        self.tap_frame = None
         self.map_localizer = None
         # 受阻目标 → 已做螺旋机关搜索次数；已点过但未解决的搜索键（同状态下不重复点击）。
         self.switch_searches, self.switch_skip = {}, set()
@@ -423,7 +425,7 @@ class VisibleStoryRunner:
             self.memory.identify(identifier, stage, 'manual_required')
             self.close_entry()
             logger.info('EX 需要手动瞄准及爆裂控制，已关闭备战并保留未完成，继续普通／分支清怪。')
-            self.remember_manual_entry(stage)
+            self.remember_manual_entry(stage, target)
             return False
         if stage in self.owner.story_wins:
             self.memory.identify(identifier, stage, 'deferred')
@@ -467,21 +469,31 @@ class VisibleStoryRunner:
                                      squad_overlap=getattr(self.memory.previous, 'squad_overlap_boxes', ()))
         return fresh, candidates
 
-    def remember_manual_entry(self, stage):
-        """需手动关卡关闭后按小队脚下位置记进设施目录；小队不在画面或目录无法配准时跳过。"""
+    def remember_manual_entry(self, stage, target=None):
+        """需手动关卡关闭后记进设施目录；目录无法配准时跳过。
+
+        点了画面内目标时按点击前那帧的脚圈记位置；没有点击目标（途中弹出）时才退回小队脚下。
+        实录 2026-10-22（22-36）：点远处 EX 红圈后备战直接弹出、小队没走过去，四个不同 EX 都被
+        记在小队脚下同一点，之后照样被选中。
+        """
         from module.campaign.facility_memory import FacilityUnconfirmed
         from module.campaign.structures import facility_catalog
-        field = self.map_frame(track=False)
-        arrow = squad_arrow(field)
-        if arrow is None:
-            logger.info('关闭需手动关卡后未看到小队，未记下它的位置。')
-            return
+        if target is not None and self.tap_frame is not None:
+            field, position, source = self.tap_frame, np.asarray(target['click'], float), '点击前的脚圈'
+        else:
+            field = self.map_frame(track=False)
+            arrow = squad_arrow(field)
+            if arrow is None:
+                logger.info('关闭需手动关卡后未看到小队，未记下它的位置。')
+                return
+            position, source = np.asarray(arrow)+[0., goto.ARROW_GROUND_OFFSET], '小队脚下'
         try:
-            facility_catalog(self).remember_manual(field, np.asarray(arrow)+[0., goto.ARROW_GROUND_OFFSET], stage)
+            facility_catalog(self).remember_manual(field, position, stage)
         except (FacilityUnconfirmed, OSError) as exc:
             logger.info(f'未记下需手动关卡位置：{exc}')
             return
-        logger.info(f'记下需手动关卡 {stage_text(stage)} 的位置，之后选目标时跳过这里的敌人。')
+        logger.info(f'按{source} {np.round(position).astype(int).tolist()} 记下需手动关卡 {stage_text(stage)}，'
+                    '之后选目标时跳过这里的敌人。')
 
     def manual_entry_check(self, target, field):
         """目标落点是否在已记下的需手动关卡旁；返回 'skip' 或 None（目录无法配准时照常尝试）。"""
@@ -494,6 +506,7 @@ class VisibleStoryRunner:
             catalog.observe(field, [])
         except (FacilityUnconfirmed, OSError):
             return None
+        self.session.record_evidence('manual_entry_check', field, target=target, projected=catalog.manual_projected)
         for entry in catalog.manual_projected:
             distance = float(np.linalg.norm(np.asarray(entry['position'])-target['click']))
             if distance <= MANUAL_ENTRY_RADIUS:
@@ -900,6 +913,7 @@ class VisibleStoryRunner:
             self.session.record_evidence('scene_target', fresh, quest=self.quest, target=target, arrays=dict(field=fresh))
             logger.info(f"地图敌人目标：{target['id']}，脚圈 {target['click']}，当前可选 {len(candidates)} 个；"
                         '到达后读取实际遇敌关卡。')
+            self.tap_frame = fresh
             try:
                 self.session.tap(target['click'])
             except TargetTriggered:
