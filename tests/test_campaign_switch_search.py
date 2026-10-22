@@ -57,7 +57,7 @@ class SwitchSearchTests(unittest.TestCase):
                 patch.object(search, 'WAYPOINT_TOLERANCE', np.array([450., 250.])), \
                 patch.object(search, 'detect_objects', return_value=[]), \
                 patch.object(search, 'pan_scene') as pan:
-            search.content_shift.side_effect = lambda before, after: .45*pan.call_args.args[1]
+            search.content_shift.side_effect = lambda before, after, drag: .45*np.asarray(drag)
             finder = search.SwitchSearch(self.runner, pans=1)
             finder.move_to(1)
         self.assertEqual(pan.call_count, 3)
@@ -240,6 +240,28 @@ class SwitchSearchTests(unittest.TestCase):
             result = search.SwitchSearch(self.runner).run()
         self.assertEqual(result['state'], 'entry')
         pan.assert_not_called()
+
+
+class ContentShiftTests(unittest.TestCase):
+    """镜头主平移：顺手指方向的匹配取中位数；大多数不动判为边界；方向不符测不到。"""
+
+    @classmethod
+    def setUpClass(cls):
+        """固定随机纹理，平移180px模拟一次横向拖动后的画面。"""
+        import cv2
+        rng = np.random.default_rng(791)
+        gray = cv2.resize(rng.integers(0, 256, (500, 888), dtype=np.uint8), (1776, 999))
+        cls.field = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+        cls.panned = cv2.warpAffine(cls.field, np.float32([[1, 0, 180], [0, 1, 0]]), (1776, 999))
+
+    def test_shift_follows_drag_direction(self):
+        np.testing.assert_allclose(search.content_shift(self.field, self.panned, [400., 0.]), [180., 0.], atol=3.)
+
+    def test_still_frame_is_zero_shift_for_boundary_detection(self):
+        np.testing.assert_allclose(search.content_shift(self.field, self.field, [400., 0.]), [0., 0.])
+
+    def test_motion_against_drag_is_not_measured(self):
+        self.assertIsNone(search.content_shift(self.field, self.panned, [-400., 0.]))
 
 
 class RecoveryOrderTests(unittest.TestCase):

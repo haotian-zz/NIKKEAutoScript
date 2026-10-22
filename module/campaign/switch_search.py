@@ -30,8 +30,9 @@ from module.logger import logger
 # 单次拖动手势上限（手指方向，镜头反向移动）。实测 2026-10-22（22-27）：700px横拖画面只动
 # 290～335px，520px竖拖只动120～280px且带横向偏移，8次固定拖动后镜头离起点不到0.3屏。
 # 因此螺旋按配准实测位移走到各航点，不按拖动次数。
-HORIZONTAL_DRAG = 700.
-VERTICAL_DRAG = 520.
+# 拖动区域横向可用约1728px、竖向约810px（camera_navigation.PAN_REGIONS），留出小队避让余量。
+HORIZONTAL_DRAG = 1100.
+VERTICAL_DRAG = 600.
 # 航点间距（客户区像素，镜头位移）。斜俯视镜头下画面上部的物体常被前方建筑挡住，只有中下部
 # 约0.55屏算可靠覆盖，竖向按它取间距；横向无此问题，约0.8屏留两成重叠。
 # 实录 2026-10-22（22-27）：西北航点里开关落在画面上部、被箱子挡住大半，检测器读不到；
@@ -45,6 +46,8 @@ HINT_PANS = 3
 WAYPOINT_TOLERANCE = np.array([450., 250.])
 WAYPOINT_PANS = 6
 STUCK_SHIFT = 30.
+# 主平移至少要这么多对双向匹配支持。
+SHIFT_SUPPORT = 30
 # 拖动增益初值（画面位移/手指位移），之后按每次实测更新。
 INITIAL_GAIN = .45
 VIEW_CENTER = np.array([888., 500.])
@@ -76,13 +79,37 @@ def spiral_cells(rings=4):
     return cells
 
 
-def content_shift(before, after):
-    """两帧静态背景配准，返回画面中心内容的位移（客户区像素）；配准不可靠返回None。"""
-    try:
-        matrix, _, _ = scene_registration(facility_frame(before, []), facility_frame(after, []))
-    except (ValueError, cv2.error, np.linalg.LinAlgError):
+def content_shift(before, after, drag):
+    """两帧静态背景特征的主平移（客户区像素，画面内容的位移）；测不到返回None。
+
+    实测 2026-10-22（22-27）：高架与高楼的视差让单应内点率只有17～28%，严格配准判失败，
+    但双向匹配的平移大多顺着手指方向、深度不同只差几十像素。测镜头位置只需主平移：
+    取顺手指方向（余弦≥0.8）且增益0.1～2的匹配取中位数；大多数匹配几乎不动则判镜头未动
+    （地图边界）。只用于决定下一次拖动和航点覆盖，不用于点击或设施身份（身份仍用严格单应）。
+    """
+    first, second = facility_frame(before, []), facility_frame(after, [])
+    if (first.descriptors is None or second.descriptors is None
+            or min(len(first.keys), len(second.keys)) < SHIFT_SUPPORT):
         return None
-    return project(matrix, VIEW_CENTER)-VIEW_CENTER
+    matcher = cv2.BFMatcher()
+    reverse = matcher.match(second.descriptors, first.descriptors)
+    pairs = [pair[0] for pair in matcher.knnMatch(first.descriptors, second.descriptors, k=2)
+             if len(pair) == 2 and pair[0].distance < .7*pair[1].distance
+             and reverse[pair[0].trainIdx].trainIdx == pair[0].queryIdx]
+    if len(pairs) < SHIFT_SUPPORT:
+        return None
+    shifts = (np.float32([second.keys[item.trainIdx] for item in pairs])
+              - np.float32([first.keys[item.queryIdx] for item in pairs]))
+    still = np.linalg.norm(shifts, axis=1) < STUCK_SHIFT
+    if still.sum() >= max(SHIFT_SUPPORT, .5*len(shifts)):
+        return np.zeros(2)
+    drag = np.asarray(drag, float)
+    gain = shifts @ drag / max(drag @ drag, 1.)
+    cosine = shifts @ drag / np.maximum(np.linalg.norm(shifts, axis=1)*np.linalg.norm(drag), 1.)
+    along = (cosine >= .8) & (gain >= .1) & (gain <= 2.)
+    if along.sum() < SHIFT_SUPPORT:
+        return None
+    return np.median(shifts[along], axis=0)
 
 
 def off_switches(frames):
@@ -231,7 +258,7 @@ class SwitchSearch:
         pan_scene(self.session, drag, squad_ground=ground)
         self.pans += 1
         after = self.runner.map_frame(track=False)
-        shift = content_shift(before, after)
+        shift = content_shift(before, after, drag)
         if shift is None:
             # 配准失败时按当前增益估算，只用于决定下一次拖动，不作为点击依据；前后两帧留证查原因。
             self.unmeasured += 1
@@ -317,7 +344,7 @@ class SwitchSearch:
         complete为真表示全部屏幕都已看过机关（未被时间截断），调用方据此不再重复整圈找机关。
         """
         started = time.monotonic()
-        logger.info(f'目标受阻：开始螺旋寻找关闭机关，{len(self.waypoints)-1} 个航点（约0.8屏间距，按实测位移移动）'
+        logger.info(f'目标受阻：开始螺旋寻找关闭机关，{len(self.waypoints)-1} 个航点（按实测位移由近及远逐圈移动）'
                     + (f'，从第 {self.start} 个航点续看。' if self.start else '。'))
         noted, complete = None, True
         for step in range(len(self.waypoints)):
