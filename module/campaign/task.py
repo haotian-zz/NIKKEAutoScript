@@ -16,20 +16,24 @@ from module.campaign.vision import battle
 from module.campaign.vision.chapter import chapter_identity
 from module.campaign.vision.chapter_completion import overlay_anchor
 from module.campaign.window import CampaignWindow
-from module.campaign.visible_story import read_quest_text, return_lobby_quest
+from module.campaign.visible_story import outpost_lobby_quest, quest_jump_point, read_quest_text, return_lobby_quest
 from module.exception import GameStuckError, RequestHumanTakeover
 from module.execution.context import report
 from module.logger import logger
 from module.ocr.ocr import Ocr
 from module.simulation_room.assets import END_FIGHTING
 from module.ui.assets import MAIN_CHECK
-from module.ui.page import page_main
+from module.ui.page import page_main, page_outpost
 from module.ui.ui import UI
 
 # 切日后大厅可能连续弹出多个奖励／活动页，超过上限仍未见大厅则交人工确认。
 LOBBY_POPUP_LIMIT = 5
 # 大厅任务仍为“返回大厅”时等待剧情触发及任务更新的上限（秒）。
 LOBBY_RETURN_WAIT = 30.
+# 前往前哨基地任务：单次点击后进入基地并等任务更新的上限（秒）。
+OUTPOST_QUEST_WAIT = 30.
+# 大厅任务行右侧的任务箭头区域（720×1280）。
+LOBBY_JUMP_AREA = (660, 108, 710, 149)
 
 
 def chapter_number(value):
@@ -58,6 +62,8 @@ class AutoPush(UI):
         self.lobby_sortie_instruction = bool(re.fullmatch(r'前往地面(?:【出[击擊]】|\[出[击擊]\])',
                                                          re.sub(r'\s+', '', text)))
         self.lobby_return_pending = return_lobby_quest(text)
+        self.lobby_outpost_instruction = outpost_lobby_quest(text)
+        self.lobby_quest_text = text
         match = re.search(r'(?:通关|CLEAR).*?([1-9]\d?)\s*[-－]\s*([1-9]\d?)', text, re.I)
         return tuple(map(int, match.groups())) if match else None
 
@@ -87,6 +93,41 @@ class AutoPush(UI):
             self.device.sleep(.3)
         return False, popups
 
+    def quest_identity(self, current):
+        """稳定窗口比较用的任务身份：出击、前往前哨基地两种非数字指令各自独立，其余为关卡编号。"""
+        if getattr(self, 'lobby_sortie_instruction', False):
+            return ('sortie',)
+        if getattr(self, 'lobby_outpost_instruction', False):
+            return ('outpost',)
+        return current
+
+    def visit_outpost_quest(self):
+        """完成“前往【前哨基地】”任务：只点一次连续两帧一致的任务箭头，等进入基地且任务文字更新。
+
+        实录 2026-10-21（21 章通关）：大厅任务变为前往前哨基地，点击箭头进入基地即提示完成，
+        约十秒后任务改为出击。三十秒内未见基地或任务未更新则返回False，不再重复点击。
+        """
+        first = quest_jump_point(cv2.cvtColor(self.device.image, cv2.COLOR_RGB2BGR), LOBBY_JUMP_AREA)
+        self.device.sleep(.3)
+        self.device.screenshot()
+        second = quest_jump_point(cv2.cvtColor(self.device.image, cv2.COLOR_RGB2BGR), LOBBY_JUMP_AREA)
+        if (first is None or second is None or sum((a-b)**2 for a, b in zip(first, second)) > 25.
+                or not self.appear(MAIN_CHECK, offset=30)):
+            return False
+        logger.info('大厅任务为前往前哨基地：点击任务箭头进入基地完成任务')
+        self.device.click_xy(*second)
+        deadline = time.monotonic() + OUTPOST_QUEST_WAIT
+        while time.monotonic() < deadline:
+            self.device.sleep(1.)
+            self.device.screenshot()
+            if not self.appear(page_outpost.check_button, offset=30):
+                continue
+            self.quest_stage()
+            if getattr(self, 'lobby_quest_text', None) and not self.lobby_outpost_instruction:
+                logger.info(f'前哨基地任务已完成，新任务：{self.lobby_quest_text!r}')
+                return True
+        return False
+
     def confirm_lobby_quest(self):
         """大厅首次显示可能尚在淡入，四秒内等待两帧相同有效任务，不以空OCR立即终止。
 
@@ -99,7 +140,7 @@ class AutoPush(UI):
             if not seen:
                 return None
             current = self.quest_stage()
-            previous = ('sortie',) if getattr(self, 'lobby_sortie_instruction', False) else current
+            previous = self.quest_identity(current)
             # 首次OCR可能初始化模型；稳定窗口从组件已可读取后起算，不能读对首帧却无第二帧机会。
             started = time.monotonic()
             deadline = started + 4.
@@ -112,7 +153,7 @@ class AutoPush(UI):
                     break
                 current = self.quest_stage()
                 sortie = getattr(self, 'lobby_sortie_instruction', False)
-                identity = ('sortie',) if sortie else current
+                identity = self.quest_identity(current)
                 if identity is not None and identity == previous:
                     return current, sortie
                 if getattr(self, 'lobby_return_pending', False):
@@ -161,19 +202,27 @@ class AutoPush(UI):
         if entry is None:
             report('blocked', '无法确认当前主线任务引导', '请确认主线任务引导可见后重试，已保存当前画面')
             return False
+        if getattr(self, 'lobby_outpost_instruction', False):
+            if not self.visit_outpost_quest():
+                report('blocked', '前往前哨基地任务未完成', '单次点击任务箭头后三十秒内未进入基地或任务未更新，已保存当前画面')
+                return False
+            self.ui_ensure(page_main)
+            entry = self.confirm_lobby_quest()
+            if entry is None or self.lobby_outpost_instruction:
+                report('blocked', '无法确认当前主线任务引导', '请确认主线任务引导可见后重试，已保存当前画面')
+                return False
         current, sortie = entry
         self.entry_stage = current
         point = (674, 126)
         if sortie:
-            from module.campaign.visible_story import quest_jump_point
-            point = quest_jump_point(cv2.cvtColor(self.device.image, cv2.COLOR_RGB2BGR), (660, 108, 710, 149))
+            point = quest_jump_point(cv2.cvtColor(self.device.image, cv2.COLOR_RGB2BGR), LOBBY_JUMP_AREA)
             self.device.sleep(.3)
             self.device.screenshot()
             if (point is None or not self.appear(MAIN_CHECK, offset=30) or self.quest_stage() is not None
                     or not self.lobby_sortie_instruction):
                 report('blocked', '前往地面出击指令未连续确认', '未发送任务点击，旧章待办保留')
                 return False
-            fresh_point = quest_jump_point(cv2.cvtColor(self.device.image, cv2.COLOR_RGB2BGR), (660, 108, 710, 149))
+            fresh_point = quest_jump_point(cv2.cvtColor(self.device.image, cv2.COLOR_RGB2BGR), LOBBY_JUMP_AREA)
             if fresh_point is None or sum((a-b)**2 for a, b in zip(point, fresh_point)) > 25.:
                 report('blocked', '大厅任务箭头未连续确认', '未发送任务点击，旧章待办保留')
                 return False

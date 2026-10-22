@@ -166,6 +166,11 @@ def return_lobby_quest(text):
                                                 re.sub(r'\s+', '', text)))
 
 
+def outpost_lobby_quest(text):
+    """只接受完整的简繁体前往前哨基地任务；实录21章通关后大厅出现，进入前哨基地即完成。"""
+    return bool(text is not None and re.fullmatch(r'前往(?:【前哨基地】|\[前哨基地\]|前哨基地)', re.sub(r'\s+', '', text)))
+
+
 def read_ex_entry(field, reader):
     """EX 备战同时核对独立标题模板与完整 OCR 标题，不凭共有 STAGE 字样认领 EX。
 
