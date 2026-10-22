@@ -233,9 +233,10 @@ def reset_switch_marks(runner, catalog):
         marks = getattr(runner, name, None)
         if isinstance(marks, dict):
             marks.clear()
-    views = getattr(runner, 'goal_views', None)
-    if isinstance(views, set):
-        views.clear()
+    for name in ('goal_views', 'spiral_done'):
+        marks = getattr(runner, name, None)
+        if isinstance(marks, set):
+            marks.clear()
     runner.structure_inputs = runner.structure_pans = runner.blocked_views = 0
     if catalog is not None:
         catalog.switch_activated()
@@ -374,10 +375,18 @@ def recover_visible_structure(runner, field, allow_unanchored=False):
             enemies = runner.gate_enemy_tries.get(blocked_goal, 0) < GATE_ENEMY_TRIES
             blocked = getattr(runner, 'blocked_click', None)
             resume = getattr(runner, 'spiral_resume', None)
+            resume = resume.get(blocked_goal, 0) if isinstance(resume, dict) else 0
+            # 机关优先：本受阻点第一次螺旋连续看完全部屏幕；已完整看过且未踩亮开关时，
+            # 之后只为找下一个敌人从续看屏开始（之前各屏只重放镜头）。
+            done = getattr(runner, 'spiral_done', None)
+            continuous = not (isinstance(done, set) and blocked_goal in done)
             searched = SwitchSearch(runner, catalog, pans=SPIRAL_PANS, seconds=SPIRAL_SECONDS,
                                     skip=runner.switch_skip, enemies=enemies,
                                     blocked=[blocked] if isinstance(blocked, (list, tuple, np.ndarray)) else [],
-                                    start=resume.get(blocked_goal, 0) if isinstance(resume, dict) else 0).run()
+                                    start=0 if continuous else resume, enemy_from=resume,
+                                    continuous=continuous).run()
+            if isinstance(done, set) and searched.get('complete'):
+                done.add(blocked_goal)
             session.record_evidence('switch_search_result', searched.get('field', fresh),
                                     **{key: value for key, value in searched.items() if key != 'field'})
         if searched['state'] == 'entry':

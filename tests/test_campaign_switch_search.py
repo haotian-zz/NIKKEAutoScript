@@ -47,15 +47,17 @@ class SwitchSearchTests(unittest.TestCase):
             (search.HORIZONTAL_DRAG, 0.), (search.HORIZONTAL_DRAG, 0.)])
 
     def test_switch_found_after_pans_needs_two_of_four_frames(self):
-        """前三屏无开关、第四屏单帧闪现也不算；第五屏烟雾漏检一帧，四帧中三帧命中即返回。"""
-        frames = [[]]*12 + [[fixture()], [], [], []] + [[fixture()], [], [fixture()], [fixture(position=(1287., 652.))]]
-        with patch.object(search, 'detect_objects', side_effect=frames), \
+        """两帧一致即结束本屏；第三屏单帧闪现补到四帧也不算；第四屏烟雾漏检一帧，四帧三帧命中即返回。"""
+        frames = [[]]*6 + [[fixture()], [], [], []] + [[fixture()], [], [fixture()], [fixture(position=(1287., 652.))]]
+        with patch.object(search, 'detect_objects', side_effect=frames) as detect, \
                 patch.object(search, 'pan_scene') as pan:
             result = search.SwitchSearch(self.runner).run()
         self.assertEqual(result['state'], 'found')
         self.assertEqual(result['pans'], 4)
         self.assertEqual(pan.call_count, 4)
+        self.assertEqual(detect.call_count, len(frames))
         self.assertEqual(result['target']['position'], [1287., 652.])
+        self.assertFalse(self.runner.map_frame.call_args.kwargs['track'])
 
     def test_on_switch_platform_and_skipped_key_are_not_targets(self):
         """开启机关、平台和本受阻点已试过的搜索键都不再选择，预算耗尽返回exhausted。"""
@@ -72,17 +74,43 @@ class SwitchSearchTests(unittest.TestCase):
         self.assertEqual(result['state'], 'exhausted')
         self.assertEqual(pan.call_count, 2)
 
-    def test_uncleared_gate_enemy_is_returned_before_switch(self):
-        """实录21-32：光幕外的21-20两帧稳定，搜索交回敌人；同屏机关排在之后。"""
+    def test_switch_on_same_screen_is_returned_before_gate_enemy(self):
+        """机关优先：同屏两帧稳定的敌人和关闭机关，先返回机关。"""
         ring = [(np.array([830., 470.]), .71)]
         with patch.object(search, 'detect_objects', return_value=[fixture()]), \
-                patch.object(search, 'ring_centers', side_effect=[ring, [(np.array([833., 472.]), .72)]]), \
+                patch.object(search, 'ring_centers', return_value=ring), \
                 patch.object(search, 'pan_scene') as pan:
             result = search.SwitchSearch(self.runner).run()
-        self.assertEqual(result['state'], 'enemy')
-        self.assertEqual(result['target']['position'], [833., 472.])
-        self.assertEqual(result['target']['search_key'][0], 'enemy')
+        self.assertEqual(result['state'], 'found')
         pan.assert_not_called()
+
+    def test_gate_enemy_noted_until_every_screen_checked_then_revisited(self):
+        """实录21-32/22-27：第1屏的敌人只记下，看完全部屏幕没有机关才逆序倒回第1屏重新确认后返回。"""
+        enemy = [(np.array([830., 470.]), .71)]
+        rings = {1: enemy}
+        screen = iter([0, 0, 1, 1, 2, 2, 3, 3, 1, 1])
+        with patch.object(search, 'detect_objects', return_value=[]), \
+                patch.object(search, 'ring_centers', side_effect=lambda image: rings.get(next(screen), [])), \
+                patch.object(search, 'pan_scene') as pan:
+            result = search.SwitchSearch(self.runner, pans=3).run()
+        self.assertEqual(result['state'], 'enemy')
+        self.assertEqual(result['step'], 1)
+        self.assertTrue(result['complete'])
+        drags = [tuple(call.args[1]) for call in pan.call_args_list]
+        self.assertEqual(drags[:3], [tuple(d) for d in search.spiral_drags()[:3]])
+        self.assertEqual(drags[3:], [tuple(-d) for d in search.spiral_drags()[2:0:-1]])
+
+    def test_switch_later_in_spiral_beats_earlier_enemy(self):
+        """实录22-27：第1屏是光幕后的首领组，第3屏才有关闭机关；连续看完时直接返回机关，不去打敌人。"""
+        enemy = [(np.array([1232., 139.]), .88)]
+        frames = [[]]*6 + [[fixture()]]*2
+        with patch.object(search, 'detect_objects', side_effect=frames), \
+                patch.object(search, 'ring_centers', side_effect=[[], [], enemy, enemy, [], [], [], []]), \
+                patch.object(search, 'pan_scene') as pan:
+            result = search.SwitchSearch(self.runner, pans=8).run()
+        self.assertEqual(result['state'], 'found')
+        self.assertEqual(result['step'], 3)
+        self.assertEqual(pan.call_count, 3)
 
     def test_just_stalled_target_is_not_returned_as_gate_enemy(self):
         """实录21-32：原地第一屏的“守关敌人”(1105,721)就是刚撞墙的目标(1108,721)，须排除。"""
@@ -133,11 +161,11 @@ class SwitchSearchTests(unittest.TestCase):
         with patch.object(search, 'detect_objects', return_value=[]) as detect, \
                 patch.object(search, 'ring_centers', return_value=ring), \
                 patch.object(search, 'pan_scene') as pan:
-            result = search.SwitchSearch(self.runner, pans=8, start=4).run()
+            result = search.SwitchSearch(self.runner, pans=8, start=4, enemy_from=4, continuous=False).run()
         self.assertEqual(result['state'], 'enemy')
         self.assertEqual(result['step'], 4)
         self.assertEqual(pan.call_count, 4)
-        self.assertEqual(detect.call_count, search.FACILITY_FRAMES)
+        self.assertEqual(detect.call_count, search.FACILITY_QUICK_FRAMES)
 
     def test_battle_popup_returns_entry_without_more_pans(self):
         """途中真实备战弹窗立即交回战斗流程。"""
@@ -269,16 +297,19 @@ class RecoveryOrderTests(unittest.TestCase):
         self.assertEqual(self.runner.structure_inputs, 1)
 
     def test_stalled_gate_enemy_resumes_spiral_until_switch_activated(self):
-        """实录22-27：第3屏敌人在光幕后走不到；下次螺旋从第4屏续看，踩亮开关后全部标记清空。"""
+        """实录22-27：整圈看完只剩第3屏敌人且走不到；下次只为找敌人从第4屏续看，踩亮开关后全部标记清空。"""
         enemy = dict(kind='enemy_ring', state='pending', position=[974., 147.], confidence=.88,
                      search_key=('enemy', 3, 12, 2))
         self.runner.spiral_resume = {}
         self.runner.blocked_since = {}
         self.runner.wait_entry.return_value = False
-        result, finder = self.recover(dict(state='enemy', target=enemy, field=self.field, step=3))
+        self.runner.spiral_done = set()
+        result, finder = self.recover(dict(state='enemy', target=enemy, field=self.field, step=3, complete=True))
         self.assertEqual(result, 'scouted')
         self.assertEqual(finder.call_args.kwargs['start'], 0)
+        self.assertTrue(finder.call_args.kwargs['continuous'])
         self.assertEqual(self.runner.spiral_resume, {'quest:(21, 15)': 4})
+        self.assertEqual(self.runner.spiral_done, {'quest:(21, 15)'})
         switch = dict(fixture(position=(400., 300.)), search_key=(6, 5, 4))
         catalog = Mock()
         catalog.observe.return_value = []
@@ -286,7 +317,10 @@ class RecoveryOrderTests(unittest.TestCase):
                 patch.object(structure, 'watch_switch', return_value=(self.field, 'activated')):
             result, finder = self.recover(dict(state='found', target=switch, field=self.field, step=6))
         self.assertEqual(finder.call_args.kwargs['start'], 4)
+        self.assertEqual(finder.call_args.kwargs['enemy_from'], 4)
+        self.assertFalse(finder.call_args.kwargs['continuous'])
         self.assertEqual(result, 'attempted')
+        self.assertEqual(self.runner.spiral_done, set())
         self.assertEqual(self.runner.spiral_resume, {})
         self.assertEqual(self.runner.gate_enemy_tries, {})
         self.assertEqual(self.runner.switch_skip, set())

@@ -94,6 +94,19 @@ class FacilityMemoryTests(unittest.TestCase):
         self.assertTrue(restarted.track_background(last, force=True))
         self.assertFalse(restarted.eligible(identifier, 'blocked-A'))
 
+    def test_background_on_newest_screen_stops_after_one_registration(self):
+        """实测22章46个关键帧逐个配准约1.5秒：轮询同一屏时命中最新关键帧即停，不新增关键帧。"""
+        self.catalog.observe(self.panned, [])
+        self.catalog.observe(self.field, [])
+        views = len(self.catalog.data['views'])
+        names = FacilityMemory.observe.__globals__
+        register = Mock(wraps=names['scene_registration'])
+        with patch.dict(names, scene_registration=register), patch.object(self.catalog, 'save') as save:
+            self.assertTrue(self.catalog.track_background(self.field, force=True))
+        self.assertEqual(register.call_count, 1)
+        save.assert_not_called()
+        self.assertEqual(len(self.catalog.data['views']), views)
+
     def test_second_instance_reuses_shared_positions_without_attempts(self):
         """另一个实例首次进入同章同底图时复用设施位置与关键帧，尝试与开关状态从未确认开始。"""
         identifier = self.catalog.observe(

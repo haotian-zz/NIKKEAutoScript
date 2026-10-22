@@ -46,6 +46,12 @@ def accepted_facility(item):
             and clickable_ring(item['box']))
 
 
+def same_screen(matrix):
+    """配准矩阵把画面中部四点移动不足25px：视为同一屏或小幅漂移，可复用该关键帧。"""
+    grid = np.float32([[400, 300], [1300, 300], [1300, 750], [400, 750]])
+    return np.max(np.linalg.norm(project(matrix, grid)-grid, axis=1)) < 25.
+
+
 def voted_facilities(frames, minimum=2):
     """同一镜头下多帧投票：同类同状态、≤12px 的检测出现在至少 minimum 帧即接受。
 
@@ -258,6 +264,10 @@ class FacilityMemory:
             except (ValueError, cv2.error, np.linalg.LinAlgError):
                 continue
             matches.append((number, matrix, source, destination))
+            # 背景桥接只需确认当前视野已有关键帧：命中同屏关键帧即停，不再逐个比对全部历史
+            # （实测 2026-10-22：22章46个关键帧逐个配准约1.5秒，每帧地图轮询都付一次）。
+            if background and same_screen(matrix):
+                break
         if self.frames and not matches:
             raise FacilityUnconfirmed('当前视野未与设施关键帧可靠重定位，未创建重复设施。')
         assignments, unresolved = [], []
@@ -295,12 +305,10 @@ class FacilityMemory:
         if len(set(known)) != len(known):
             raise FacilityUnconfirmed('多个当前设施竞争同一历史身份，未合并或点击。')
         # 每次确认视野保留一个特征关键帧；同一屏或小幅漂移时复用旧关键帧，避免常规轮询耗尽容量。
-        reuse = None
-        for number, matrix, _, _ in matches:
-            grid = np.float32([[400, 300], [1300, 300], [1300, 750], [400, 750]])
-            if np.max(np.linalg.norm(project(matrix, grid)-grid, axis=1)) < 25.:
-                reuse = number
-                break
+        reuse = next((number for number, matrix, _, _ in matches if same_screen(matrix)), None)
+        if background and reuse is not None:
+            # 同屏背景不新增关键帧，记录没有变化，不必重写目录。
+            return []
         view = reuse
         if view is None:
             if len(self.frames) >= MAX_VIEWS:

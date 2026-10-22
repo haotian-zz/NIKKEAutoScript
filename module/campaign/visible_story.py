@@ -281,15 +281,18 @@ class VisibleStoryRunner:
         self.gate_enemy_tries = {}
         # 受阻目标 → 螺旋下次续看的屏号（被守关敌人打断后不从第0屏重来）；踩亮开关后清空。
         self.spiral_resume = {}
+        # 已连续看完全部螺旋屏幕找过机关的受阻目标；踩亮开关后清空。
+        self.spiral_done = set()
         self.blocked_since, self.blocked_click = {}, None
         self.entry_outcome = None
         self.journal = ClearanceJournal(owner.config.config_name)
         self.journal.begin(owner.current_chapter)
 
-    def map_frame(self, timeout=30.):
+    def map_frame(self, timeout=30., track=True):
         """等待地图或备战弹窗，剧情出现即跳过；不在加载或未知画面发送地图落点。
 
         剧情处理时禁止普通备战按钮放行，避免截图之间切换成弹窗后未经身份校验就开战。
+        track为False时不做设施背景桥接：螺旋搜索每屏自行登记一次目录，不必每帧再配准。
         """
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
@@ -301,7 +304,7 @@ class VisibleStoryRunner:
                 return field
             if battle.field_visible(field):
                 self.session.identity(field)
-                if self.facilities is not None:
+                if track and self.facilities is not None:
                     self.facilities.track_background(field)
                 return field
             state = battle.battle_state(field)['state']
