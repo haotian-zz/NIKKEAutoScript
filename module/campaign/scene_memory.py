@@ -23,6 +23,11 @@ def ring_frame(field, reader=None):
     for item in boss_rings:
         if not any(np.linalg.norm(np.asarray(item.center) - known.center) < 20. for known in rings):
             rings.append(item)
+    from module.campaign.vision.boss_ring import quest_portal_candidates
+    for portal in quest_portal_candidates(field):
+        item = Detection('scene_enemy_ring', portal['geometry'], tuple(map(float, portal['box'])))
+        if not any(np.linalg.norm(np.asarray(item.center) - known.center) < 40. for known in rings):
+            rings.append(item)
     ex_rings = []
     if reader is not None:
         from module.campaign.vision.ex_ring import scene_ex_rings

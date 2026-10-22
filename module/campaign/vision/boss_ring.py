@@ -65,35 +65,77 @@ def skull_candidates(field):
     return sorted(result, key=lambda item: -item['shape_score'])[:8]
 
 
-def portal_below(red, glyph):
-    """在骷髅下方的局部区域搜索完整椭圆环，返回实际匹配框与几何分数或None。
+def portal_below(red, glyph, spans=(2.8, 3.2, 3.6, 4., 4.4, 4.8), below=(1.4, 2.8), min_score=.2,
+                 thickness=.12):
+    """在图标下方的局部区域搜索完整椭圆环，返回实际匹配框与几何分数或None。
 
-    搜索尺度随图标宽度变化：环宽2.8～4.8倍、宽高比0.45～0.9、中心在图标下方
-    1.4～2.8倍宽度内。零均值相关至少0.2，拒绝均匀红地面；不按偏移直接生成落点。
+    搜索尺度随图标宽度变化：默认（骷髅）环宽2.8～4.8倍、宽高比0.45～0.9、中心在图标下方
+    1.4～2.8倍宽度内。零均值相关至少min_score，拒绝均匀红地面；不按偏移直接生成落点。
     """
     x, y, width, height = glyph
     cx, cy = x+width/2, y+height/2
-    left, right = max(0, round(cx-4*width)), min(red.shape[1], round(cx+4*width))
-    top, bottom = round(cy+.7*width), min(red.shape[0], round(cy+5*width))
+    reach = max(spans)/2+1.5
+    left, right = max(0, round(cx-reach*width)), min(red.shape[1], round(cx+reach*width))
+    top, bottom = round(cy+(below[0]-max(spans)*.45)*width), min(red.shape[0], round(cy+(below[1]+max(spans)*.45)*width))
+    top = max(0, top)
     patch, best = red[top:bottom, left:right], None
-    for span in (2.8, 3.2, 3.6, 4., 4.4, 4.8):
+    for span in spans:
         for ratio in (.45, .6, .75, .9):
             w, h = round(span*width), round(span*width*ratio)
             template = np.zeros((h+12, w+12), np.uint8)
             cv2.ellipse(template, (w//2+6, h//2+6), (w//2, h//2),
-                        0, 0, 360, 255, max(3, round(width*.12)))
+                        0, 0, 360, 255, max(3, round(width*thickness)))
             if template.shape[0] > patch.shape[0] or template.shape[1] > patch.shape[1]:
                 continue
             scores = cv2.matchTemplate(patch, template, cv2.TM_CCOEFF_NORMED)
             yy, xx = np.indices(scores.shape)
             centers_x, centers_y = left+xx+6+w/2, top+yy+6+h/2
-            scores[(abs(centers_x-cx) > width) | (centers_y-cy < 1.4*width)
-                   | (centers_y-cy > 2.8*width)] = -1
+            scores[(abs(centers_x-cx) > width) | (centers_y-cy < below[0]*width)
+                   | (centers_y-cy > below[1]*width)] = -1
             _, score, _, point = cv2.minMaxLoc(scores)
             box = (left+point[0]+6, top+point[1]+6, left+point[0]+6+w, top+point[1]+6+h)
-            if score >= .2 and clickable_ring(box) and (best is None or score > best['geometry']):
+            if score >= min_score and clickable_ring(box) and (best is None or score > best['geometry']):
                 best = dict(box=box, geometry=float(score))
     return best
+
+
+def red_mask(field, hue_low=23):
+    """入口自带的红色发光图形；不假设地面主色。hue_low 收窄可排除橙黄色楼沿。"""
+    hsv = cv2.cvtColor(field, cv2.COLOR_BGR2HSV)
+    return (((hsv[:, :, 0] < hue_low) | (hsv[:, :, 0] > 160))
+            & (hsv[:, :, 1] > 60) & (hsv[:, :, 2] > 180)).astype(np.uint8)*255
+
+
+# 主线菱形离左右边缘至少这么远才找其下方入口：贴边的是离屏指示，下面常是红色 EX 指示。
+QUEST_PORTAL_EDGE = 200.
+QUEST_PORTAL_SCORE = .3
+# 主线入口光圈偏粉红；橙黄色楼顶边沿（色相 10～23）曾在 0.27 被误认。
+QUEST_PORTAL_HUE = 10
+
+
+def quest_portal_candidates(field):
+    """画面内主线任务菱形正下方的完整红色入口环；返回 dict(marker, box, geometry) 列表。
+
+    实录 2026-10-22（22-36）：主线关卡入口是菱形正下方约1.6～3.4倍菱形宽处的红色光圈，
+    检测模型完全不出框，程序因此转去全章清怪巡检空转；用户确认点光圈即可进入。离线核对
+    第 22 章 31 帧：真入口 0.32～0.40，贴边离屏菱形下的 EX 指示约 0.30（已按边距排除），橙黄楼沿 0.27（已按色相排除）。
+    只提供候选，点击后仍由备战弹窗核对实际关卡。
+    """
+    from module.campaign.vision.story_marker import story_markers
+    if field.shape != (999, 1776, 3):
+        raise ValueError('主线入口核验要求1776×999客户区。')
+    markers = [item for item in story_markers(field) if item['kind'] in ('scene', 'cue')
+               and QUEST_PORTAL_EDGE <= item['position'][0] <= field.shape[1]-QUEST_PORTAL_EDGE]
+    if not markers:
+        return []
+    red, result = red_mask(field, QUEST_PORTAL_HUE), []
+    for marker in markers:
+        x1, y1, x2, y2 = marker['box']
+        ring = portal_below(red, (x1, y1, x2-x1, y2-y1), spans=(1.3, 1.5, 1.7, 1.9, 2.1, 2.4),
+                            below=(1.6, 3.4), min_score=QUEST_PORTAL_SCORE, thickness=.1)
+        if ring is not None:
+            result.append(dict(marker=marker['position'], **ring))
+    return result
 
 
 def boss_ring_candidates(field):
@@ -107,9 +149,7 @@ def boss_ring_candidates(field):
     glyphs = skull_candidates(field)
     if not glyphs:
         return []
-    hsv = cv2.cvtColor(field, cv2.COLOR_BGR2HSV)
-    red = (((hsv[:, :, 0] < 23) | (hsv[:, :, 0] > 160))
-           & (hsv[:, :, 1] > 60) & (hsv[:, :, 2] > 180)).astype(np.uint8)*255
+    red = red_mask(field)
     result = []
     for glyph in glyphs:
         ring = portal_below(red, glyph['glyph'])
