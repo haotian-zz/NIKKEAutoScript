@@ -1,5 +1,6 @@
 """共享的远点镜头规划；小队位置与镜头观测分开保存，点击后重新确认小队停稳。"""
 
+import time
 from types import SimpleNamespace
 
 import cv2
@@ -13,6 +14,11 @@ from module.campaign.vision import perception
 from module.campaign.vision.surface_motion import project
 
 FIELD_BOUNDS = (300, 220, 1450, 820)
+# 拖动后固定等待上限；按需等待时连续两帧（四分之一分辨率灰度）变化像素比例低于此值视为镜头已停。
+PAN_SETTLE = 1.2
+PAN_STILL_STEP = .1
+PAN_STILL_FRACTION = .03
+PAN_STILL_LEVEL = 25
 ROI_BOUNDS = (12, 12, 474, 420)
 # 横向利用场景全宽，纵向利用中部全高；两个矩形均避开固定 UI。
 PAN_REGIONS = ((24, 320, 1752, 880), (250, 70, 1490, 880))
@@ -208,13 +214,32 @@ def camera_response(chart, before, after, drag):
     return gain
 
 
-def pan_scene(session, drag, squad_ground=None, squad_box=None):
+def still_view(image):
+    """静止判定用的小图：四分之一分辨率灰度。"""
+    return cv2.cvtColor(cv2.resize(image, None, fx=.25, fy=.25, interpolation=cv2.INTER_AREA), cv2.COLOR_BGR2GRAY)
+
+
+def wait_still(session, limit=PAN_SETTLE):
+    """拖动后等镜头停稳：相邻两帧变化像素比例低于门槛即返回，最多等limit秒（与固定等待相同上限）。"""
+    deadline = time.monotonic()+limit
+    previous = still_view(session.win.client())
+    while time.monotonic() < deadline:
+        session.pause(PAN_STILL_STEP)
+        current = still_view(session.win.client())
+        if np.mean(cv2.absdiff(previous, current) > PAN_STILL_LEVEL) < PAN_STILL_FRACTION:
+            return True
+        previous = current
+    return False
+
+
+def pan_scene(session, drag, squad_ground=None, squad_box=None, settle=PAN_SETTLE):
     """收起小地图并核对身份后，把客户区拖动端点换算为屏幕坐标发送一次手势。
 
     端点越界或驱动失败立即抛错；成功后等待场景稳定，本方法不发送小队移动点击。
     squad_ground 由调用方根据已定位的小队与当前镜头配准估算；按下点落在其上时整体平移
     手势到空地，拖动向量保持不变。可信当前人物框可单独通过squad_box提供按下区域保护，
     不为它构造地面坐标；调用方负责连续核验新鲜框。小队确实不在画面时两者均传None。
+    settle为秒数时固定等待；为None时按画面静止判定提前结束（上限同PAN_SETTLE）。
     """
     goto.map_close(session.win)
     field = goto.capture_client(session.win)
@@ -226,7 +251,10 @@ def pan_scene(session, drag, squad_ground=None, squad_box=None):
     session.win.handler.mouse_swipe(tuple(origin + start), tuple(origin + end))
     if session.win.handler._failures:
         raise RuntimeError('镜头平移失败，未发送移动点击。')
-    session.pause(1.2)
+    if settle is None:
+        wait_still(session)
+    else:
+        session.pause(settle)
 
 
 def observe_camera(session, squad_position):

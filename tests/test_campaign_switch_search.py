@@ -33,7 +33,7 @@ class SwitchSearchTests(unittest.TestCase):
             patcher.start()
             self.addCleanup(patcher.stop)
         for name, value in (('squad_arrow', None), ('ring_centers', []), ('story_markers', []),
-                            ('content_shift', None)):
+                            ('content_shift', None), ('facility_frame', None)):
             patcher = patch.object(search, name, return_value=value)
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -43,6 +43,36 @@ class SwitchSearchTests(unittest.TestCase):
             patcher = patch.object(search, name, value)
             patcher.start()
             self.addCleanup(patcher.stop)
+
+    def test_offscreen_squad_is_predicted_instead_of_detected(self):
+        """小队箭头只在推算位置靠近画面时识别；镜头移开一屏多后按实测位移推算为离屏，不再花时间识别。"""
+        runner = SimpleNamespace(session=Mock(), quest=(22, 27), map_frame=Mock(return_value=self.field))
+        spiral = search.SwitchSearch(runner, pans=0)
+        with patch.object(search, 'squad_arrow', return_value=np.array([888., 600.])) as arrow:
+            ground = spiral.squad_ground(self.field)
+            self.assertEqual(arrow.call_count, 1)
+            self.assertEqual(ground[0], 888.)
+            spiral.camera = np.array([1500., 0.])
+            self.assertIsNone(spiral.squad_ground(self.field))
+            self.assertEqual(arrow.call_count, 1)
+            spiral.camera = np.array([400., 0.])
+            spiral.squad_ground(self.field)
+            self.assertEqual(arrow.call_count, 2)
+
+    def test_previous_after_features_are_reused_as_next_before(self):
+        """连续拖动时上一帧的配准特征直接复用，只为新帧提特征。"""
+        frames = [np.zeros((999, 1776, 3), np.uint8) for _ in range(3)]
+        runner = SimpleNamespace(session=Mock(), quest=(22, 27), map_frame=Mock(side_effect=frames[1:]))
+        spiral = search.SwitchSearch(runner, pans=0)
+        with patch.object(search, 'pan_scene') as pan, \
+                patch.object(search, 'facility_frame', side_effect=['f1', 'f2']) as features:
+            after, _ = spiral.pan(np.array([-500., 0.]), frames[0])
+            spiral.pan(np.array([-500., 0.]), after)
+        self.assertEqual(features.call_count, 2)
+        calls = search.content_shift.call_args_list
+        self.assertEqual(calls[0].args[3:], (None, 'f1'))
+        self.assertEqual(calls[1].args[3:], ('f1', 'f2'))
+        self.assertIsNone(pan.call_args.kwargs['settle'])
 
     def test_spiral_expands_south_east_then_north_west(self):
         """航点先向南、东各一格，再北、西各两格，逐圈外扩；第一圈8个航点围住起点。"""
@@ -57,7 +87,7 @@ class SwitchSearchTests(unittest.TestCase):
                 patch.object(search, 'WAYPOINT_TOLERANCE', np.array([450., 250.])), \
                 patch.object(search, 'detect_objects', return_value=[]), \
                 patch.object(search, 'pan_scene') as pan:
-            search.content_shift.side_effect = lambda before, after, drag: .45*np.asarray(drag)
+            search.content_shift.side_effect = lambda before, after, drag, *features: .45*np.asarray(drag)
             finder = search.SwitchSearch(self.runner, pans=1)
             finder.move_to(1)
         self.assertEqual(pan.call_count, 3)

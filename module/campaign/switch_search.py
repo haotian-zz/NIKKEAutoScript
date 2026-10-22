@@ -64,6 +64,9 @@ QUEST_MARKER_KINDS = ('scene', 'cue')
 # 原地第一屏中，刚撞墙目标附近的脚圈与它同在障碍后（实录21-32首领两侧普通敌人）。
 BLOCKED_RADIUS = 300.
 FACILITY_KINDS = ('ground_mechanism', 'elevator', 'barrier')
+# 小队推算位置离画面边缘超过这么远就不再逐次识别箭头（识别一次约1.3秒）；
+# 推算按实测位移累加，配准失败时按增益估算，留足余量。
+SQUAD_MARGIN = 300.
 
 
 def spiral_cells(rings=4):
@@ -79,7 +82,7 @@ def spiral_cells(rings=4):
     return cells
 
 
-def content_shift(before, after, drag):
+def content_shift(before, after, drag, first=None, second=None):
     """两帧静态背景特征的主平移（客户区像素，画面内容的位移）；测不到返回None。
 
     实测 2026-10-22（22-27）：高架与高楼的视差让单应内点率只有17～28%，严格配准判失败，
@@ -87,7 +90,8 @@ def content_shift(before, after, drag):
     取顺手指方向（余弦≥0.8）且增益0.1～2的匹配取中位数；大多数匹配几乎不动则判镜头未动
     （地图边界）。只用于决定下一次拖动和航点覆盖，不用于点击或设施身份（身份仍用严格单应）。
     """
-    first, second = facility_frame(before, []), facility_frame(after, [])
+    first = facility_frame(before, []) if first is None else first
+    second = facility_frame(after, []) if second is None else second
     if (first.descriptors is None or second.descriptors is None
             or min(len(first.keys), len(second.keys)) < SHIFT_SUPPORT):
         return None
@@ -171,6 +175,10 @@ class SwitchSearch:
         # 镜头相对起点的累计位移（按实测配准累加，配准失败时按增益估算）及上次取帧位置。
         self.camera, self.gain, self.looked = np.zeros(2), INITIAL_GAIN, None
         self.unmeasured, self.hinted = 0, set()
+        # 小队箭头上次所见的画面位置及当时的镜头位置；小队在搜索期间不动，离屏后按镜头位移推算。
+        self.squad, self.squad_camera = None, None
+        # 上一次拖动后帧的配准特征，作为下一次拖动的前帧特征复用。
+        self.features = None
 
     def look(self, step, goal=False):
         """取两帧（不一致补到四帧）检测关闭机关并登记目录；返回(状态, 候选, 新鲜帧)。
@@ -250,15 +258,30 @@ class SwitchSearch:
         return state, min(pool, key=lambda item: np.linalg.norm(
             np.asarray(item['position'])-anchor)), fresh
 
+    def squad_ground(self, before):
+        """拖动按下点要避开的小队地面坐标；推算已离屏时不再识别，直接返回None。"""
+        if self.squad is not None:
+            predicted = self.squad-(self.camera-self.squad_camera)
+            size = np.array([before.shape[1], before.shape[0]], float)
+            if np.any(predicted < -SQUAD_MARGIN) or np.any(predicted > size+SQUAD_MARGIN):
+                return None
+        arrow = squad_arrow(before)
+        if arrow is None:
+            return None
+        self.squad, self.squad_camera = np.asarray(arrow, float), self.camera.copy()
+        return self.squad+[0., goto.ARROW_GROUND_OFFSET]
+
     def pan(self, drag, before):
         """发送一次观察用镜头手势并用前后两帧配准实测镜头位移；返回(拖后帧, 镜头位移)。"""
-        arrow = squad_arrow(before)
-        ground = None if arrow is None else np.asarray(arrow)+[0., goto.ARROW_GROUND_OFFSET]
+        ground = self.squad_ground(before)
         self.session.begin_target('switch_search_pan')
-        pan_scene(self.session, drag, squad_ground=ground)
+        pan_scene(self.session, drag, squad_ground=ground, settle=None)
         self.pans += 1
         after = self.runner.map_frame(track=False)
-        shift = content_shift(before, after, drag)
+        first = self.features[1] if self.features is not None and self.features[0] is before else None
+        second = facility_frame(after, [])
+        self.features = (after, second)
+        shift = content_shift(before, after, drag, first, second)
         if shift is None:
             # 配准失败时按当前增益估算，只用于决定下一次拖动，不作为点击依据；前后两帧留证查原因。
             self.unmeasured += 1
