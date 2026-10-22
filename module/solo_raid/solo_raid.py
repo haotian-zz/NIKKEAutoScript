@@ -5,7 +5,7 @@ from module.logger import logger
 from module.simulation_room.assets import AUTO_BURST, AUTO_SHOOT, END_FIGHTING, PAUSE
 from module.solo_raid.assets import *
 from module.solo_raid.challenge import SoloRaidChallenge
-from module.ui.assets import FIGHT_QUICKLY_CHECK, FIGHT_QUICKLY_MAX, FIGHT_QUICKLY_MIN, MAIN_CHECK
+from module.ui.assets import FIGHT_QUICKLY_CHECK, FIGHT_QUICKLY_MAX, FIGHT_QUICKLY_MIN, GOTO_MAIN, MAIN_CHECK
 from module.ui.page import page_main
 
 
@@ -294,6 +294,9 @@ class SoloRaid(SoloRaidChallenge):
                 continue
             if any(page.check_button and self.appear(page.check_button, offset=30) for page in self.ui_pages):
                 self.ui_ensure(page_main)
+                continue
+            # 上个任务留下的活动页等没有页面模板，用左下角大厅按钮回到可识别的页面
+            if self.appear_then_click(GOTO_MAIN, offset=30, interval=3):
                 continue
             self.ui_additional()
 

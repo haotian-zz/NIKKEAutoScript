@@ -201,5 +201,25 @@ class RaidRecoveryTests(unittest.TestCase):
         runner.ui_ensure.assert_not_called()
         runner.ensure_into_soloraid.assert_not_called()
 
+    def test_untemplated_event_page_returns_home_before_entry(self):
+        # Event 任务结束停在活动主页，接续入口要用大厅按钮离开，而不是等到 45 秒超时
+        error = type('Unavailable', (Exception,), {})
+        fn = self.load('enter_normal_raid', dict(PAUSE='pause', page_main='main', logger=Mock(), WaitGuard=lambda *a, **kw: Mock(),
+                       GOTO_MAIN='home', MAIN_CHECK='main-check', FIGHT_HISTORY='history', SOLO_RAID_CHECK='raid',
+                       END_FIGHTING='end', SoloRaidTeamUnavailable=error))
+        state = {'page': 'event'}
+        def click_home(button, **kw):
+            if button == 'home' and state['page'] == 'event':
+                state['page'] = 'main-check'
+                return True
+            return False
+        runner = SimpleNamespace(device=Mock(), appear=lambda button, **kw: button == state['page'],
+                                 appear_then_click=Mock(side_effect=click_home), handle_raid_end_notice=Mock(return_value=False),
+                                 raid_editor_visible=Mock(return_value=False), dismiss_raid_result=Mock(return_value=False),
+                                 ui_pages=[], ui_additional=Mock(), ensure_into_soloraid=Mock(return_value='entered'))
+        self.assertEqual(fn(runner), 'entered')
+        runner.ui_additional.assert_not_called()
+
+
 if __name__ == '__main__':
     unittest.main()
