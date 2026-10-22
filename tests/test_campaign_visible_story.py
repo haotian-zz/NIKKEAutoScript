@@ -384,6 +384,24 @@ class VisibleStoryTests(unittest.TestCase):
         self.runner.marker_pans = 4
         self.assertFalse(self.runner.reveal_marked_area(self.field))
 
+    def test_far_edge_marker_is_tapped_once_to_move_camera_to_target(self):
+        """实录21-15：贴在顶栏下的离屏菱形点一次由游戏移镜头，最多两次后回到小步平移。"""
+        marker = dict(kind='edge', position=[651., 225.], confidence=.95)
+        self.ns['story_markers'] = Mock(return_value=[marker])
+        self.ns['squad_arrow'].return_value = [1100., 400.]
+        self.ns['goto'].ARROW_GROUND_OFFSET = 90.
+        self.assertTrue(self.runner.reveal_marked_area(self.field))
+        self.session.tap_verified_ui.assert_called_once()
+        point, validate = self.session.tap_verified_ui.call_args.args
+        self.assertEqual(point, [651., 225.])
+        self.assertTrue(validate(self.field))
+        self.ns['pan_scene'].assert_not_called()
+        self.session.tap.assert_not_called()
+        self.runner.marker_jumps = 2
+        self.assertTrue(self.runner.reveal_marked_area(self.field))
+        self.ns['pan_scene'].assert_called_once()
+        self.assertEqual(self.session.tap_verified_ui.call_count, 1)
+
     def test_changing_marker_does_not_move_camera(self):
         """两帧标记不一致时不按旧菱形规划镜头。"""
         self.ns['story_markers'] = Mock(side_effect=[

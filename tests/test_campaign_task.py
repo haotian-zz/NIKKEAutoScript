@@ -28,6 +28,14 @@ def load(name, **namespace):
     return namespace[name]
 
 
+def lobby_runner(main_check, **values):
+    """组装带独立加载大厅锚点等待的替身，替身sleep不推进真实时间。"""
+    runner = SimpleNamespace(device=Mock(), lobby_popup=Mock(return_value=False), **values)
+    anchor = load('lobby_anchor', MAIN_CHECK=main_check, logger=Mock(), LOBBY_POPUP_LIMIT=5)
+    runner.lobby_anchor = lambda popups: anchor(runner, popups)
+    return runner
+
+
 class CampaignStartTests(unittest.TestCase):
 
     def test_recovered_notification_map_does_not_need_a_numbered_lobby_quest(self):
@@ -364,10 +372,11 @@ class CampaignStartTests(unittest.TestCase):
     def test_lobby_fade_waits_for_matching_fresh_quest_frames(self):
         """首帧空OCR和变化中的任务都不能直接触发入口，须等两次相同有效任务。"""
         clock = Mock(side_effect=[0., .1, .5, .9, 1.3])
-        fn = load('confirm_lobby_quest', time=SimpleNamespace(monotonic=clock), MAIN_CHECK=object())
-        runner = SimpleNamespace(device=Mock(), appear=Mock(return_value=True),
-                                 quest_stage=Mock(side_effect=[None, (20, 31), (21, 1), (21, 1)]),
-                                 lobby_sortie_instruction=False)
+        main = object()
+        fn = load('confirm_lobby_quest', time=SimpleNamespace(monotonic=clock), MAIN_CHECK=main, logger=Mock())
+        runner = lobby_runner(main, appear=Mock(return_value=True),
+                              quest_stage=Mock(side_effect=[None, (20, 31), (21, 1), (21, 1)]),
+                              lobby_sortie_instruction=False)
         self.assertEqual(fn(runner), ((21, 1), False))
         self.assertEqual(runner.device.screenshot.call_count, 4)
         runner.device.click_xy.assert_not_called()
@@ -387,16 +396,37 @@ class CampaignStartTests(unittest.TestCase):
     def test_lobby_stability_window_starts_after_cold_ocr_initialization(self):
         """模型首次加载七秒后仍须允许第二次新帧确认，不能把冷启动误作任务消失。"""
         clock = SimpleNamespace(now=0.)
-        fn = load('confirm_lobby_quest', time=SimpleNamespace(monotonic=lambda: clock.now), MAIN_CHECK=object())
+        main = object()
+        fn = load('confirm_lobby_quest', time=SimpleNamespace(monotonic=lambda: clock.now), MAIN_CHECK=main,
+                  logger=Mock())
         def read():
             """首帧模拟实际OCR冷加载耗时，返回真实可解析任务。"""
             clock.now = max(clock.now, 7.)
             return (21, 1)
-        runner = SimpleNamespace(device=Mock(), appear=Mock(return_value=True),
-                                 quest_stage=Mock(side_effect=read), lobby_sortie_instruction=False)
+        runner = lobby_runner(main, appear=Mock(return_value=True),
+                              quest_stage=Mock(side_effect=read), lobby_sortie_instruction=False)
         runner.device.sleep.side_effect = lambda seconds: setattr(clock, 'now', clock.now+seconds)
         self.assertEqual(fn(runner), ((21, 1), False))
         self.assertEqual(runner.device.screenshot.call_count, 2)
+
+    def test_daily_reward_popup_is_closed_before_and_during_lobby_confirmation(self):
+        """实录每日奖励浮层先遮住锚点、确认窗口中又淡入：按模板关闭后重新确认，不超过五次。"""
+        clock = SimpleNamespace(now=0.)
+        main = object()
+        fn = load('confirm_lobby_quest', time=SimpleNamespace(monotonic=lambda: clock.now), MAIN_CHECK=main,
+                  logger=Mock(), LOBBY_POPUP_LIMIT=5)
+        visible = iter([False, True, False, True, True])
+        runner = lobby_runner(main, appear=Mock(side_effect=lambda *a, **k: next(visible)),
+                              quest_stage=Mock(return_value=(21, 15)), lobby_sortie_instruction=False)
+        runner.lobby_popup.side_effect = [True, True]
+        runner.device.sleep.side_effect = lambda seconds: setattr(clock, 'now', clock.now+seconds)
+        self.assertEqual(fn(runner), ((21, 15), False))
+        self.assertEqual(runner.lobby_popup.call_count, 2)
+        runner.device.click_xy.assert_not_called()
+        runner.appear = Mock(return_value=False)
+        runner.lobby_popup = Mock(return_value=True)
+        self.assertIsNone(fn(runner))
+        self.assertEqual(runner.lobby_popup.call_count, 5)
 
     def test_sortie_instruction_is_distinct_from_a_numbered_stage(self):
         """完整出击指令独立保存，活动或残缺文字不得虚构下一关，也不接受弱分文本。"""

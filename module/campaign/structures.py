@@ -9,7 +9,7 @@ from module.campaign.navigation import controls as goto
 from module.campaign.navigation.camera_navigation import pan_scene
 from module.campaign.navigation.movement_feedback import TargetTriggered
 from module.campaign.navigation.hybrid_localization import locate_squad, position_feedback
-from module.campaign.facility_memory import FacilityMemory, stable_facilities
+from module.campaign.facility_memory import FacilityMemory, FacilityUnconfirmed, stable_facilities
 from module.campaign.map.catalog import chapter_map
 from module.campaign.map.annotations import validate_annotations
 from module.campaign.vision.enemy_ring import clickable_ring
@@ -171,7 +171,13 @@ def recover_visible_structure(runner, field, allow_unanchored=False):
                             inputs=runner.structure_inputs, pans=runner.structure_pans)
     session.preview(fresh)
     if catalog is not None:
-        registered = catalog.observe(fresh, stable_facilities(first, second))
+        try:
+            registered = catalog.observe(fresh, stable_facilities(first, second))
+        except FacilityUnconfirmed as exc:
+            # 目录只提供去重和历史；无法重定位时不新建编号，本轮由单目标预算限制重复尝试。
+            session.record_evidence('facility_catalog_unrelocated', fresh, reason=str(exc))
+            registered, catalog = [], None
+    if catalog is not None:
         candidates = [dict(item, facility_id=known['facility_id']) for item in candidates
                       for known in registered if known['kind'] == item['kind']
                       and np.linalg.norm(np.asarray(known['position'])-item['position']) < 1.
@@ -185,12 +191,34 @@ def recover_visible_structure(runner, field, allow_unanchored=False):
     if ground is not None:
         candidates = [item for item in candidates
                       if np.linalg.norm(np.asarray(item['position']) - ground) <= 1000.]
+    searched = None
+    searches = getattr(runner, 'switch_searches', None)
+    if (isinstance(searches, dict) and ground is not None and runner.structure_inputs < 2
+            and not any(item['kind'] == 'ground_mechanism' for item in candidates)
+            and searches.get(blocked_goal, 0) < 1):
+        # 门旁平台可能只是单向到达端；每个受阻目标先螺旋找一次关闭机关，找不到再退回平台尝试。
+        from module.campaign.switch_search import SwitchSearch
+        searches[blocked_goal] = searches.get(blocked_goal, 0) + 1
+        searched = SwitchSearch(runner, catalog, skip=runner.switch_skip).run()
+        session.record_evidence('switch_search_result', searched.get('field', fresh),
+                                **{key: value for key, value in searched.items() if key != 'field'})
+        if searched['state'] == 'entry':
+            return 'entry'
+        if searched['state'] == 'found':
+            fresh = searched['field']
+            candidates = [searched['target']]
+        else:
+            # 镜头已离开原位置，旧帧中的平台坐标不再可用；回到下一轮重新扫描与受阻判定。
+            runner.memory.previous = None
+            return 'scouted'
     if candidates and runner.structure_inputs < 2:
         target = (candidates[0] if ground is None else min(candidates, key=lambda item: (
             item['kind'] != 'ground_mechanism', np.linalg.norm(np.asarray(item['position']) - ground))))
         # 仅每次真实胜利前的首个设施尝试补地图证据，普通点击与后续恢复不承担反复全图定位成本。
         before_location = None
-        if runner.structure_inputs == 0:
+        if searched is not None:
+            runner.switch_skip.add(target['search_key'])
+        elif runner.structure_inputs == 0:
             before_location = locate_squad(session, 'structure_before_location')
             session.pause(.25)
             fresh = runner.map_frame()
@@ -206,7 +234,7 @@ def recover_visible_structure(runner, field, allow_unanchored=False):
         session.record_evidence('structure_attempt', fresh, target=target, arrays=dict(field=fresh),
                                 squad_anchor='unobserved' if ground is None else 'arrow_ground')
         runner.structure_inputs += 1
-        if catalog is not None:
+        if catalog is not None and 'facility_id' in target:
             catalog.attempt(target['facility_id'], blocked_goal)
         logger.info(f"尝试可见设施：{target['kind']}／{target['state']}，位置 {target['position']}；"
                     '交互结果保持未确认，下一步重新扫描实际道路和敌人。')
@@ -224,7 +252,7 @@ def recover_visible_structure(runner, field, allow_unanchored=False):
                                     after=after_location, result=location_result, arrays=dict(field=observed))
         session.record_evidence('structure_observed', observed, attempted=target,
                                 state='unconfirmed', position_feedback=location_result, arrays=dict(field=observed))
-        if catalog is not None:
+        if catalog is not None and 'facility_id' in target:
             catalog.feedback(target['facility_id'], location_result)
         # 镜头或小队可能已经移动，旧观察身份不得阻止新画面的独立目标复核。
         runner.memory.previous = None

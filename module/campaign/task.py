@@ -25,6 +25,9 @@ from module.ui.assets import MAIN_CHECK
 from module.ui.page import page_main
 from module.ui.ui import UI
 
+# 切日后大厅可能连续弹出多个奖励／活动页，超过上限仍未见大厅则交人工确认。
+LOBBY_POPUP_LIMIT = 5
+
 
 def chapter_number(value):
     """解析当前进度或 1 至 50 章的选择，拒绝无效编号以免启动后误选。"""
@@ -54,30 +57,65 @@ class AutoPush(UI):
         match = re.search(r'(?:通关|CLEAR).*?([1-9]\d?)\s*[-－]\s*([1-9]\d?)', text, re.I)
         return tuple(map(int, match.groups())) if match else None
 
+    def lobby_popup(self):
+        """大厅首屏偶发的每日奖励、登录活动、礼包和公告浮层：只用既有模板／文字处理器，返回是否处理。
+
+        实录 2026-10-21 切日后连续出现：两次「30天成长补给品每日奖励」，随后是活动登录奖励页
+        （全部领取并返回）。它们遮住主线任务导致入口拒绝；登录奖励沿用日常任务的领取逻辑。
+        """
+        return bool(self.handle_reward(interval=1) or self.handle_login_reward() or self.handle_paid_gift()
+                    or self.handle_event_popup() or self.handle_announcement())
+
+    def lobby_anchor(self, popups):
+        """等待大厅锚点；被已知奖励／公告浮层遮住时按模板关闭，返回(是否确认, 已处理浮层数)。
+
+        调用前已确认过大厅，浮层淡入淡出期间锚点短暂缺失只做有界观察（约3秒），不点击未知画面。
+        """
+        for _ in range(10):
+            self.device.screenshot()
+            if self.appear(MAIN_CHECK, offset=30):
+                return True, popups
+            if popups < LOBBY_POPUP_LIMIT and self.lobby_popup():
+                popups += 1
+                logger.info(f'大厅出现奖励或公告浮层，已按既有模板关闭（{popups}/{LOBBY_POPUP_LIMIT}），重新确认主线任务')
+                self.device.sleep(1.)
+                continue
+            self.device.sleep(.3)
+        return False, popups
+
     def confirm_lobby_quest(self):
         """大厅首次显示可能尚在淡入，四秒内等待两帧相同有效任务，不以空OCR立即终止。
 
         每帧重核大厅锚点，数字任务与完整出击指令分别比较；没有确认时不发送入口点击。
+        锚点被已知浮层遮住时最多处理五次，关闭后重新开始稳定窗口。
         """
-        self.device.screenshot()
-        if not self.appear(MAIN_CHECK, offset=30):
-            return None
-        current = self.quest_stage()
-        previous = ('sortie',) if getattr(self, 'lobby_sortie_instruction', False) else current
-        # 首次OCR可能初始化模型；稳定窗口从组件已可读取后起算，不能读对首帧却无第二帧机会。
-        deadline = time.monotonic() + 4.
-        while time.monotonic() < deadline:
-            self.device.sleep(.3)
-            self.device.screenshot()
-            if not self.appear(MAIN_CHECK, offset=30):
+        popups = 0
+        while True:
+            seen, popups = self.lobby_anchor(popups)
+            if not seen:
                 return None
             current = self.quest_stage()
-            sortie = getattr(self, 'lobby_sortie_instruction', False)
-            identity = ('sortie',) if sortie else current
-            if identity is not None and identity == previous:
-                return current, sortie
-            previous = identity
-        return None
+            previous = ('sortie',) if getattr(self, 'lobby_sortie_instruction', False) else current
+            # 首次OCR可能初始化模型；稳定窗口从组件已可读取后起算，不能读对首帧却无第二帧机会。
+            deadline = time.monotonic() + 4.
+            restart = False
+            while time.monotonic() < deadline:
+                self.device.sleep(.3)
+                self.device.screenshot()
+                if not self.appear(MAIN_CHECK, offset=30):
+                    restart = popups < LOBBY_POPUP_LIMIT and self.lobby_popup()
+                    break
+                current = self.quest_stage()
+                sortie = getattr(self, 'lobby_sortie_instruction', False)
+                identity = ('sortie',) if sortie else current
+                if identity is not None and identity == previous:
+                    return current, sortie
+                previous = identity
+            if not restart:
+                return None
+            popups += 1
+            logger.info(f'大厅出现奖励或公告浮层，已按既有模板关闭（{popups}/{LOBBY_POPUP_LIMIT}），重新确认主线任务')
+            self.device.sleep(1.)
 
     def recover_settlement(self):
         """继续上次中断后遗留的竖屏结算，不将旧胜利计入本次推图。

@@ -253,11 +253,14 @@ class VisibleStoryRunner:
         self.manual_ex_seen = False
         self.guided_quests = set()
         self.marker_pans = 0
+        self.marker_jumps = 0
         self.blocked_views = 0
         self.structure_inputs = 0
         self.structure_pans = 0
         self.facilities = None
         self.facility_survey_attempted = False
+        # 受阻目标 → 已做螺旋机关搜索次数；已点过但未解决的搜索键（同状态下不重复点击）。
+        self.switch_searches, self.switch_skip = {}, set()
         self.entry_outcome = None
         self.journal = ClearanceJournal(owner.config.config_name)
         self.journal.begin(owner.current_chapter)
@@ -406,7 +409,7 @@ class VisibleStoryRunner:
             guard.progress()
         logger.info(f'地图战斗已确认胜利：{stage_text(stage)}；留在地图继续扫描，不要求每次胜利都改变任务栏。')
         self.deferred.clear()
-        self.marker_pans = 0
+        self.marker_pans = self.marker_jumps = 0
         self.blocked_views = self.structure_inputs = self.structure_pans = 0
         return True
 
@@ -588,6 +591,30 @@ class VisibleStoryRunner:
         length = np.linalg.norm(drag)
         if length < 120.:
             return False
+        clamped = target[1] <= 260. or target[0] <= 100. or target[0] >= 1676.
+        if self.marker_jumps < 2 and length > 250. and clamped:
+            # 实录 2026-10-21（21-15）：目标在多屏之外时菱形贴在顶栏下沿（y≈225）或左右边缘，480px
+            # 小步平移追不上；            # 点一下边缘菱形，游戏会把镜头移到任务目标（同头像回中）。只移动镜头，之后重新扫描脚圈；
+            # 场内菱形仍按原规则只平移镜头。
+            self.marker_jumps += 1
+            point = target.tolist()
+
+            def validate(latest):
+                """真正输入前最新帧在原位置仍有同一主线菱形。"""
+                return any(item['kind'] != 'cue' and np.linalg.norm(np.asarray(item['position'])-target) <= 10.
+                           for item in story_markers(latest))
+
+            self.session.begin_target('marker_jump')
+            self.session.record_evidence('marker_jump', fresh, marker=marker, arrays=dict(field=fresh))
+            try:
+                tapped = self.session.tap_verified_ui(point, validate)
+            except TargetTriggered:
+                return True
+            if tapped:
+                self.memory.previous = None
+                logger.info('已点击任务菱形，由游戏把镜头移到主线目标；重新扫描真实脚圈，不将菱形作为战斗落点。')
+                self.session.pause(1.5)
+                return True
         arrow = squad_arrow(fresh)
         if arrow is None and squad_offscreen(fresh) is None:
             if self.quest is not None and self.quest not in self.owner.story_wins:
