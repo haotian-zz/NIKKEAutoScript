@@ -254,6 +254,11 @@ class RecoveryOrderTests(unittest.TestCase):
             frames = iter([[target], [], [], []])
             self.assertEqual(structure.watch_switch(self.runner, target)[1], 'unconfirmed')
 
+    def test_spiral_budget_covers_every_designed_pan(self):
+        """实录22-27：每屏四帧检测约13秒，时间预算须够走完设计的全部拖动，不能在第4屏截断。"""
+        self.assertGreaterEqual(structure.SPIRAL_SECONDS, 13. * (structure.SPIRAL_PANS + 1))
+        self.assertLess(structure.SPIRAL_SECONDS, structure.BLOCKED_GOAL_SECONDS)
+
     def test_blocked_goal_past_time_limit_stops_and_reports(self):
         """同一受阻目标超过总时限即停止，不再搜索或点击。"""
         self.runner.blocked_since = {'quest:(21, 15)': 0.}
