@@ -190,6 +190,23 @@ class ChapterSweepTests(unittest.TestCase):
         with self.assertRaisesRegex(SweepUnconfirmed, '斜向'):
             self.sweep.run()
 
+    def test_unseen_squad_tracked_by_accumulated_content_shift(self):
+        """实录22-36：拖几屏后箭头被任务栏旁的 HUD 排除；按看到时的位置加累计位移推算，画面内避开，画面外判离屏。"""
+        field = np.zeros((999, 1776, 3), np.uint8)
+        arrow = Mock(return_value=np.array([600., 400.]))
+        with patch.object(sweep_module, 'squad_arrow', arrow), \
+                patch.object(sweep_module, 'squad_offscreen', return_value=None), \
+                patch.object(sweep_module.goto, 'ARROW_GROUND_OFFSET', 90.):
+            np.testing.assert_allclose(self.sweep.pan_anchor(field), [600., 490.])
+            arrow.return_value = None
+            self.sweep.content = np.array([1060., -90.])
+            np.testing.assert_allclose(self.sweep.pan_anchor(field), [1660., 400.])
+            self.sweep.content = np.array([1400., -90.])
+            self.assertIsNone(self.sweep.pan_anchor(field))
+            self.sweep.squad_seen, self.sweep.occlusion_checked = None, True
+            with self.assertRaises(SweepUnconfirmed):
+                self.sweep.pan_anchor(field)
+
     def test_new_enemy_interrupts_survey_for_immediate_processing(self):
         """发现当前可点击敌人立即结束巡检，战斗之后由新巡检重新核验全章。"""
         def found(drag, before=None):

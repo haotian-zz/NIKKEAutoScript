@@ -545,6 +545,7 @@ class RecoveryOrderTests(unittest.TestCase):
         """实录22-36：巡到右缘时左侧离屏头像被小地图挡住；镜头继续远离小队就沿用离屏结论，往回才重新确认。"""
         survey = object.__new__(survey_module.FacilitySurvey)
         survey.content, survey.squad_away, survey.occlusion_checked = np.zeros(2), None, True
+        survey.squad_seen = None
         survey.proof, survey.session = {}, Mock()
         # 离屏推算在清怪巡检基类里，设施巡检与清怪巡检共用。
         # 测试导入时 sys.modules 被临时替换，按函数自身的全局表打补丁。

@@ -23,6 +23,8 @@ VERTICAL_STEP = 260.
 EDGE_CONFIRMATIONS = 2
 # 确认离屏后镜头往回（朝小队方向）累计移动超过这么多像素，就不再沿用离屏结论，重新识别。
 SQUAD_RETURN = 40.
+# 按累计位移推算的小队落点超出客户区这么多像素才算离屏（主平移有视差误差）。
+SQUAD_OFFSCREEN_MARGIN = 120.
 
 
 class SweepUnconfirmed(RuntimeError):
@@ -84,6 +86,8 @@ class ChapterSweep:
         self.coverage_warnings = []
         # 巡检开始以来画面内容的累计实测位移；确认小队离屏时记下离屏方向和当时的累计位移。
         self.content, self.squad_away, self.occlusion_checked = np.zeros(2), None, False
+        # 最后一次看到小队箭头时的地面点与当时的累计位移。
+        self.squad_seen = None
         self.started = time.monotonic()
         self.found = None
         self.proof = dict(state='incomplete', rows=0, pans=0, pending=[])
@@ -186,9 +190,21 @@ class ChapterSweep:
         """
         arrow = squad_arrow(field)
         if arrow is not None:
-            self.squad_away = None
-            return np.asarray(arrow)+[0., goto.ARROW_GROUND_OFFSET]
+            ground = np.asarray(arrow)+[0., goto.ARROW_GROUND_OFFSET]
+            self.squad_away, self.squad_seen = None, (ground, self.content.copy())
+            return ground
         marker = squad_offscreen(field)
+        if marker is None and self.squad_seen is not None:
+            # 实录 2026-10-22（22-36）：清怪巡检拖了四屏后小队在右上角穹顶里，箭头贴着任务栏被 HUD 排除，
+            # 也没有离屏头像。小队巡检期间不动，按看到时的位置加累计实测位移推算。
+            ground, content = self.squad_seen
+            projected = ground+self.content-content
+            height, width = field.shape[:2]
+            margin = SQUAD_OFFSCREEN_MARGIN
+            if not (-margin <= projected[0] <= width+margin and -margin <= projected[1] <= height+margin):
+                return None
+            logger.info(f'未识别到小队箭头，按累计位移推算小队在 {np.round(projected).astype(int).tolist()}，拖动时避开。')
+            return projected
         if marker is None and self.squad_away is not None:
             direction, content = self.squad_away
             if (self.content-content) @ direction >= -SQUAD_RETURN:
