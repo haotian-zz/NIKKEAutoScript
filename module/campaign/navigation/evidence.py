@@ -22,7 +22,8 @@ def write_image(path, image, *args):
 # 受阻决策关键帧另存一份不回绕的副本：实录 2026-10-21（22-27）目标旁观察帧几分钟后即被32槽覆盖，
 # 无法回放“为什么没找到机关”。每会话最多 KEEP_LIMIT 份。
 KEEP_EVENTS = frozenset(('goal_view_result', 'switch_search_view', 'switch_search_result', 'structure_attempt',
-                         'switch_activated', 'structure_wait_timeout', 'gate_enemy_attempt', 'structure_probe'))
+                         'switch_activated', 'structure_wait_timeout', 'gate_enemy_attempt', 'structure_probe',
+                         'facility_survey_view', 'chapter_sweep_motion'))
 KEEP_LIMIT = 300
 
 
