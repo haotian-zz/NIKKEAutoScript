@@ -19,6 +19,13 @@ def write_image(path, image, *args):
     return True
 
 
+# 受阻决策关键帧另存一份不回绕的副本：实录 2026-10-21（22-27）目标旁观察帧几分钟后即被32槽覆盖，
+# 无法回放“为什么没找到机关”。每会话最多 KEEP_LIMIT 份。
+KEEP_EVENTS = frozenset(('goal_view_result', 'switch_search_view', 'switch_search_result', 'structure_attempt',
+                         'switch_activated', 'structure_wait_timeout', 'gate_enemy_attempt', 'structure_probe'))
+KEEP_LIMIT = 300
+
+
 class ActionEvidence:
     """固定容量记录动作前后帧及原始上下文；每个会话单独归档，恢复流程不会覆盖上一会话。
 
@@ -30,7 +37,7 @@ class ActionEvidence:
         """建立会话目录，每次最多保留 capacity 个事件；槽位回绕时同时清理旧图和元数据。"""
         self.folder = root / 'traces' / datetime.now().strftime('%Y%m%d_%H%M%S_%f')
         self.folder.mkdir(parents=True, exist_ok=True)
-        self.capacity, self.sequence, self.pending = capacity, 0, None
+        self.capacity, self.sequence, self.pending, self.kept = capacity, 0, None, 0
 
     def record(self, event, field=None, arrays=None, **context):
         """保存一个证据事件并返回槽位；上下文只含动作、章节、分数和坐标，数组按原数值序列化。"""
@@ -45,6 +52,14 @@ class ActionEvidence:
         if arrays:
             np.savez_compressed(slot.with_suffix('.npz'), **arrays)
         self.save(slot, data)
+        if event in KEEP_EVENTS and self.kept < KEEP_LIMIT:
+            keep = self.folder / 'keep'
+            keep.mkdir(exist_ok=True)
+            name = keep / f'{data["sequence"]:04d}-{event}'
+            if field is not None:
+                write_image(str(name) + '.jpg', field, [cv2.IMWRITE_JPEG_QUALITY, 88])
+            self.save(name, data)
+            self.kept += 1
         return slot, data
 
     def save(self, slot, data):

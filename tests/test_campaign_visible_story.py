@@ -702,6 +702,18 @@ class EvidenceTests(unittest.TestCase):
             self.assertTrue((recorder.folder / '01-before.jpg').exists())
             self.assertFalse((recorder.folder / '01.npz').exists())
 
+    def test_blocked_decision_frames_survive_slot_wraparound(self):
+        """实录22-27：目标旁观察帧被循环槽覆盖；关键决策另存一份不回绕的副本。"""
+        with tempfile.TemporaryDirectory() as folder:
+            recorder = ActionEvidence(Path(folder), capacity=2)
+            field = np.zeros((20, 20, 3), np.uint8)
+            recorder.record('goal_view_result', field, state='none')
+            for _ in range(3):
+                recorder.record('mouse_click', field)
+            self.assertTrue((recorder.folder / 'keep' / '0000-goal_view_result.jpg').exists())
+            self.assertTrue((recorder.folder / 'keep' / '0000-goal_view_result.json').exists())
+            self.assertEqual(len(list((recorder.folder / 'keep').glob('*.json'))), 1)
+
 
 if __name__ == '__main__':
     unittest.main()
