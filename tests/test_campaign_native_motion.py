@@ -45,6 +45,15 @@ class NativeMotionTests(unittest.TestCase):
         self.assertEqual(progress.update(3., dict(state='stationary')), 'waiting')
         self.assertEqual(progress.update(4., dict(state='stationary')), 'stalled')
 
+    def test_late_stop_near_soft_deadline_still_confirms_stall(self):
+        """实录21-32：移动到14秒、17秒起静止且约3秒一帧，不能在凑满停滞证据前判为观测未知。"""
+        progress = ClickProgress(0.)
+        for now in [3., 10., 14.]:
+            self.assertEqual(progress.update(now, dict(state='moving')), 'waiting')
+        self.assertEqual(progress.update(17.1, dict(state='stationary')), 'waiting')
+        self.assertEqual(progress.update(20.4, dict(state='stationary')), 'waiting')
+        self.assertEqual(progress.update(23.7, dict(state='stationary')), 'stalled')
+
     def test_unknown_breaks_stall_evidence(self):
         """失联前的静止样本不能与找回后的样本拼成停滞。"""
         progress = ClickProgress(0.)

@@ -74,9 +74,11 @@ def gate_enemies(first, second, markers):
 class SwitchSearch:
     """有界螺旋镜头搜索；任何真实备战弹窗立即交回战斗流程，不把找到当作开门。"""
 
-    def __init__(self, runner, catalog=None, pans=20, seconds=180., skip=()):
-        """skip是本受阻点已尝试过且未解决的搜索键，避免同状态下重复点同一个机关。"""
+    def __init__(self, runner, catalog=None, pans=20, seconds=180., skip=(), enemies=True):
+        """skip是本受阻点已尝试过且未解决的搜索键，避免同状态下重复点同一个机关；
+        enemies为False时只找关闭机关（本受阻点守关敌人尝试已达上限）。"""
         self.runner, self.session, self.catalog = runner, runner.session, catalog
+        self.enemies = enemies
         self.drags = spiral_drags()[:pans]
         self.seconds, self.skip = seconds, set(skip)
         self.views, self.pans, self.catalog_errors = 0, 0, 0
@@ -94,7 +96,8 @@ class SwitchSearch:
             return 'entry', None, fresh
         second = detect_objects(fresh, ('ground_mechanism', 'elevator', 'barrier'))
         enemies = []
-        for center, confidence in gate_enemies(first_rings, ring_centers(fresh), story_markers(fresh)):
+        for center, confidence in (gate_enemies(first_rings, ring_centers(fresh), story_markers(fresh))
+                                   if self.enemies else ()):
             key = ('enemy', step, *np.round(center/80.).astype(int).tolist())
             if key not in self.skip:
                 enemies.append(dict(kind='enemy_ring', state='pending', position=center.tolist(),

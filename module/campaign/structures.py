@@ -141,8 +141,10 @@ def attack_gate_enemy(runner, searched, blocked_goal):
     runner.switch_skip.add(target['search_key'])
     tries = runner.gate_enemy_tries
     tries[blocked_goal] = tries.get(blocked_goal, 0) + 1
-    if tries[blocked_goal] < GATE_ENEMY_TRIES:
-        runner.switch_searches[blocked_goal] -= 1
+    # 实录 2026-10-21（21-32）：首领两侧普通敌人和首领同在光幕后，搜索先选中它们，
+    # 走到光幕停住后整次搜索预算也被用掉，关闭机关一直没被找过。敌人尝试不占搜索次数，
+    # 达到上限后的搜索只找机关（见 recover_visible_structure）。
+    runner.switch_searches[blocked_goal] -= 1
     session.begin_target('gate_enemy')
     session.record_evidence('gate_enemy_attempt', fresh, target=target, arrays=dict(field=fresh))
     logger.info(f"目标受阻，先打搜索发现的未清敌人 {target['position']}；开门须等首领目标重新尝试时确认。")
@@ -227,7 +229,8 @@ def recover_visible_structure(runner, field, allow_unanchored=False):
         # 门旁平台可能只是单向到达端；每个受阻目标先螺旋找一次关闭机关，找不到再退回平台尝试。
         from module.campaign.switch_search import SwitchSearch
         searches[blocked_goal] = searches.get(blocked_goal, 0) + 1
-        searched = SwitchSearch(runner, catalog, skip=runner.switch_skip).run()
+        enemies = runner.gate_enemy_tries.get(blocked_goal, 0) < GATE_ENEMY_TRIES
+        searched = SwitchSearch(runner, catalog, skip=runner.switch_skip, enemies=enemies).run()
         session.record_evidence('switch_search_result', searched.get('field', fresh),
                                 **{key: value for key, value in searched.items() if key != 'field'})
         if searched['state'] == 'entry':

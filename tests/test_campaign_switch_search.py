@@ -155,9 +155,13 @@ class RecoveryOrderTests(unittest.TestCase):
         self.assertEqual(self.runner.structure_inputs, 0)
         self.runner.wait_entry.return_value = False
         self.runner.gate_enemy_tries['quest:(21, 15)'] = 2
-        result, _ = self.recover(dict(state='enemy', target=enemy, field=self.field))
+        result, finder = self.recover(dict(state='enemy', target=enemy, field=self.field))
         self.assertEqual(result, 'scouted')
-        self.assertEqual(self.runner.switch_searches, {'quest:(21, 15)': 1})
+        self.assertTrue(finder.call_args.kwargs['enemies'])
+        # 实录21-32：光幕后的敌人走不到，第三次也不占搜索次数；之后的搜索只找机关。
+        self.assertEqual(self.runner.switch_searches, {'quest:(21, 15)': 0})
+        result, finder = self.recover(dict(state='exhausted'))
+        self.assertFalse(finder.call_args.kwargs['enemies'])
 
     def test_exhausted_search_rescans_then_falls_back_to_platform(self):
         """搜索无果不点旧帧平台；下一次受阻不再搜索，改为新鲜确认的平台。"""

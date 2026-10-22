@@ -202,7 +202,7 @@ class ClickProgress:
         self.stable_since, self.stable_count = None, 0
 
     def update(self, now, observation):
-        """unknown打断静止证据，不能继承失联前的停稳；只允许moving延长初始等待。"""
+        """unknown打断静止证据，不能继承失联前的停稳；moving及凑停滞证据的静止延长初始等待。"""
         elapsed = now-self.started
         state = observation['state']
         if state == 'moving':
@@ -214,6 +214,10 @@ class ClickProgress:
             self.stable_count += 1
             if self.stable_count >= 3 and now-self.stable_since >= self.stable_seconds:
                 return 'stalled'
+            # 实录 2026-10-21（21-32）：小队17秒才停下，采样约3秒一帧，20秒软时限先到，
+            # 只凑到两次静止样本就判为观测未知并终止整轮。静止是可靠观测，留足凑满停滞证据的时间；
+            # 最多三个样本即有结论，总时限仍封顶。
+            self.soft_deadline = max(self.soft_deadline, now+self.stable_seconds+4.)
         else:
             self.stable_since, self.stable_count = None, 0
         if elapsed >= self.total_limit:
