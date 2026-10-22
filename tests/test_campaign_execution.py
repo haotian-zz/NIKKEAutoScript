@@ -1274,28 +1274,6 @@ class CampaignEntryTests(unittest.TestCase):
         self.campaign.confirm_squad_location = Mock(return_value=snapshot_fixture())
         self.campaign.ensure_chart = Mock(return_value=chart_fixture())
 
-    def main_page_check(self, identities, popups):
-        """按帧注入章节角标与备战弹窗分数，执行真实的主线界面检查。"""
-        from module.campaign.campaign import Campaign
-        campaign = Campaign.__new__(Campaign)
-        campaign.device = Mock(image=np.zeros((999, 1776, 3), np.uint8))
-        campaign.chapter_ocr = Mock()
-        with patch('module.campaign.campaign.chapter_identity', side_effect=identities), \
-                patch('module.campaign.navigation.controls.battle_popup_score', side_effect=popups):
-            return campaign, campaign.check_main_story_page()
-
-    def test_leftover_entry_popup_is_closed_not_fought_before_reading_chapter(self):
-        """实录：上一轮点中敌人后中断，备战弹窗盖住角标；只点关闭，然后读到章节。"""
-        campaign, identity = self.main_page_check([None, (21, 'normal')], [.99])
-        self.assertEqual(identity, (21, 'normal'))
-        campaign.device.click_xy.assert_called_once_with(*ENTRY_CLOSE_POINT)
-
-    def test_popup_that_will_not_close_still_requests_takeover(self):
-        """关两次仍在就按原规则交人工，不无限点击。"""
-        from module.exception import RequestHumanTakeover
-        with self.assertRaises(RequestHumanTakeover):
-            self.main_page_check([None]*5, [.99]*5)
-
     def test_run_uses_executor_instead_of_dry_run(self):
         """正式任务接上执行器；没有偷偷保留只打日志的空跑路径。"""
         self.campaign.dry_run = Mock()

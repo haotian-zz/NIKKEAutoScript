@@ -329,30 +329,16 @@ class Campaign(ModuleBase):
         chapter_identity 会直接抛 ValueError。
         """
         logger.hr('检查主线剧情界面', level=2)
-        from module.campaign.navigation.controls import battle_popup_score
-        from module.campaign.session import ENTRY_CLOSE_POINT
-        closed = 0
-        frame = 1
-        while frame <= MAIN_STORY_PAGE_FRAMES:
+        for frame in range(1, MAIN_STORY_PAGE_FRAMES + 1):
             self.device.screenshot()
             image = cv2.cvtColor(self.device.image, cv2.COLOR_RGB2BGR)
             identity = chapter_identity(image, self.chapter_ocr)
             if identity is not None:
                 logger.info(f'已在主线剧情界面：右下角 {identity[1].upper()} 第 {identity[0]} 章')
                 return identity
-            # 实录 2026-10-21：上一轮在点中敌人后中断，备战弹窗盖住章节角标。只关闭、绝不开战；
-            # 关闭后重新计帧，最多两次，避免与不认识的弹窗来回点击。
-            if closed < 2 and battle_popup_score(image) > .8:
-                closed += 1
-                logger.info('主线地图上残留战斗准备弹窗：仅点击关闭，不进入战斗，然后重新检查章节角标。')
-                self.device.click_xy(*ENTRY_CLOSE_POINT)
-                self.device.sleep(1.5)
-                frame = 1
-                continue
             logger.warning(f'第 {frame}/{MAIN_STORY_PAGE_FRAMES} 帧未读到右下角章节角标。')
             if frame < MAIN_STORY_PAGE_FRAMES:
                 self.device.sleep(MAIN_STORY_PAGE_INTERVAL)
-            frame += 1
         logger.error('当前不在主线剧情界面：右下角读不到章节号与难度标识。请先进入主线地图，'
                      '并确认右下角章节角标没有被弹窗或特效遮挡，然后重新运行任务。')
         raise RequestHumanTakeover

@@ -9,7 +9,8 @@ from module.base.timer import Timer
 from module.base.watchdog import WaitGuard, save_wait_image
 from module.campaign.campaign import Campaign
 from module.campaign.chapter_flow import ChapterOverlayFlow
-from module.campaign.session import CampaignSession
+from module.campaign.navigation.controls import battle_popup_score
+from module.campaign.session import ENTRY_CLOSE_POINT, CampaignSession
 from module.campaign.report import GOAL_REASONS
 from module.campaign.vision import battle
 from module.campaign.vision.chapter import chapter_identity
@@ -208,6 +209,19 @@ class AutoPush(UI):
         self.device.check_resolution(*Campaign.RESOLUTION)
         self.device.screenshot()
         field = cv2.cvtColor(self.device.image, cv2.COLOR_RGB2BGR)
+        # 实录 2026-10-21：上一轮点中敌人后中断，备战弹窗留在地图上，大厅页面识别认不出直接停止。
+        # 只点关闭、绝不开战；最多关两次，仍在就交人工，避免与不认识的弹窗来回点击。
+        for _ in range(2):
+            if battle_popup_score(field) <= .8:
+                break
+            logger.info('地图上残留战斗准备弹窗：仅点击关闭，不进入战斗。')
+            self.device.click_xy(*ENTRY_CLOSE_POINT)
+            self.device.sleep(1.5)
+            self.device.screenshot()
+            field = cv2.cvtColor(self.device.image, cv2.COLOR_RGB2BGR)
+        else:
+            if battle_popup_score(field) > .8:
+                raise RequestHumanTakeover('战斗准备弹窗关闭两次仍在，未进入战斗。')
         if overlay_anchor(field) is None:
             return False
         owner = Campaign(self.config, device=self.device)

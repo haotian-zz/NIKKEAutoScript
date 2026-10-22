@@ -24,6 +24,8 @@ def load(name, **namespace):
     namespace.setdefault('pending_chapter', Mock(return_value=None))
     namespace.setdefault('psutil', SimpleNamespace(virtual_memory=lambda: SimpleNamespace(available=8*1024**3)))
     namespace.setdefault('read_quest_text', Mock(return_value=None))
+    namespace.setdefault('battle_popup_score', Mock(return_value=0.))
+    namespace.setdefault('ENTRY_CLOSE_POINT', (1147, 513))
     exec(compile(ast.Module(body=[node], type_ignores=[]), name, 'exec'), namespace)
     return namespace[name]
 
@@ -86,6 +88,32 @@ class CampaignStartTests(unittest.TestCase):
             fn(runner)
         session.assert_not_called()
         runner.device.click_xy.assert_not_called()
+
+    def test_leftover_entry_popup_is_closed_not_fought(self):
+        """实录：上一轮点中敌人后中断，备战弹窗留在地图上；只点关闭，然后照常判断浮层。"""
+        field = np.zeros((999, 1776, 3), np.uint8)
+        factory = Mock(); factory.RESOLUTION = (1776, 999)
+        fn = load('recover_chapter_overlays', Campaign=factory, overlay_anchor=Mock(return_value=None),
+                  battle_popup_score=Mock(side_effect=[.99, .2]), cv2=cv2, logger=Mock())
+        runner = SimpleNamespace(config=SimpleNamespace(PCClient_ScreenNumber=0, PCClient_GameWindowPosition='center'),
+                                 device=Mock(image=field))
+        self.assertFalse(fn(runner))
+        runner.device.click_xy.assert_called_once_with(1147, 513)
+        factory.assert_not_called()
+
+    def test_entry_popup_that_will_not_close_requests_takeover(self):
+        """关两次仍在就交人工，不无限点击，也不点进入战斗。"""
+        field = np.zeros((999, 1776, 3), np.uint8)
+        factory = Mock(); factory.RESOLUTION = (1776, 999)
+        takeover = type('Takeover', (Exception,), {})
+        fn = load('recover_chapter_overlays', Campaign=factory, overlay_anchor=Mock(return_value=None),
+                  battle_popup_score=Mock(return_value=.99), cv2=cv2, logger=Mock(),
+                  RequestHumanTakeover=takeover)
+        runner = SimpleNamespace(config=SimpleNamespace(PCClient_ScreenNumber=0, PCClient_GameWindowPosition='center'),
+                                 device=Mock(image=field))
+        with self.assertRaises(takeover):
+            fn(runner)
+        self.assertEqual(runner.device.click_xy.call_count, 2)
 
     def test_no_notification_keeps_lobby_path_without_text_models(self):
         """普通界面无锚点时不创建章节OCR/会话，直接交回已有大厅入口。"""
