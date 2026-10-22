@@ -75,6 +75,22 @@ class SwitchSearchTests(unittest.TestCase):
         self.assertIsNone(pan.call_args.kwargs['settle'])
         self.assertTrue(pan.call_args.kwargs['paced'])
 
+    def test_paced_drag_is_detected_through_session_input_proxies(self):
+        """实录 2026-10-22：会话输入代理的send签名是*args/**kwargs，必须看到最里层后端才知道能否按时长拖动。"""
+        from module.campaign.navigation.camera_navigation import supports_paced
+        from module.campaign.session import CampaignInput
+
+        class Paced:
+            def mouse_swipe(self, p1, p2, speed=1.0, paced=False):
+                pass
+
+        class Plain:
+            def mouse_swipe(self, p1, p2, speed=1.0):
+                pass
+
+        self.assertTrue(supports_paced(CampaignInput(Mock(), CampaignInput(Mock(), Paced()))))
+        self.assertFalse(supports_paced(CampaignInput(Mock(), Plain())))
+
     def test_spiral_expands_south_east_then_north_west(self):
         """航点先向南、东各一格，再北、西各两格，逐圈外扩；第一圈8个航点围住起点。"""
         cells = search.spiral_cells()

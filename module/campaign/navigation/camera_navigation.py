@@ -234,6 +234,15 @@ def wait_still(session, limit=PAN_SETTLE):
     return False
 
 
+def supports_paced(handler):
+    """会话输入代理（CampaignInput、GuardedInput）按 handler 链透传关键字参数；看最里层后端是否支持paced。"""
+    seen = set()
+    while 'handler' in vars(handler) and id(handler) not in seen:
+        seen.add(id(handler))
+        handler = vars(handler)['handler']
+    return 'paced' in inspect.signature(handler.mouse_swipe).parameters
+
+
 def pan_scene(session, drag, squad_ground=None, squad_box=None, settle=PAN_SETTLE, paced=False):
     """收起小地图并核对身份后，把客户区拖动端点换算为屏幕坐标发送一次手势。
 
@@ -254,7 +263,7 @@ def pan_scene(session, drag, squad_ground=None, squad_box=None, settle=PAN_SETTL
     start, end = pan_endpoints(region, drag, squad_ground, squad_box)
     session.check()
     origin = np.array(session.win.gui.ClientToScreen(session.win.hwnd, (0, 0)))
-    if paced and 'paced' in inspect.signature(session.win.handler.mouse_swipe).parameters:
+    if paced and supports_paced(session.win.handler):
         session.win.handler.mouse_swipe(tuple(origin + start), tuple(origin + end), paced=True)
     else:
         session.win.handler.mouse_swipe(tuple(origin + start), tuple(origin + end))
