@@ -32,19 +32,45 @@ class SwitchSearchTests(unittest.TestCase):
             patcher = patch.object(search.goto, name, return_value=value)
             patcher.start()
             self.addCleanup(patcher.stop)
-        for name, value in (('squad_arrow', None), ('ring_centers', []), ('story_markers', [])):
+        for name, value in (('squad_arrow', None), ('ring_centers', []), ('story_markers', []),
+                            ('content_shift', None)):
             patcher = patch.object(search, name, return_value=value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        # 小步航点、增益1、配准不可用时按增益估算：相邻航点恰好一次拖动，便于数手势。
+        for name, value in (('SPIRAL_UNIT', np.array([300., 200.])), ('INITIAL_GAIN', 1.),
+                            ('WAYPOINT_TOLERANCE', np.array([50., 50.]))):
+            patcher = patch.object(search, name, value)
             patcher.start()
             self.addCleanup(patcher.stop)
 
     def test_spiral_expands_south_east_then_north_west(self):
-        """先向南、东各一屏，再北、西各两屏，逐圈外扩；手势是手指方向。"""
-        drags = search.spiral_drags()
-        self.assertEqual(len(drags), 20)
-        self.assertEqual([tuple(d) for d in drags[:6]], [
-            (0., -search.VERTICAL_DRAG), (-search.HORIZONTAL_DRAG, 0.),
-            (0., search.VERTICAL_DRAG), (0., search.VERTICAL_DRAG),
-            (search.HORIZONTAL_DRAG, 0.), (search.HORIZONTAL_DRAG, 0.)])
+        """航点先向南、东各一格，再北、西各两格，逐圈外扩；第一圈8个航点围住起点。"""
+        cells = search.spiral_cells()
+        self.assertEqual([tuple(cell) for cell in cells[:8]], [
+            (0, 1), (1, 1), (1, 0), (1, -1), (0, -1), (-1, -1), (-1, 0), (-1, 1)])
+
+    def test_pans_follow_measured_shift_until_waypoint_reached(self):
+        """实测22-27：520px竖拖画面只动约0.45倍；按实测位移连拖到离航点不足四分之一屏才取帧。"""
+        with patch.object(search, 'SPIRAL_UNIT', np.array([1420., 800.])), \
+                patch.object(search, 'INITIAL_GAIN', .45), \
+                patch.object(search, 'WAYPOINT_TOLERANCE', np.array([450., 250.])), \
+                patch.object(search, 'detect_objects', return_value=[]), \
+                patch.object(search, 'pan_scene') as pan:
+            search.content_shift.side_effect = lambda before, after: .45*pan.call_args.args[1]
+            finder = search.SwitchSearch(self.runner, pans=1)
+            finder.move_to(1)
+        self.assertEqual(pan.call_count, 3)
+        self.assertTrue(all(abs(call.args[1][1]) <= search.VERTICAL_DRAG for call in pan.call_args_list))
+        self.assertLessEqual(abs(finder.camera[1]-800.), 250.)
+
+    def test_map_boundary_stops_waypoint_after_two_still_pans(self):
+        """连续两次拖动画面几乎不动：到了地图边界，停在原处不再空拖。"""
+        with patch.object(search, 'pan_scene') as pan:
+            search.content_shift.return_value = np.array([3., -2.])
+            finder = search.SwitchSearch(self.runner, pans=1)
+            finder.move_to(1)
+        self.assertEqual(pan.call_count, 2)
 
     def test_switch_found_after_pans_needs_two_of_four_frames(self):
         """两帧一致即结束本屏；第三屏单帧闪现补到四帧也不算；第四屏烟雾漏检一帧，四帧三帧命中即返回。"""
@@ -97,8 +123,8 @@ class SwitchSearchTests(unittest.TestCase):
         self.assertEqual(result['step'], 1)
         self.assertTrue(result['complete'])
         drags = [tuple(call.args[1]) for call in pan.call_args_list]
-        self.assertEqual(drags[:3], [tuple(d) for d in search.spiral_drags()[:3]])
-        self.assertEqual(drags[3:], [tuple(-d) for d in search.spiral_drags()[2:0:-1]])
+        # 南、东、北三个航点各一拖；倒回时从第3航点(1,0)一次斜拖回第1航点(0,1)。
+        self.assertEqual(drags, [(0., -200.), (-300., 0.), (0., 200.), (300., -200.)])
 
     def test_switch_later_in_spiral_beats_earlier_enemy(self):
         """实录22-27：第1屏是光幕后的首领组，第3屏才有关闭机关；连续看完时直接返回机关，不去打敌人。"""
@@ -156,7 +182,7 @@ class SwitchSearchTests(unittest.TestCase):
         self.assertEqual(result['state'], 'exhausted')
 
     def test_resumed_spiral_only_pans_through_seen_screens(self):
-        """续看第4屏：前4次拖动照常重放镜头，但第0～3屏不取帧，不会再选中那批敌人。"""
+        """续看第4个航点：按实测位移直接移过去，第0～3屏不取帧，不会再选中那批敌人。"""
         ring = [(np.array([974., 147.]), .88)]
         with patch.object(search, 'detect_objects', return_value=[]) as detect, \
                 patch.object(search, 'ring_centers', return_value=ring), \
@@ -164,7 +190,7 @@ class SwitchSearchTests(unittest.TestCase):
             result = search.SwitchSearch(self.runner, pans=8, start=4, enemy_from=4, continuous=False).run()
         self.assertEqual(result['state'], 'enemy')
         self.assertEqual(result['step'], 4)
-        self.assertEqual(pan.call_count, 4)
+        self.assertEqual(pan.call_count, 1)
         self.assertEqual(detect.call_count, search.FACILITY_QUICK_FRAMES)
 
     def test_battle_popup_returns_entry_without_more_pans(self):

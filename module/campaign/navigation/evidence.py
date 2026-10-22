@@ -23,7 +23,9 @@ def write_image(path, image, *args):
 # 无法回放“为什么没找到机关”。每会话最多 KEEP_LIMIT 份。
 KEEP_EVENTS = frozenset(('goal_view_result', 'switch_search_view', 'switch_search_result', 'structure_attempt',
                          'switch_activated', 'structure_wait_timeout', 'gate_enemy_attempt', 'structure_probe',
-                         'facility_survey_view', 'chapter_sweep_motion'))
+                         'facility_survey_view', 'chapter_sweep_motion',
+                         # 巡检因离屏头像未确认而中止时要看到当时画面（实录 2026-10-22 22-27）。
+                         'offscreen_map_state', 'offscreen_unoccluded', 'offscreen_unoccluded_confirm'))
 KEEP_LIMIT = 300
 
 

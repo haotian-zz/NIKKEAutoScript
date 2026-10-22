@@ -14,20 +14,33 @@
 
 import time
 
+import cv2
 import numpy as np
 
-from module.campaign.facility_memory import FacilityUnconfirmed, voted_facilities
+from module.campaign.facility_memory import FacilityUnconfirmed, facility_frame, voted_facilities
 from module.campaign.navigation import controls as goto
-from module.campaign.navigation.camera_navigation import pan_scene
-from module.campaign.vision.enemy_ring import scene_ring_candidates
+from module.campaign.navigation.camera_navigation import pan_region, pan_scene
+from module.campaign.vision.enemy_ring import scene_registration, scene_ring_candidates
+from module.campaign.vision.surface_motion import project
 from module.campaign.vision.objects import detect_objects
 from module.campaign.vision.perception import squad_arrow
 from module.campaign.vision.story_marker import story_markers
 from module.logger import logger
 
-# 拖动手势向量（手指方向，镜头反向移动）；实测600px竖拖约半屏，边界处会被游戏夹住。
+# 单次拖动手势上限（手指方向，镜头反向移动）。实测 2026-10-22（22-27）：700px横拖画面只动
+# 290～335px，520px竖拖只动120～280px且带横向偏移，8次固定拖动后镜头离起点不到0.3屏。
+# 因此螺旋按配准实测位移走到各航点，不按拖动次数。
 HORIZONTAL_DRAG = 700.
 VERTICAL_DRAG = 520.
+# 航点间距约0.8屏（客户区像素，镜头位移），相邻两屏留约两成重叠；第一圈覆盖四周约1.3屏。
+SPIRAL_UNIT = np.array([1420., 800.])
+# 离航点不足约四分之一屏即算到达；每个航点最多拖几次；位移不足多少像素算撞到地图边界。
+WAYPOINT_TOLERANCE = np.array([450., 250.])
+WAYPOINT_PANS = 6
+STUCK_SHIFT = 30.
+# 拖动增益初值（画面位移/手指位移），之后按每次实测更新。
+INITIAL_GAIN = .45
+VIEW_CENTER = np.array([888., 500.])
 # 任务菱形正下方这一带的脚圈就是受阻的主线目标本身，不当作守关敌人。
 QUEST_RING_DX = 120.
 QUEST_RING_DY = 700.
@@ -43,15 +56,26 @@ BLOCKED_RADIUS = 300.
 FACILITY_KINDS = ('ground_mechanism', 'elevator', 'barrier')
 
 
-def spiral_drags(rings=4):
-    """返回以起点为中心逐圈外扩的手势序列：先南、东，再北、西，每两段边长加一。"""
-    directions = ((0., -VERTICAL_DRAG), (-HORIZONTAL_DRAG, 0.), (0., VERTICAL_DRAG), (HORIZONTAL_DRAG, 0.))
-    drags, length = [], 1
+def spiral_cells(rings=4):
+    """返回以起点为中心逐圈外扩的航点格（单位：SPIRAL_UNIT）：先南、东，再北、西，每两段边长加一。"""
+    directions = ((0, 1), (1, 0), (0, -1), (-1, 0))
+    cells, cell, length = [], np.zeros(2), 1
     for leg in range(rings*2):
-        drags += [directions[leg % 4]]*length
+        for _ in range(length):
+            cell = cell + directions[leg % 4]
+            cells.append(cell.copy())
         if leg % 2:
             length += 1
-    return [np.asarray(drag) for drag in drags]
+    return cells
+
+
+def content_shift(before, after):
+    """两帧静态背景配准，返回画面中心内容的位移（客户区像素）；配准不可靠返回None。"""
+    try:
+        matrix, _, _ = scene_registration(facility_frame(before, []), facility_frame(after, []))
+    except (ValueError, cv2.error, np.linalg.LinAlgError):
+        return None
+    return project(matrix, VIEW_CENTER)-VIEW_CENTER
 
 
 def off_switches(frames):
@@ -107,10 +131,12 @@ class SwitchSearch:
         self.runner, self.session, self.catalog = runner, runner.session, catalog
         self.enemies, self.enemy_from, self.continuous = enemies, enemy_from, continuous
         self.blocked = [np.asarray(point, float) for point in blocked]
-        self.drags = spiral_drags()[:pans]
+        self.waypoints = [np.zeros(2)]+[cell*SPIRAL_UNIT for cell in spiral_cells()[:pans]]
         self.seconds, self.skip, self.start = seconds, set(skip), start
         self.views, self.pans, self.catalog_errors = 0, 0, 0
-        self.at = 0
+        # 镜头相对起点的累计位移（按实测配准累加，配准失败时按增益估算）及上次取帧位置。
+        self.camera, self.gain, self.looked = np.zeros(2), INITIAL_GAIN, None
+        self.unmeasured = 0
 
     def look(self, step, goal=False):
         """取两帧（不一致补到四帧）检测关闭机关并登记目录；返回(状态, 候选, 新鲜帧)。
@@ -164,6 +190,7 @@ class SwitchSearch:
             candidates.append(dict(item, search_key=key, **({'facility_id': known[0]} if known else {})))
         self.session.record_evidence('switch_search_view', fresh, step=step, detections=second,
                                      candidates=candidates, enemies=enemies, frames=len(frames),
+                                     camera=np.round(self.camera).tolist(),
                                      elapsed=round(time.monotonic()-started, 2), arrays=dict(field=fresh))
         self.session.preview(fresh)
         state, pool = ('found', candidates) if candidates else ('enemy', enemies)
@@ -178,22 +205,56 @@ class SwitchSearch:
         return state, min(pool, key=lambda item: np.linalg.norm(
             np.asarray(item['position'])-anchor)), fresh
 
-    def pan(self, drag):
-        """发送一次观察用镜头手势；小队落点保护同原螺旋。"""
-        field = self.runner.map_frame(track=False)
-        arrow = squad_arrow(field)
+    def pan(self, drag, before):
+        """发送一次观察用镜头手势并用前后两帧配准实测镜头位移；返回(拖后帧, 镜头位移)。"""
+        arrow = squad_arrow(before)
         ground = None if arrow is None else np.asarray(arrow)+[0., goto.ARROW_GROUND_OFFSET]
         self.session.begin_target('switch_search_pan')
         pan_scene(self.session, drag, squad_ground=ground)
         self.pans += 1
+        after = self.runner.map_frame(track=False)
+        shift = content_shift(before, after)
+        if shift is None:
+            # 配准失败（烟雾、加载）时按当前增益估算，只用于决定下一次拖动，不作为点击依据。
+            self.unmeasured += 1
+            return after, -drag*self.gain
+        gain = float(shift @ drag / max(drag @ drag, 1.))
+        if np.linalg.norm(shift) >= STUCK_SHIFT and .1 <= gain <= 2.:
+            self.gain = .5*self.gain+.5*gain
+        return after, -shift
+
+    def move_to(self, index):
+        """按实测位移把镜头移到第index个航点附近；连续两次几乎不动视为地图边界，停在原处。"""
+        target = self.waypoints[index]
+        field, stuck = self.runner.map_frame(track=False), 0
+        for _ in range(WAYPOINT_PANS):
+            error = target-self.camera
+            if np.all(np.abs(error) <= WAYPOINT_TOLERANCE):
+                break
+            self.session.check()
+            drag = -error/self.gain
+            drag *= min(1., HORIZONTAL_DRAG/max(abs(drag[0]), 1.), VERTICAL_DRAG/max(abs(drag[1]), 1.))
+            drag *= pan_region(drag)[1]
+            field, moved = self.pan(drag, field)
+            self.camera = self.camera+moved
+            stuck = stuck+1 if np.linalg.norm(moved) < STUCK_SHIFT else 0
+            if stuck >= 2:
+                logger.info(f'螺旋第 {index} 个航点方向镜头已不动，视为地图边界。')
+                break
+
+    def fresh_view(self):
+        """当前镜头离上次取帧处已超过约四分之一屏（或从未取帧），值得再看一屏。"""
+        return self.looked is None or np.any(np.abs(self.camera-self.looked) > WAYPOINT_TOLERANCE)
+
+    def view(self, step):
+        """在当前镜头取帧并记下取帧位置。"""
+        self.looked = self.camera.copy()
+        return self.look(step)
 
     def revisit(self, step):
-        """把镜头按原手势逆序倒回第step屏，重新取帧确认敌人；不沿用旧帧坐标。"""
-        for index in range(self.at, step, -1):
-            self.session.check()
-            self.pan(-self.drags[index-1])
-        self.at = step
-        state, target, field = self.look(step)
+        """按实测位移把镜头移回第step个航点，重新取帧确认敌人；不沿用旧帧坐标。"""
+        self.move_to(step)
+        state, target, field = self.view(step)
         if state in ('entry', 'found', 'enemy'):
             return state, target, field
         return 'none', None, field
@@ -203,7 +264,8 @@ class SwitchSearch:
         what = '关闭机关' if state == 'found' else '未清敌人脚圈'
         logger.info(f"螺旋搜索第 {step} 屏发现{what} {target['position']}"
                     f"（{target['confidence']:.2f}），交由原生寻路前往；开门或开战须另行复核。")
-        return dict(state=state, target=target, field=field, views=self.views, pans=self.pans, step=step)
+        return dict(state=state, target=target, field=field, views=self.views, pans=self.pans, step=step,
+                    camera=self.camera.tolist())
 
     def run(self):
         """原地先看一屏，再按螺旋逐步拖镜头；返回dict(state=found/enemy/entry/exhausted, ...)。
@@ -211,22 +273,23 @@ class SwitchSearch:
         complete为真表示全部屏幕都已看过机关（未被时间截断），调用方据此不再重复整圈找机关。
         """
         started = time.monotonic()
-        logger.info(f'目标受阻：开始螺旋寻找关闭机关，最多 {len(self.drags)} 次镜头移动'
-                    + (f'，前 {self.start} 屏已看过只移动镜头。' if self.start else '。'))
+        logger.info(f'目标受阻：开始螺旋寻找关闭机关，{len(self.waypoints)-1} 个航点（约0.8屏间距，按实测位移移动）'
+                    + (f'，从第 {self.start} 个航点续看。' if self.start else '。'))
         noted, complete = None, True
-        for step in range(len(self.drags)+1):
+        for step in range(len(self.waypoints)):
             self.session.check()
             if time.monotonic()-started > self.seconds:
                 complete = False
                 break
-            if step:
-                self.pan(self.drags[step-1])
-                self.at = step
             # 实录 2026-10-22（22-27）：第3屏的敌人与目标同在光幕后，打不到；每次停滞后螺旋从第0屏
-            # 重来，又在第3屏选中同一批敌人，三轮都没走到西侧开关所在的第6屏。
+            # 重来，又在第3屏选中同一批敌人。续看时之前的航点不再走，直接移到续看航点。
             if step < self.start:
                 continue
-            state, target, field = self.look(step)
+            if step:
+                self.move_to(step)
+            if not self.fresh_view():
+                continue
+            state, target, field = self.view(step)
             if state == 'entry':
                 return dict(state='entry', field=field, views=self.views, pans=self.pans)
             if state == 'found' or (state == 'enemy' and not self.continuous):
@@ -242,6 +305,7 @@ class SwitchSearch:
                 return dict(self.report(state, target, field, noted), complete=complete)
             logger.info(f'倒回第 {noted} 屏未再确认到敌人脚圈。')
         logger.info(f'螺旋搜索未发现可用关闭机关：{self.views} 屏，{self.pans} 次镜头移动，'
+                    f'镜头离起点 {np.round(self.camera).astype(int).tolist()}，位移未测得 {self.unmeasured} 次，'
                     f'目录无法重定位 {self.catalog_errors} 次。')
         return dict(state='exhausted', views=self.views, pans=self.pans, catalog_errors=self.catalog_errors,
                     complete=complete)
