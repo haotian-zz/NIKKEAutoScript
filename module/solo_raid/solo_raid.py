@@ -1,6 +1,6 @@
 from module.execution.context import report
 from module.base.timer import Timer
-from module.base.watchdog import WaitGuard
+from module.base.watchdog import WaitGuard, save_wait_image
 from module.logger import logger
 from module.simulation_room.assets import AUTO_BURST, AUTO_SHOOT, END_FIGHTING, PAUSE
 from module.solo_raid.assets import *
@@ -70,6 +70,7 @@ class SoloRaid(SoloRaidChallenge):
 
             if confirm_timer.reached():
                 logger.error('Solo raid not found')
+                save_wait_image(self.device, 'solo_raid_not_found')
                 raise SoloRaidIsUnavailable
 
         if self.free_opportunity_remain:

@@ -5,6 +5,7 @@ from module.base.langs import Langs
 from module.base.timer import Timer
 from module.base.utils import crop
 from module.coop.assets import *
+from module.base.watchdog import save_wait_image
 from module.logger import logger
 from module.ocr.ocr import Digit, Ocr
 from module.simulation_room.assets import AUTO_BURST, AUTO_SHOOT, END_FIGHTING
@@ -181,6 +182,7 @@ class Coop(UI):
 
             if confirm_timer.reached():
                 logger.error('Coop not found')
+                save_wait_image(self.device, 'coop_not_found')
                 raise CoopIsUnavailable
 
         if self.free_opportunity_remain and not self.dateline:
