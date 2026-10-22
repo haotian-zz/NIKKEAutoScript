@@ -228,5 +228,30 @@ class StructureTests(unittest.TestCase):
         self.assertEqual(self.runner.session.record_evidence.call_args.args[0], 'structure_wait_timeout')
 
 
+    def test_unobserved_squad_recenters_once_then_waits_again(self):
+        """实录22-36：点远处开关后一直看不到小队；找回镜头一次后重新等停稳，仍看不到才停止。"""
+        clock = [0.]
+        self.runner.session.pause.side_effect = lambda seconds: clock.__setitem__(0, clock[0] + seconds)
+        unobserved = dict(state='unknown', reason='squad_unobserved')
+        with patch.object(structure.time, 'monotonic', side_effect=lambda: clock[0]), \
+                patch.object(structure, 'MinimapStability') as mini, \
+                patch.object(structure, 'NativeMotion') as motion, \
+                patch.object(structure, 'recenter_squad') as recenter, \
+                patch.object(structure, 'squad_arrow', return_value=None) as arrow, \
+                patch.object(structure.goto, 'battle_popup_score', return_value=0.):
+            mini.return_value.observe.return_value = dict(state='unknown')
+            motion.return_value.observe.return_value = unobserved
+            with self.assertRaisesRegex(structure.StructureUnconfirmed, '未确认'):
+                structure.wait_structure_settle(self.runner, self.field)
+            recenter.assert_called_once()
+            recenter.side_effect = lambda runner: arrow.configure_mock(return_value=np.array([888., 400.]))
+            recenter.reset_mock()
+            motion.return_value.observe.side_effect = lambda field, squad: (
+                unobserved if squad is None else dict(state='stationary'))
+            self.assertIs(structure.wait_structure_settle(self.runner, self.field), self.field)
+            recenter.assert_called_once()
+        self.runner.session.tap.assert_not_called()
+
+
 if __name__ == '__main__':
     unittest.main()

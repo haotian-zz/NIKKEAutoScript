@@ -98,11 +98,14 @@ def structure_observations(field, arrow, unanchored=False):
     return objects
 
 
-def wait_structure_settle(runner, before=None):
+def wait_structure_settle(runner, before=None, recenter=True):
     """设施落点后共用独立移动反馈；可靠静止才恢复扫描，不据此认领传送成功。
 
     无有效反馈最多20秒，真实移动可续等但总计60秒；不以整张小地图的低变化比例
     掩盖小范围道路滚动，也不让浮动箭头动画阻止可靠圆心与道路提供静止证据。
+    全程看不到小队时用已核验的离屏头像找回镜头一次，找回后重新计时等一次；仍看不到才停止。
+    实录 2026-10-22（22-36）：按目录坐标移镜头点远处开关后，小队走出画面、小地图也没有圆环，
+    20秒只得到 squad_unobserved 就中止了整轮。
     """
     before = runner.map_frame() if before is None else before
     progress = ClickProgress(time.monotonic())
@@ -126,6 +129,11 @@ def wait_structure_settle(runner, before=None):
         runner.session.record_evidence('structure_wait_timeout', field, feedback=observation,
                                        outcome=state, arrays=dict(field=field))
         runner.session.preview(field)
+    if recenter and state == 'observation_unknown' and observation.get('reason') == 'squad_unobserved':
+        logger.info('设施交互后一直看不到小队：找回小队镜头后重新等待停稳一次。')
+        recenter_squad(runner)
+        if squad_arrow(runner.map_frame()) is not None:
+            return wait_structure_settle(runner, recenter=False)
     raise StructureUnconfirmed('设施交互后未确认小队及道路停稳，已保留原图；不发送下一个目标。')
 
 
@@ -220,6 +228,9 @@ def watch_switch(runner, target):
             return field, 'activated'
         if missing >= 3:
             break
+    if field is not None:
+        runner.session.record_evidence('switch_watch_end', field, target=target, missing=missing,
+                                       squad=squad_arrow(field) is not None, arrays=dict(field=field))
     return field, 'unconfirmed'
 
 
