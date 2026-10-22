@@ -15,7 +15,7 @@ from module.campaign.scene_memory import SceneEnemyMemory, stable_candidates
 from module.campaign.clearance import ClearanceJournal
 from module.campaign.chapter_flow import ChapterOverlayFlow
 from module.campaign.sweep import ChapterSweep, SweepUnconfirmed
-from module.campaign.vision.perception import squad_arrow
+from module.campaign.vision.perception import squad_arrow, squad_ground
 from module.campaign.vision.offscreen import squad_offscreen
 from module.campaign.vision.story_marker import story_markers
 from module.campaign.vision.native_motion import ClickProgress, MinimapStability, NativeMotion, combine_motion
@@ -725,8 +725,8 @@ class VisibleStoryRunner:
                 logger.info('已点击任务菱形，由游戏把镜头移到主线目标；重新扫描真实脚圈，不将菱形作为战斗落点。')
                 self.session.pause(1.5)
                 return True
-        arrow = squad_arrow(fresh)
-        if arrow is None and squad_offscreen(fresh) is None:
+        ground, _ = squad_ground(fresh)
+        if ground is None and squad_offscreen(fresh) is None:
             if has_targets:
                 # 实录 2026-10-21（21-32）：关掉残留备战弹窗后小队与普通敌人叠在一起，头顶标记不显示；
                 # 身边两个敌人可直接点击，不必为首领进入无锚点的设施恢复（那里会因缺少小队锚点停止）。
@@ -739,7 +739,6 @@ class VisibleStoryRunner:
                 recover_visible_structure(self, fresh, allow_unanchored=True)
                 return True
             return False
-        ground = None if arrow is None else np.asarray(arrow) + [0., goto.ARROW_GROUND_OFFSET]
         drag *= min(1., 480. / length)
         self.session.begin_target('marker_reveal')
         self.session.record_evidence('marker_reveal', fresh, marker=marker, drag=drag.tolist())

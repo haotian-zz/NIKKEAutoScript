@@ -39,6 +39,14 @@ def definitions():
     namespace.update(ClickProgress=ClickProgress, NativeMotion=NativeMotion, combine_motion=combine_motion,
                      MinimapStability=Mock(return_value=SimpleNamespace(observe=lambda field: dict(state='unknown'))))
     exec(compile(ast.Module(body=nodes, type_ignores=[]), str(path), 'exec'), namespace)
+
+    def squad_ground(image):
+        """与生产相同：箭头优先；测试替身不读小地图。"""
+        arrow = namespace['squad_arrow'](image)
+        if arrow is None:
+            return None, None
+        return np.asarray(arrow, float)+[0., getattr(namespace['goto'], 'ARROW_GROUND_OFFSET', 0.)], 'arrow'
+    namespace['squad_ground'] = squad_ground
     return namespace
 
 

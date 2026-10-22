@@ -46,7 +46,7 @@ class FacilityMapTests(unittest.TestCase):
         target = np.array([5000., 3000.])
         reports = [report(target-[243.+700., 231.]), report(target-[243., 231.])]
         with patch.object(facility, 'locate_view', side_effect=reports), \
-                patch.object(facility, 'squad_arrow', return_value=np.array([888., 600.])), \
+                patch.object(facility, 'squad_ground', return_value=(np.array([888., 690.]), 'arrow')), \
                 patch.object(facility, 'pan_scene') as pan:
             reached = facility.seek_map_point(self.runner, target)
         self.assertEqual(pan.call_count, 1)
@@ -58,12 +58,12 @@ class FacilityMapTests(unittest.TestCase):
         target = np.array([5000., 3000.])
         far = report(target-[243.+700., 231.])
         with patch.object(facility, 'locate_view', side_effect=[far, far]), \
-                patch.object(facility, 'squad_arrow', return_value=np.array([888., 600.])), \
+                patch.object(facility, 'squad_ground', return_value=(np.array([888., 690.]), 'arrow')), \
                 patch.object(facility, 'pan_scene') as pan:
             self.assertIsNone(facility.seek_map_point(self.runner, target))
         self.assertEqual(pan.call_count, 1)
         with patch.object(facility, 'locate_view', return_value=far), \
-                patch.object(facility, 'squad_arrow', return_value=None), \
+                patch.object(facility, 'squad_ground', return_value=(None, None)), \
                 patch.object(facility, 'squad_offscreen', return_value=None), \
                 patch.object(facility, 'pan_scene') as pan:
             self.assertIsNone(facility.seek_map_point(self.runner, target))
@@ -74,7 +74,7 @@ class FacilityMapTests(unittest.TestCase):
         target = np.array([5000., 3000.])
         reports = [report(target-[243.+900., 231.]), report(target-[243.+450., 231.]), report(target-[243., 231.])]
         with patch.object(facility, 'locate_view', side_effect=reports), \
-                patch.object(facility, 'squad_arrow', side_effect=[np.array([888., 400.]), None]), \
+                patch.object(facility, 'squad_ground', side_effect=[(np.array([888., 490.]), 'arrow'), (None, None)]), \
                 patch.object(facility, 'squad_offscreen', return_value=None), \
                 patch.object(facility, 'pan_scene') as pan:
             reached = facility.seek_map_point(self.runner, target)

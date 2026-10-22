@@ -13,7 +13,7 @@ from module.campaign.vision.enemy_ring import scene_registration
 from module.campaign.vision.ex_ring import minimap_enemy_hints
 from module.campaign.vision.offscreen import squad_offscreen
 from module.campaign.vision.minimap import map_visible
-from module.campaign.vision.perception import squad_arrow
+from module.campaign.vision.perception import minimap_squad_ground, squad_arrow
 from module.campaign.vision.surface_motion import project
 from module.logger import logger
 
@@ -191,6 +191,10 @@ class ChapterSweep:
         arrow = squad_arrow(field)
         if arrow is not None:
             ground = np.asarray(arrow)+[0., goto.ARROW_GROUND_OFFSET]
+            self.squad_away, self.squad_seen = None, (ground, self.content.copy())
+            return ground
+        ground = minimap_squad_ground(field)
+        if ground is not None:
             self.squad_away, self.squad_seen = None, (ground, self.content.copy())
             return ground
         marker = squad_offscreen(field)

@@ -14,7 +14,7 @@ from module.campaign.navigation import controls as goto
 from module.campaign.navigation.camera_navigation import (
     ROI_BOUNDS, camera_drag, inside, pan_scene, scene_unchanged)
 from module.campaign.vision.offscreen import squad_offscreen
-from module.campaign.vision.perception import squad_arrow
+from module.campaign.vision.perception import squad_ground
 from module.campaign.vision.surface_motion import project
 from module.logger import logger
 
@@ -149,9 +149,8 @@ def seek_map_point(runner, point, tag='facility_seek', pans=SEEK_PANS):
             logger.info(f'镜头未能移到已知设施附近（剩余底图距离 {distance:.0f}px）。')
             return None
         previous = distance
-        arrow = squad_arrow(field)
-        if arrow is not None:
-            ground = np.asarray(arrow) + [0., goto.ARROW_GROUND_OFFSET]
+        ground, _ = squad_ground(field)
+        if ground is not None:
             squad = client_to_map(chart, report, ground)
         elif squad is not None:
             # 投影不在展开 ROI 里（None）说明小队远在画面外；否则按投影位置避让。

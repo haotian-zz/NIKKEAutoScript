@@ -15,7 +15,7 @@ from module.campaign.map.catalog import chapter_map
 from module.campaign.map.annotations import validate_annotations
 from module.campaign.vision.enemy_ring import clickable_ring
 from module.campaign.vision.objects import detect_objects, nearby_platforms, visible_platforms
-from module.campaign.vision.perception import squad_arrow
+from module.campaign.vision.perception import minimap_squad_ground, squad_arrow
 from module.campaign.vision.native_motion import ClickProgress, MinimapStability, NativeMotion, combine_motion
 from module.campaign.vision.learned_recovery import recover_if_enabled
 from module.logger import logger
@@ -470,9 +470,13 @@ def recover_visible_structure(runner, field, allow_unanchored=False):
                       for known in registered if known['kind'] == item['kind']
                       and np.linalg.norm(np.asarray(known['position'])-item['position']) < 1.
                       and catalog.eligible(known['facility_id'], blocked_goal)]
-    if arrow is None and not allow_unanchored:
-        raise StructureUnconfirmed('目标受阻，设施恢复未确认画面内小队位置；已保留原图，停止探索。')
     ground = None if arrow is None else np.asarray(arrow) + [0., goto.ARROW_GROUND_OFFSET]
+    if ground is None:
+        ground = minimap_squad_ground(fresh)
+        if ground is not None:
+            logger.info(f'小队头顶箭头未读到，按小地图圆环推算小队在 {np.round(ground).astype(int).tolist()}。')
+    if ground is None and not allow_unanchored:
+        raise StructureUnconfirmed('目标受阻，设施恢复未确认画面内小队位置；已保留原图，停止探索。')
     if ground is None and (len(candidates) != 1 or candidates[0]['kind'] != 'elevator'):
         raise StructureUnconfirmed('缺少小队锚点且未得到两帧唯一高分平台，停止恢复，不发送镜头或走位。')
     # 邻近平台仍可能需要主动踏上或交互，不能以100px近距推定已经操作；距离只用于排序。

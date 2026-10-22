@@ -87,6 +87,41 @@ def squad_arrow(image):
     return centers[0]
 
 
+# 紧凑小地图小队圆环（1920×1080 面板坐标）→ 小队脚下客户区坐标的仿射。
+# 实测 2026-10-22（第 22 章 108 帧，箭头与圆环同时可见）：紧凑小地图以镜头注视点为中心、比例固定，
+# 最小二乘残差多数 <15px、最大 24px。
+MINIMAP_TO_GROUND = np.array([[4.25, .16, 413.56], [.019, 3.276, 167.73]])
+
+
+def minimap_squad_ground(image):
+    """箭头被遮挡时，由紧凑小地图上唯一的小队圆环推算小队脚下的客户区位置；读不到返回 None。
+
+    实录 2026-10-22（22-36）：小队站在穹顶中央的半透明升降台里，头顶箭头被挡住，也没有离屏头像，
+    任务定位后的设施恢复因缺少小队锚点停止。圆环换算只用于镜头拖动避让和距离排序，不作为点击落点。
+    """
+    from module.campaign.vision.minimap import map_visible, minimap_control_visible
+    if (image is None or image.shape != (999, 1776, 3)
+            or not minimap_control_visible(image[76:120, 20:64]) or not map_visible(image[118:273, 27:207])):
+        return None
+    panel = cv2.resize(image, (1920, 1080))[96:307, 25:243]
+    players, _ = detect_markers(panel, np.eye(3))
+    if len(players) != 1:
+        return None
+    ground = MINIMAP_TO_GROUND @ np.r_[np.asarray(players[0], float), 1.]
+    height, width = image.shape[:2]
+    return ground if 0. <= ground[0] < width and 0. <= ground[1] < height else None
+
+
+def squad_ground(image):
+    """小队脚下的客户区位置与来源：优先头顶箭头，读不到时用紧凑小地图圆环；都没有返回 (None, None)。"""
+    from module.campaign.navigation.controls import ARROW_GROUND_OFFSET
+    arrow = squad_arrow(image)
+    if arrow is not None:
+        return np.asarray(arrow)+[0., ARROW_GROUND_OFFSET], 'arrow'
+    ground = minimap_squad_ground(image)
+    return (ground, 'minimap') if ground is not None else (None, None)
+
+
 def collectible_indicator(image):
     """画面里的收集品提示；没有则返回 None。
 

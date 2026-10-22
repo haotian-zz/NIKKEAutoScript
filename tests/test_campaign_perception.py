@@ -47,5 +47,35 @@ class SquadArrowTests(unittest.TestCase):
         detect.assert_not_called()
 
 
+
+class MinimapSquadGroundTests(unittest.TestCase):
+    """箭头被遮挡时由紧凑小地图圆环推算小队脚下位置；面板不可见或圆环不唯一不给锚点。"""
+
+    def setUp(self):
+        self.field = np.zeros((999, 1776, 3), np.uint8)
+        patcher = patch.multiple('module.campaign.vision.minimap', minimap_control_visible=lambda crop: True,
+                                 map_visible=lambda crop: True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_ring_maps_to_ground_and_arrow_wins(self):
+        """实录22-36：小队在半透明升降台里，圆环 (106.9,106.0) 推算到画面中央附近；有箭头时仍用箭头。"""
+        with patch.object(perception, 'detect_markers', return_value=([np.array([106.9, 106.])], [])), \
+                patch.object(perception, 'squad_arrow', return_value=None):
+            ground, source = perception.squad_ground(self.field)
+        self.assertEqual(source, 'minimap')
+        np.testing.assert_allclose(ground, [885., 517.], atol=2.)
+        with patch.object(perception, 'squad_arrow', return_value=np.array([600., 400.])), \
+                patch.object(perception, 'detect_markers') as markers:
+            ground, source = perception.squad_ground(self.field)
+        self.assertEqual(source, 'arrow')
+        markers.assert_not_called()
+
+    def test_missing_or_ambiguous_ring_gives_no_anchor(self):
+        """没有圆环或多个圆环都不推算。"""
+        for players in ([], [np.array([100., 100.]), np.array([120., 90.])]):
+            with patch.object(perception, 'detect_markers', return_value=(players, [])):
+                self.assertIsNone(perception.minimap_squad_ground(self.field))
+
 if __name__ == '__main__':
     unittest.main()
