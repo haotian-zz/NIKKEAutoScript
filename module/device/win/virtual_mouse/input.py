@@ -273,7 +273,9 @@ class VirtualMouseInput(Input):
         绝对定位本身不产生 WM_INPUT 位移，但 NIKKE 的输入层读系统光标位置，所以对游戏
         可见；偏差过大时告警（每次会话只报一次），避免「点在了别的地方」却没有任何报错。
         """
-        if not self.mouse_driver.set_cursor(x, y):
+        # 实录 2026-10-22（22-36）：RDP 下光标大跳到拖动起点偶尔超过后端 0.1 秒核对，整轮推图因
+        # 「drag start failed」中止；与拖动终点相同，按下前仍要求 2px 内到位，只是给足到位时间。
+        if not self.mouse_driver.set_cursor(x, y) and not self._await_landing((int(x), int(y))):
             return False
         actual_x, actual_y = self.mouse_driver.cursor()
         offset_x, offset_y = actual_x - int(x), actual_y - int(y)
@@ -427,6 +429,10 @@ class VirtualMouseInput(Input):
         if not final:
             logger.debug(f'Virtual mouse drag waypoint lagging: target={target}, actual={self.mouse_driver.cursor()}')
             return True
+        return self._await_landing(target)
+
+    def _await_landing(self, target):
+        """光标在 DRAG_LANDING_TIMEOUT 内落到目标 2px 内才算定位成功。"""
         deadline = time.perf_counter() + DRAG_LANDING_TIMEOUT
         while time.perf_counter() < deadline:
             actual = self.mouse_driver.cursor()

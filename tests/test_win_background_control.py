@@ -761,6 +761,34 @@ class DriverSchemeTests(unittest.TestCase):
                 handler.mouse_driver.release.assert_called_once_with()
                 self.assertEqual(handler._failures, 0 if final_lands else 1)
 
+    def test_lagging_drag_start_waits_for_landing_before_press(self):
+        """实录 2026-10-22（22-36）：大跳到拖动起点超过后端 0.1 秒核对；0.5 秒内到位即按下，始终不到才判失败。"""
+        for lands in (True, False):
+            with self.subTest(lands=lands):
+                with (
+                    patch.object(VirtualMouseInput, '_preflight', return_value=None),
+                    patch.object(Input, '__init__', return_value=None),
+                    patch('module.device.win.virtual_mouse.input.shared_mouse', return_value=Mock()),
+                ):
+                    handler = VirtualMouseInput(config_name='nkas', move_backend='cursor')
+                handler.mouse_driver = Mock()
+                handler.mouse_driver.set_cursor.side_effect = lambda x, y: (x, y) != (1022, 707)
+                positions = iter([(500, 500)] * 3)
+                handler.mouse_driver.cursor.side_effect = lambda: next(positions, (1022, 707) if lands else (500, 500))
+                clock = {'now': 0.}
+                def tick():
+                    clock['now'] += .01
+                    return clock['now']
+                with patch('module.device.win.virtual_mouse.input.time.sleep'), \
+                        patch('module.device.win.virtual_mouse.input.time.perf_counter', side_effect=tick):
+                    handler.mouse_swipe((1022, 707), (1022, 400), speed=5)
+                if lands:
+                    handler.mouse_driver.press.assert_called_once()
+                    self.assertEqual(handler._failures, 0)
+                else:
+                    handler.mouse_driver.press.assert_not_called()
+                    self.assertEqual(handler._failures, 1)
+
     def test_successful_complete_gesture_resets_failure_count(self):
         for method, args in (('press_mouse', ()), ('mouse_swipe', ((100, 100), (100, 350)))):
             with self.subTest(method=method):
