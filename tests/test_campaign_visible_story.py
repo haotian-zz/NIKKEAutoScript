@@ -423,6 +423,16 @@ class VisibleStoryTests(unittest.TestCase):
         self.assertEqual(self.runner.marker_jumps, 1)
         self.ns['pan_scene'].assert_not_called()
 
+    def test_unanchored_marker_with_visible_enemies_returns_to_main_loop(self):
+        """实录21-32：小队与普通敌人叠在一起、头顶标记缺失；有可点击脚圈时不进入无锚点设施恢复。"""
+        marker = dict(kind='scene', position=[669., 154.], confidence=.96)
+        self.ns['story_markers'] = Mock(return_value=[marker])
+        self.ns['squad_arrow'].return_value = None
+        self.ns['squad_offscreen'] = Mock(return_value=None)
+        self.assertFalse(self.runner.reveal_marked_area(self.field, has_targets=True))
+        self.ns['pan_scene'].assert_not_called()
+        self.session.tap.assert_not_called()
+
     def test_changing_marker_does_not_move_camera(self):
         """两帧标记不一致时不按旧菱形规划镜头。"""
         self.ns['story_markers'] = Mock(side_effect=[

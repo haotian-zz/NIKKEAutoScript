@@ -558,13 +558,14 @@ class VisibleStoryRunner:
         self.session.pause(1.5)
         return True
 
-    def reveal_marked_area(self, field):
+    def reveal_marked_area(self, field, has_targets=False):
         """用稳定的场内／离屏菱形露出目标区域，不把屏幕标记当作地面落点或敌人身份。
 
         每次目标定位最多四次，设施动作后允许重新定位；真实胜利前设施总预算仍是两次。
         拖动不超过480px。场内／离屏分类会随指针动画变化，
         最多六帧内两次同位置识别才用于找镜头方向，不直接点击。小队精定位或离屏标记须明确，
         实际相机手势继续经过现有按下点避让；操作后必须重新扫描脚圈并核对真实备战。
+        has_targets 表示当前画面另有可直接点击的普通脚圈：小队位置读不到时交回主循环先打它们。
         """
         if self.marker_pans >= 4:
             return False
@@ -628,6 +629,11 @@ class VisibleStoryRunner:
                 return True
         arrow = squad_arrow(fresh)
         if arrow is None and squad_offscreen(fresh) is None:
+            if has_targets:
+                # 实录 2026-10-21（21-32）：关掉残留备战弹窗后小队与普通敌人叠在一起，头顶标记不显示；
+                # 身边两个敌人可直接点击，不必为首领进入无锚点的设施恢复（那里会因缺少小队锚点停止）。
+                logger.info('小队位置未读到，但画面内有可点击的普通敌人，先交回主循环处理。')
+                return False
             if self.quest is not None and self.quest not in self.owner.story_wins:
                 from module.campaign.structures import recover_visible_structure
                 self.session.record_evidence('marker_camera_unanchored', fresh, marker=marker,
@@ -762,7 +768,7 @@ class VisibleStoryRunner:
                 continue
             candidates = [item for item in candidates if self.selectable(item)]
             preferred, marked = self.quest_target(field, fresh, candidates)
-            if marked and preferred is None and self.reveal_marked_area(fresh):
+            if marked and preferred is None and self.reveal_marked_area(fresh, has_targets=bool(candidates)):
                 continue
             if self.blocked_views and preferred is None:
                 from module.campaign.structures import recover_visible_structure
