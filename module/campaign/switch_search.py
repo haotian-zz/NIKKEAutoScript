@@ -188,12 +188,14 @@ class SwitchSearch:
         同屏既有可用关闭机关又有敌人时先返回机关。
         """
         started = time.monotonic()
+        marks = {}
         field = self.runner.map_frame(track=False)
         if goto.battle_popup_score(field) > .8:
             return 'entry', None, field
         frames = [detect_objects(field, FACILITY_KINDS)]
         first_rings = ring_centers(field)
         fresh = field
+        marks['first'] = time.monotonic()
         while len(frames) < FACILITY_FRAMES:
             if len(frames) >= FACILITY_QUICK_FRAMES and frames_agree(frames):
                 break
@@ -203,6 +205,7 @@ class SwitchSearch:
                 return 'entry', None, fresh
             frames.append(detect_objects(fresh, FACILITY_KINDS))
         second = frames[-1]
+        marks['frames'] = time.monotonic()
         enemies = []
         hunt = self.enemies and not goal and (step == 'goal' or step >= self.enemy_from)
         for center, confidence in (gate_enemies(first_rings, ring_centers(fresh), story_markers(fresh))
@@ -215,6 +218,7 @@ class SwitchSearch:
                 enemies.append(dict(kind='enemy_ring', state='pending', position=center.tolist(),
                                     confidence=float(confidence), search_key=key))
         self.views += 1
+        marks['enemies'] = time.monotonic()
         registered, relocated = [], False
         if self.catalog is not None:
             try:
@@ -222,6 +226,7 @@ class SwitchSearch:
                 relocated = True
             except FacilityUnconfirmed:
                 self.catalog_errors += 1
+        marks['catalog'] = time.monotonic()
         candidates = []
         for item in off_switches(frames):
             key = (step, *np.round(np.asarray(item['position'])/80.).astype(int).tolist())
@@ -244,6 +249,10 @@ class SwitchSearch:
                                      camera=np.round(self.camera).tolist(),
                                      elapsed=round(time.monotonic()-started, 2), arrays=dict(field=fresh))
         self.session.preview(fresh)
+        marks['evidence'] = time.monotonic()
+        logger.debug('switch_search_view timing '+' '.join(
+            f'{name}=%.2f' % (stamp-previous) for (name, stamp), previous
+            in zip(marks.items(), [started]+list(marks.values())[:-1]))+f' frames={len(frames)}')
         # 新鲜机关 > 目录线索（移过去确认只需一两次拖动）> 敌人。
         state, pool = (('found', candidates) if candidates else ('hint', hints) if hints and not goal
                        else ('enemy', enemies))
