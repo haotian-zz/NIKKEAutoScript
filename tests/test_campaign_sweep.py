@@ -176,6 +176,20 @@ class ChapterSweepTests(unittest.TestCase):
         self.assertEqual(self.sweep.proof['state'], 'incomplete')
         self.assertEqual(self.sweep.proof['unconfirmed_motion'], self.sweep.coverage_warnings)
 
+    def test_parallax_falls_back_to_dominant_shift_but_blocks_clearance(self):
+        """实录22-36：严格配准缺背景内点时按主平移继续找敌人，覆盖记存疑；主平移也测不到才停止。"""
+        failed = SweepUnconfirmed('镜头运动缺少分布充分的背景内点，未确认巡检覆盖。')
+        shift = Mock(return_value=np.array([-470., 4.]))
+        with patch.object(sweep_module, 'camera_motion', side_effect=failed), \
+                patch.dict('sys.modules', {'module.campaign.switch_search': SimpleNamespace(content_shift=shift)}):
+            np.testing.assert_allclose(self.sweep.measure_motion('a', 'b', [480., 0.]), [-470., 4.])
+            self.assertEqual(len(self.sweep.coverage_warnings), 1)
+            shift.return_value = None
+            with self.assertRaisesRegex(SweepUnconfirmed, '背景内点'):
+                self.sweep.measure_motion('a', 'b', [480., 0.])
+        with self.assertRaisesRegex(SweepUnconfirmed, '斜向'):
+            self.sweep.run()
+
     def test_new_enemy_interrupts_survey_for_immediate_processing(self):
         """发现当前可点击敌人立即结束巡检，战斗之后由新巡检重新核验全章。"""
         def found(drag, before=None):

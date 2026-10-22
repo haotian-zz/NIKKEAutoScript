@@ -154,8 +154,22 @@ class ChapterSweep:
         pan_scene(self.session, drag, squad_ground=ground)
 
     def measure_motion(self, before, after, drag):
-        """清怪扫描使用严格轴向响应；设施子类可观察斜向运动，但必须保留覆盖存疑。"""
-        return camera_motion(before, after, drag)
+        """清怪扫描使用严格轴向响应；严格配准失败时按主平移继续找敌人，覆盖记为存疑。
+
+        实录 2026-10-22（22-36）：高架视差让第 1 屏就报“缺少分布充分的背景内点”，整轮中止。
+        主平移只用来继续巡检找剩余敌人；有存疑记录时 run() 不会声明本章全清。
+        """
+        try:
+            return camera_motion(before, after, drag)
+        except SweepUnconfirmed as exc:
+            from module.campaign.switch_search import content_shift
+            shift = content_shift(None, None, drag, before, after)
+            if shift is None:
+                raise
+            self.coverage_warnings.append(dict(pan=self.steps, drag=list(drag), actual=shift.tolist(),
+                                               reason=str(exc)))
+            logger.info(f'镜头严格配准未通过，按主平移 {np.round(shift).astype(int).tolist()} 继续巡检；覆盖记为存疑。')
+            return shift
 
     def pan_anchor(self, field):
         """仅真实箭头或离屏标记允许拖镜头；离屏时返回None，不构造画面中心地面坐标。"""
