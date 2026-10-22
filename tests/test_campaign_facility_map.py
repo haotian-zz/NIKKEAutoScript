@@ -69,6 +69,20 @@ class FacilityMapTests(unittest.TestCase):
             self.assertIsNone(facility.seek_map_point(self.runner, target))
         pan.assert_not_called()
 
+    def test_seek_tracks_squad_by_map_position_after_it_leaves_screen(self):
+        """实录22-36：拖一次后小队离屏、头像被小地图挡住；按开始时记下的底图坐标判断已离屏，继续寻位。"""
+        target = np.array([5000., 3000.])
+        reports = [report(target-[243.+900., 231.]), report(target-[243.+450., 231.]), report(target-[243., 231.])]
+        with patch.object(facility, 'locate_view', side_effect=reports), \
+                patch.object(facility, 'squad_arrow', side_effect=[np.array([888., 400.]), None]), \
+                patch.object(facility, 'squad_offscreen', return_value=None), \
+                patch.object(facility, 'pan_scene') as pan:
+            reached = facility.seek_map_point(self.runner, target)
+        self.assertIsNotNone(reached)
+        self.assertEqual(pan.call_count, 2)
+        np.testing.assert_allclose(pan.call_args_list[0].kwargs['squad_ground'], [888., 490.])
+        self.assertIsNone(pan.call_args_list[1].kwargs['squad_ground'])
+
     def test_record_positions_only_when_missing_and_reports_scene_change(self):
         """已有坐标不再开地图；缺坐标时配准一次，按注视点换算并报告开合地图后画面是否未变。"""
         items = [dict(facility_id='scene-0001', position=list(goto.VIEWPORT_PIXEL))]
@@ -87,6 +101,27 @@ class FacilityMapTests(unittest.TestCase):
                                    atol=1e-6)
         with patch.object(facility, 'locate_view', side_effect=ValueError('未通过')):
             self.assertIsNone(facility.record_map_positions(self.runner, catalog, items, self.field))
+
+    def test_manual_entry_is_remembered_by_squad_map_position_and_skipped_later(self):
+        """实录22-36：EX 关闭后换镜头就是新编号又被选中；按小队底图坐标记下，之后同一位置的目标跳过。"""
+        catalog = SimpleNamespace(data={}, save=Mock())
+        squad = dict(report([100., 200.]), position_kind='squad', position=[500., 600.])
+        with patch.object(facility, 'locate_view', return_value=squad):
+            facility.remember_manual_entry(self.runner, catalog, (22, 0, 'EX', 2))
+            facility.remember_manual_entry(self.runner, catalog, (22, 0, 'EX', 2))
+        self.assertEqual(len(catalog.data['manual_entries']), 1)
+        chart = facility.gaze_chart(self.localizer)
+        view = report([300., 400.])
+        near = facility.map_to_client(chart, view, [510., 600.])
+        far = facility.map_to_client(chart, view, [400., 600.])
+        with patch.object(facility, 'locate_view', return_value=view):
+            self.assertEqual(facility.manual_entry_check(self.runner, catalog, near, self.field), 'skip')
+            self.assertIsNone(facility.manual_entry_check(self.runner, catalog, far, self.field))
+        with patch.object(facility, 'locate_view') as locate:
+            self.assertIsNone(facility.manual_entry_check(self.runner, SimpleNamespace(data={}), far, self.field))
+        locate.assert_not_called()
+        with patch.object(facility, 'locate_view', return_value=dict(report([0., 0.]), position_kind='viewport')):
+            self.assertIsNone(facility.remember_manual_entry(self.runner, SimpleNamespace(data={}), (22, 0, 'EX', 3)))
 
 
 if __name__ == '__main__':

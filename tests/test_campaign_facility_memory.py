@@ -216,6 +216,20 @@ class FacilityMemoryTests(unittest.TestCase):
         np.testing.assert_allclose(other.data['facilities'][identifier]['map_position'], [81., 50.])
         self.assertEqual(other.data['facilities'][identifier]['map_source'], 'viewport_estimate')
 
+    def test_feature_votes_pick_overlapping_keyframes_before_full_scan(self):
+        """实测22章64个关键帧逐个配准约3秒：先按特征投票只配准票数最高的几个，配上即不再全查。"""
+        rng = np.random.default_rng(903)
+        gray = cv2.resize(rng.integers(0, 256, (500, 3200), dtype=np.uint8), (6400, 999))
+        canvas = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+        names = FacilityMemory.observe.__globals__
+        for x in (0, 1200, 2400, 3600):
+            self.catalog.observe(canvas[:, x:x+1776], [])
+        register = Mock(wraps=names['scene_registration'])
+        with patch.dict(names, scene_registration=register, CANDIDATE_VIEWS=1):
+            self.catalog.observe(canvas[:, 1300:1300+1776], [])
+        self.assertEqual(register.call_count, 1)
+        self.assertIs(register.call_args_list[0].args[0], self.catalog.frames[1])
+
 
 if __name__ == '__main__':
     unittest.main()

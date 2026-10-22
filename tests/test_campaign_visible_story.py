@@ -60,6 +60,9 @@ class VisibleStoryTests(unittest.TestCase):
         self.runner.map_frame = Mock(return_value=self.field)
         # 开局设施巡检单独验证（test_chapter_start_survey_runs_before_first_target）。
         self.runner.chapter_surveyed = True
+        # 需手动关卡的底图记忆单独验证（test_campaign_facility_map）。
+        self.runner.remember_manual_entry = Mock()
+        self.runner.manual_entry_check = Mock(return_value=None)
         self.reveal = Mock()
         patcher = patch.dict(sys.modules, {'module.campaign.navigation.story_navigation':
                                          SimpleNamespace(reveal_story_marker=self.reveal)})
@@ -246,6 +249,7 @@ class VisibleStoryTests(unittest.TestCase):
         self.assertFalse(self.runner.fight_entry(self.target))
         self.runner.close_entry.assert_called_once()
         self.runner.memory.identify.assert_called_once_with('ring-1', (20, 0, 'EX', 1), 'manual_required')
+        self.runner.remember_manual_entry.assert_called_once_with((20, 0, 'EX', 1))
         self.executor.battle.assert_not_called()
         self.runner.memory.victory.assert_not_called()
 

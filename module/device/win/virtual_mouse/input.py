@@ -35,6 +35,10 @@ DRAG_REPORT_INTERVAL = 0.004
 DRAG_MIN_STEPS = 8
 DRAG_MAX_DURATION = 0.6
 DRAG_SETTLE_DELAY = 0.06
+# 拖动终点允许光标滞后到位的时长；中途路点滞后不判失败（下一个路点仍按绝对坐标定位）。
+# 实录 2026-10-22：RDP 会话里第13个路点光标 0.265 秒后才到 (1073, 770)，目标 (1074, 771)，
+# 原先按 0.1 秒未到判拖动失败，推图任务随之结束。
+DRAG_LANDING_TIMEOUT = 0.5
 # 连续失败达到该次数时，移动先尝试恢复驱动，其他操作直接中止。
 FAILURE_LIMIT = 10
 MOVE_RECOVERY_LIMIT = 3
@@ -410,11 +414,26 @@ class VirtualMouseInput(Input):
             time.sleep(DRAG_REPORT_INTERVAL)
             ratio = min(1., (time.perf_counter() - start) / duration)
             target = (round(x1 + span_x * ratio), round(y1 + span_y * ratio))
-            if not self.mouse_driver.set_cursor(*target):
+            if not self._drag_step(target, ratio >= 1.):
                 logger.error(f'Virtual mouse paced drag failed: target={target}, '
                              f'actual={self.mouse_driver.cursor()}, elapsed={time.perf_counter() - start:.3f}s')
                 return False
         return True
+
+    def _drag_step(self, target, final):
+        """定位一个拖动路点；中途路点光标滞后只记调试日志，终点须在 DRAG_LANDING_TIMEOUT 内到位。"""
+        if self.mouse_driver.set_cursor(*target):
+            return True
+        if not final:
+            logger.debug(f'Virtual mouse drag waypoint lagging: target={target}, actual={self.mouse_driver.cursor()}')
+            return True
+        deadline = time.perf_counter() + DRAG_LANDING_TIMEOUT
+        while time.perf_counter() < deadline:
+            actual = self.mouse_driver.cursor()
+            if abs(actual[0] - target[0]) <= 2 and abs(actual[1] - target[1]) <= 2:
+                return True
+            time.sleep(0.01)
+        return False
 
     def _drag_absolute(self, x1, y1, x2, y2, steps, interval):
         """直定位拖动：按等间隔把光标沿直线推到终点，每个路点都是绝对坐标。
@@ -427,7 +446,7 @@ class VirtualMouseInput(Input):
         for index in range(1, steps + 1):
             ratio = index / steps
             target = (round(x1 + span_x * ratio), round(y1 + span_y * ratio))
-            if not self.mouse_driver.set_cursor(*target):
+            if not self._drag_step(target, index == steps):
                 logger.error(f'Virtual mouse drag waypoint {index}/{steps} failed: '
                              f'target={target}, actual={self.mouse_driver.cursor()}, '
                              f'backend={type(self.mouse_driver).__name__}, elapsed={time.perf_counter() - start:.3f}s')

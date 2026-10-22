@@ -15,6 +15,11 @@ MAX_VIEWS = 64
 MAX_FACILITIES = 256
 # 每个设施保留最近几次视野观测；更早的视野不再锚定它，可作为桥接帧淘汰。
 MAX_OBSERVATIONS = 4
+# 先按特征投票挑出最可能重叠的几个关键帧再做严格配准；都配不上才补查其余关键帧。
+# 实测 2026-10-22（22章64个关键帧）：逐个严格配准约3秒，投票约0.06秒，票数前几名基本都是真重叠。
+CANDIDATE_VIEWS = 8
+VOTE_SAMPLE = 600
+VOTE_DISTANCE = 200.
 
 
 class FacilityUnconfirmed(RuntimeError):
@@ -149,6 +154,7 @@ class FacilityMemory:
         self.expected = []
         self.unresolved = []
         self.last_bridge_at = 0.
+        self.vote_index = None
 
     def save(self):
         """原子替换小型目录；关键帧先落盘，目录只引用已完成的不可变特征文件。"""
@@ -265,16 +271,18 @@ class FacilityMemory:
         if frame.descriptors is None or len(frame.keys) < 30:
             raise FacilityUnconfirmed('静态纹理不足，无法登记可靠设施身份。')
         matches = []
-        # 顺序扫描多数只需最近一屏；重启或回访时才补查历史关键帧。
-        for number in reversed(self.frames):
-            try:
-                matrix, source, destination = scene_registration(self.frames[number], frame)
-            except (ValueError, cv2.error, np.linalg.LinAlgError):
-                continue
-            matches.append((number, matrix, source, destination))
-            # 背景桥接只需确认当前视野已有关键帧：命中同屏关键帧即停，不再逐个比对全部历史
-            # （实测 2026-10-22：22章46个关键帧逐个配准约1.5秒，每帧地图轮询都付一次）。
-            if background and same_screen(matrix):
+        for group in self._vote_order(frame):
+            for number in group:
+                try:
+                    matrix, source, destination = scene_registration(self.frames[number], frame)
+                except (ValueError, cv2.error, np.linalg.LinAlgError):
+                    continue
+                matches.append((number, matrix, source, destination))
+                # 背景桥接只需确认当前视野已有关键帧：命中同屏关键帧即停，不再逐个比对全部历史
+                # （实测 2026-10-22：22章46个关键帧逐个配准约1.5秒，每帧地图轮询都付一次）。
+                if background and same_screen(matrix):
+                    break
+            if matches:
                 break
         if self.frames and not matches:
             raise FacilityUnconfirmed('当前视野未与设施关键帧可靠重定位，未创建重复设施。')
@@ -363,6 +371,29 @@ class FacilityMemory:
         self.data['unresolved'] = unresolved
         self.save()
         return list(current.values())
+
+    def _vote_order(self, frame):
+        """返回(候选关键帧, 其余关键帧)：每个关键帧抽样特征建一个近邻索引，当前画面特征投票排序。
+
+        投票只决定严格配准的先后，不授予关联；关键帧不多时直接按新到旧全部配准。
+        """
+        numbers = list(reversed(self.frames))
+        if len(numbers) <= CANDIDATE_VIEWS:
+            return numbers, []
+        if self.vote_index is None or self.vote_index[0] != tuple(numbers):
+            owners, samples = [], []
+            for number in numbers:
+                descriptors = self.frames[number].descriptors
+                sample = descriptors[::max(1, len(descriptors)//VOTE_SAMPLE)][:VOTE_SAMPLE]
+                samples.append(sample)
+                owners.append(np.full(len(sample), number))
+            index = cv2.flann_Index(np.vstack(samples).astype(np.float32), dict(algorithm=1, trees=4))
+            self.vote_index = (tuple(numbers), np.concatenate(owners), index)
+        _, owners, index = self.vote_index
+        nearest, distance = index.knnSearch(frame.descriptors.astype(np.float32), 1, params=dict(checks=32))
+        votes = np.bincount(owners[nearest[distance[:, 0] < VOTE_DISTANCE**2, 0]], minlength=max(numbers)+1)
+        ranked = sorted(numbers, key=lambda number: -votes[number])
+        return ranked[:CANDIDATE_VIEWS], ranked[CANDIDATE_VIEWS:]
 
     def anchors(self):
         """被设施观测引用的锚点关键帧编号；其余都是可淘汰的桥接帧。"""

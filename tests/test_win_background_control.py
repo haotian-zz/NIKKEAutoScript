@@ -716,6 +716,7 @@ class DriverSchemeTests(unittest.TestCase):
         with (
             patch.object(VirtualMouseInput, '_preflight', return_value=None),
             patch.object(Input, '__init__', return_value=None),
+            patch('module.device.win.virtual_mouse.input.shared_mouse', return_value=Mock()),
         ):
             handler = VirtualMouseInput(config_name='nkas', move_backend='cursor')
         handler.mouse_driver = Mock()
@@ -733,6 +734,32 @@ class DriverSchemeTests(unittest.TestCase):
         self.assertLessEqual(len(calls), 45)
         self.assertEqual(calls[-1].args, (1830, 840))
         handler.mouse_driver.release.assert_called_once_with()
+
+    def test_lagging_middle_waypoint_does_not_fail_but_final_point_must_land(self):
+        """实录 2026-10-22：RDP 光标 0.265 秒后才到中途路点，不判失败；终点始终没到才判失败。"""
+        for final_lands in (True, False):
+            with self.subTest(final_lands=final_lands):
+                with (
+                    patch.object(VirtualMouseInput, '_preflight', return_value=None),
+                    patch.object(Input, '__init__', return_value=None),
+                    patch('module.device.win.virtual_mouse.input.shared_mouse', return_value=Mock()),
+                ):
+                    handler = VirtualMouseInput(config_name='nkas', move_backend='cursor')
+                handler.mouse_driver = Mock()
+                results = iter([True, False] + [True] * 200)
+                handler.mouse_driver.set_cursor.side_effect = (
+                    lambda x, y: next(results) if final_lands or (x, y) != (100, 350) else False)
+                handler.mouse_driver.cursor.return_value = (100, 200)
+                clock = {'now': 0.}
+                def tick():
+                    clock['now'] += .01
+                    return clock['now']
+                with patch.object(handler, '_move_to', return_value=True), \
+                        patch('module.device.win.virtual_mouse.input.time.sleep'), \
+                        patch('module.device.win.virtual_mouse.input.time.perf_counter', side_effect=tick):
+                    handler.mouse_swipe((100, 100), (100, 350), speed=5)
+                handler.mouse_driver.release.assert_called_once_with()
+                self.assertEqual(handler._failures, 0 if final_lands else 1)
 
     def test_successful_complete_gesture_resets_failure_count(self):
         for method, args in (('press_mouse', ()), ('mouse_swipe', ((100, 100), (100, 350)))):

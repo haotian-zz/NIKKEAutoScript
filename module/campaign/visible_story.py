@@ -417,6 +417,7 @@ class VisibleStoryRunner:
             self.memory.identify(identifier, stage, 'manual_required')
             self.close_entry()
             logger.info('EX 需要手动瞄准及爆裂控制，已关闭备战并保留未完成，继续普通／分支清怪。')
+            self.remember_manual_entry(stage)
             return False
         if stage in self.owner.story_wins:
             self.memory.identify(identifier, stage, 'deferred')
@@ -459,6 +460,26 @@ class VisibleStoryRunner:
                                      previous_enemies=first, stable=len(candidates),
                                      squad_overlap=getattr(self.memory.previous, 'squad_overlap_boxes', ()))
         return fresh, candidates
+
+    def remember_manual_entry(self, stage):
+        """把需手动关卡的位置记进本章设施目录（底图坐标），目录不可用时跳过。"""
+        from module.campaign.facility_memory import FacilityUnconfirmed
+        from module.campaign.navigation.facility_map import remember_manual_entry
+        from module.campaign.structures import facility_catalog
+        try:
+            remember_manual_entry(self, facility_catalog(self), stage)
+        except (FacilityUnconfirmed, OSError) as exc:
+            logger.info(f'设施目录不可用，未记下需手动关卡位置：{exc}')
+
+    def manual_entry_check(self, target, field):
+        """目标是否是已知需手动关卡；返回 'skip'、'changed' 或 None。"""
+        from module.campaign.facility_memory import FacilityUnconfirmed
+        from module.campaign.navigation.facility_map import manual_entry_check
+        from module.campaign.structures import facility_catalog
+        try:
+            return manual_entry_check(self, facility_catalog(self), target['click'], field)
+        except (FacilityUnconfirmed, OSError):
+            return None
 
     def selectable(self, item):
         """过滤本轮暂不可达和需手动战斗的 EX；被过滤目标仍保留在巡检与观察簿中。
@@ -847,6 +868,12 @@ class VisibleStoryRunner:
             target = preferred or min(candidates, key=lambda item: (
                 stage_order(item['stage']) if item['stage'] is not None else (99, 99, '', 0),
                 float(np.linalg.norm(np.asarray(item['click']) - anchor))))
+            checked = self.manual_entry_check(target, fresh)
+            if checked == 'skip':
+                self.deferred.add(target['id'])
+                continue
+            if checked == 'changed':
+                continue
             self.session.begin_target(target['id'])
             self.session.preview(fresh)
             self.session.record_evidence('scene_target', fresh, quest=self.quest, target=target, arrays=dict(field=fresh))

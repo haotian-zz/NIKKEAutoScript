@@ -527,6 +527,35 @@ class RecoveryOrderTests(unittest.TestCase):
         self.assertFalse(survey.call_args.kwargs.get('first_off', False))
         recenter.assert_called_once()
 
+    def test_survey_motion_falls_back_to_dominant_shift_and_stays_partial(self):
+        """实录22-36：视差让严格单应失败，开局巡检第二次拖动就中止；改按主平移继续，覆盖记存疑。"""
+        survey = object.__new__(survey_module.FacilitySurvey)
+        survey.steps, survey.coverage_warnings, survey.content = 3, [], np.zeros(2)
+        failure = survey_module.SweepUnconfirmed('场景帧间配准不可靠。')
+        with patch.object(survey_module, 'camera_motion', side_effect=failure), \
+                patch.object(search, 'content_shift', return_value=np.array([-310., 4.])):
+            np.testing.assert_allclose(survey.measure_motion(None, None, [-480., 0.]), [-310., 4.])
+        self.assertEqual(len(survey.coverage_warnings), 1)
+        with patch.object(survey_module, 'camera_motion', side_effect=failure), \
+                patch.object(search, 'content_shift', return_value=None):
+            with self.assertRaises(survey_module.SweepUnconfirmed):
+                survey.measure_motion(None, None, [-480., 0.])
+
+    def test_survey_keeps_offscreen_squad_while_camera_moves_away(self):
+        """实录22-36：巡到右缘时左侧离屏头像被小地图挡住；镜头继续远离小队就沿用离屏结论，往回才重新确认。"""
+        survey = object.__new__(survey_module.FacilitySurvey)
+        survey.content, survey.squad_away, survey.occlusion_checked = np.zeros(2), None, True
+        survey.proof, survey.session = {}, Mock()
+        with patch.object(survey_module, 'squad_arrow', return_value=None), \
+                patch.object(survey_module, 'squad_offscreen',
+                             side_effect=[dict(center=[30., 400.], direction=180.), None, None]):
+            self.assertIsNone(survey.pan_anchor(self.field))
+            survey.content = np.array([-300., -120.])
+            self.assertIsNone(survey.pan_anchor(self.field))
+            survey.content = np.array([200., 0.])
+            with self.assertRaises(survey_module.SweepUnconfirmed):
+                survey.pan_anchor(self.field)
+
     def test_recenter_skipped_when_squad_already_visible(self):
         """实录22-27：任务定位后小队仍在画面内，没有离屏头像可点，不算找回失败。"""
         with patch.object(structure, 'squad_arrow', return_value=np.array([885., 420.])), \
