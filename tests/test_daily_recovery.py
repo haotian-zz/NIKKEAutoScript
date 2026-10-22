@@ -69,6 +69,60 @@ class RookieOutcomeTests(unittest.TestCase):
                 script.config.task_delay.assert_called_once()
 
 
+class LobbyTimer:
+    """Minimal Timer: reached once started, so a stable lobby frame triggers immediately."""
+    def __init__(self, *args, **kwargs):
+        self.on = False
+
+    def start(self):
+        self.on = True
+        return self
+
+    def started(self):
+        return self.on
+
+    def clear(self):
+        self.on = False
+
+    def reset(self):
+        return self
+
+    def reached(self):
+        return self.on
+
+
+class RookieEntryTests(unittest.TestCase):
+    def entry(self, pages):
+        failed = type('EntryFailed', (Exception,), {})
+        ns = methods('module/rookie_arena/rookie_arena.py', {'ensure_into_rookie_arena'},
+                     dict(Timer=LobbyTimer, logger=Mock(), NEXT_SEASON='season', MAIN_CHECK='lobby',
+                          ARENA_GOTO_ROOKIE_ARENA='entry', ROOKIE_ARENA_CHECK='board', CONNECT_TO_SYSTEM='connect',
+                          ROOKIE_ARENA_REENTRY=2, RookieArenaEntryFailed=failed, page_arena='arena',
+                          RookieArenaIsUnavailable=type('Unavailable', (Exception,), {})))
+        frames = iter(pages)
+        state = SimpleNamespace(page=next(frames))
+
+        def screenshot():
+            state.page = next(frames)
+        script = SimpleNamespace(device=SimpleNamespace(screenshot=screenshot), ui_ensure=Mock(),
+                                 appear=lambda button, **kw: button == state.page,
+                                 appear_then_click=lambda button, **kw: False,
+                                 free_opportunity_remain=False, start_competition=Mock())
+        return ns['ensure_into_rookie_arena'], script, failed
+
+    def test_lobby_after_entry_click_reenters_arena_then_continues(self):
+        """2026-10-22: the entry click dropped back to the lobby and the loop spun until the 900 s limit."""
+        run, script, _ = self.entry(['lobby', 'board', 'board', 'board'])
+        run(script)
+        script.ui_ensure.assert_called_once_with('arena')
+
+    def test_repeated_lobby_raises_after_reentry_limit(self):
+        run, script, failed = self.entry(['lobby']*10)
+        with self.assertRaises(failed):
+            run(script)
+        self.assertEqual(script.ui_ensure.call_count, 2)
+
+
 class NotificationCheckTests(unittest.TestCase):
     def test_disabled_task_and_all_retries_never_send_a_message(self):
         for enabled, retry, expected in ((False, False, 'skipped'), (False, True, 'skipped'),

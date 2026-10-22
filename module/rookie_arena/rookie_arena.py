@@ -15,7 +15,7 @@ from module.base.utils import (
 from module.logger import logger
 from module.ocr.ocr import Digit
 from module.rookie_arena.assets import *
-from module.ui.assets import ARENA_GOTO_ROOKIE_ARENA, ROOKIE_ARENA_CHECK
+from module.ui.assets import ARENA_GOTO_ROOKIE_ARENA, MAIN_CHECK, ROOKIE_ARENA_CHECK
 from module.ui.page import page_arena
 from module.ui.ui import UI
 
@@ -26,6 +26,14 @@ class RookieArenaIsUnavailable(Exception):
 
 class RookieArenaTimesReached(Exception):
     pass
+
+
+class RookieArenaEntryFailed(Exception):
+    pass
+
+
+# 点入口后游戏退回大厅时，重新进竞技场页面的次数上限。
+ROOKIE_ARENA_REENTRY = 2
 
 
 class RookieArena(UI, ArenaBase):
@@ -199,6 +207,8 @@ class RookieArena(UI, ArenaBase):
     def ensure_into_rookie_arena(self, skip_first_screenshot=True):
         confirm_timer = Timer(2, count=3)
         click_timer = Timer(0.3)
+        lobby_timer = Timer(3, count=3)
+        reentry = 0
         while 1:
             if skip_first_screenshot:
                 skip_first_screenshot = False
@@ -207,6 +217,22 @@ class RookieArena(UI, ArenaBase):
 
             if self.appear(NEXT_SEASON, offset=(50, 50)):
                 raise RookieArenaIsUnavailable
+
+            # 实录 2026-10-22：点新人竞技场入口后游戏退回大厅，原循环只认竞技场内画面，
+            # 空转到900秒任务总时限才停。稳定回到大厅就重新进竞技场页面，超过上限报告失败。
+            if self.appear(MAIN_CHECK, offset=(30, 30)):
+                if not lobby_timer.started():
+                    lobby_timer.start()
+                if lobby_timer.reached():
+                    if reentry >= ROOKIE_ARENA_REENTRY:
+                        raise RookieArenaEntryFailed
+                    reentry += 1
+                    logger.warning(f'Back in lobby after entering rookie arena, re-enter arena ({reentry})')
+                    self.ui_ensure(page_arena)
+                    lobby_timer.clear()
+                    click_timer.clear()
+                continue
+            lobby_timer.clear()
 
             if click_timer.reached() and self.appear_then_click(
                 ARENA_GOTO_ROOKIE_ARENA, offset=(30, 30), interval=5, static=False
@@ -262,6 +288,9 @@ class RookieArena(UI, ArenaBase):
             report('skipped', '新人竞技场正在等待新赛季')
             logger.warning('Waiting for the next season')
             pass
+        except RookieArenaEntryFailed:
+            report('unknown', '新人竞技场入口点击后多次退回大厅，未进入', retryable=True)
+            logger.warning('Rookie arena entry keeps returning to lobby')
         except RookieArenaTimesReached:
             report('success', '新人竞技场已达到配置挑战次数')
             logger.warning('Reach the number of battle times')
