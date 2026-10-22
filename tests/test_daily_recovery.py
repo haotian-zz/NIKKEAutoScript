@@ -123,6 +123,24 @@ class RookieEntryTests(unittest.TestCase):
         self.assertEqual(script.ui_ensure.call_count, 2)
 
 
+class ChampionEntryTests(unittest.TestCase):
+    def test_unrecognized_entry_state_ends_instead_of_spinning(self):
+        """2026-10-22: the champion entry read COMING SOON, matched no known stage and spun until 900 s."""
+        unrecognized = type('Unrecognized', (Exception,), {})
+        ns = methods('module/champion_arena/champion_arena.py', {'ensure_into_champion_arena'},
+                     dict(Timer=Timer, logger=Mock(), CHAMPION_ENTRY_SECONDS=3, ChampionArenaUnrecognized=unrecognized,
+                          ChampionArenaIsUnavailable=type('Unavailable', (Exception,), {}),
+                          PROGRESS_NEXT_SEASON='p1', PROGRESS_TEAM='p2', PROGRESS_FIGHTING='p3',
+                          PROGRESS_RESULTING='p4', PROGRESS_END='p5',
+                          ARENA_GOTO_CHAMPION_ARENA='entry', CHAMPION_ARENA_CHECK='board'))
+        frames = []
+        script = SimpleNamespace(device=SimpleNamespace(screenshot=lambda: frames.append(1)),
+                                 appear=lambda button, **kw: False, appear_then_click=lambda button, **kw: False)
+        with self.assertRaises(unrecognized):
+            ns['ensure_into_champion_arena'](script)
+        self.assertLess(len(frames), 5)
+
+
 class NotificationCheckTests(unittest.TestCase):
     def test_disabled_task_and_all_retries_never_send_a_message(self):
         for enabled, retry, expected in ((False, False, 'skipped'), (False, True, 'skipped'),
