@@ -166,9 +166,14 @@ def return_lobby_quest(text):
                                                 re.sub(r'\s+', '', text)))
 
 
-def outpost_lobby_quest(text):
-    """只接受完整的简繁体前往前哨基地任务；实录21章通关后大厅出现，进入前哨基地即完成。"""
-    return bool(text is not None and re.fullmatch(r'前往(?:【前哨基地】|\[前哨基地\]|前哨基地)', re.sub(r'\s+', '', text)))
+def destination_lobby_quest(text):
+    """大厅「前往【某处】」任务：通关后游戏要求去某个界面触发剧情或解锁，点任务箭头由游戏带过去。
+
+    实录 2026-10-21：21 章通关后为「前往【前哨基地】」，进入基地即完成。只接受整行“前往＋括号地名”，
+    「前往地面【出击】」是出击指令，不在此列。
+    """
+    return bool(text is not None and re.fullmatch(r'前往(?:【[^】]{1,12}】|\[[^\]]{1,12}\]|前哨基地)',
+                                                re.sub(r'\s+', '', text)))
 
 
 def read_ex_entry(field, reader):

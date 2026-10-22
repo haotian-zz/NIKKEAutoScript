@@ -28,7 +28,7 @@ def load(name, **namespace):
     namespace.setdefault('ENTRY_CLOSE_POINT', (1147, 513))
     namespace.setdefault('LOBBY_RETURN_WAIT', 30.)
     namespace.setdefault('return_lobby_quest', Mock(return_value=False))
-    namespace.setdefault('outpost_lobby_quest', Mock(return_value=False))
+    namespace.setdefault('destination_lobby_quest', Mock(return_value=False))
     exec(compile(ast.Module(body=[node], type_ignores=[]), name, 'exec'), namespace)
     return namespace[name]
 
@@ -500,24 +500,25 @@ class CampaignStartTests(unittest.TestCase):
         fn = load('confirm_lobby_quest', time=SimpleNamespace(monotonic=lambda: clock.now), MAIN_CHECK=main,
                   logger=Mock())
         runner = lobby_runner(main, appear=Mock(return_value=True), lobby_sortie_instruction=False,
-                              lobby_outpost_instruction=True, quest_stage=Mock(return_value=None))
+                              lobby_destination_instruction=True, quest_stage=Mock(return_value=None))
         runner.device.sleep.side_effect = lambda seconds: setattr(clock, 'now', clock.now+seconds)
         self.assertEqual(fn(runner), (None, False))
 
     def test_outpost_visit_clicks_verified_arrow_once_and_waits_for_new_quest(self):
         """只点一次连续核对的任务箭头；进入基地后任务文字更新才算完成，超时不重复点击。"""
-        from module.campaign.visible_story import outpost_lobby_quest
+        from module.campaign.visible_story import destination_lobby_quest
         for text, accepted in [('前往【前哨基地】', True), ('前往[前哨基地]', True), ('前往 前哨基地', True),
-                               ('前往【前哨基地】领取', False), ('前哨基地', False), (None, False)]:
-            self.assertEqual(outpost_lobby_quest(text), accepted)
+                               ('前往【前哨基地】领取', False), ('前哨基地', False), (None, False),
+                               ('前往【方舟】', True), ('前往地面【出击】', False)]:
+            self.assertEqual(destination_lobby_quest(text), accepted)
         clock = SimpleNamespace(now=0.)
         main, outpost = object(), SimpleNamespace(check_button=object())
         point = Mock(return_value=(685.5, 128.))
-        fn = load('visit_outpost_quest', time=SimpleNamespace(monotonic=lambda: clock.now), MAIN_CHECK=main,
+        fn = load('visit_quest_destination', time=SimpleNamespace(monotonic=lambda: clock.now), MAIN_CHECK=main,
                   page_outpost=outpost, quest_jump_point=point, cv2=SimpleNamespace(cvtColor=lambda x, _: x,
-                  COLOR_RGB2BGR=0), logger=Mock(), OUTPOST_QUEST_WAIT=30., LOBBY_JUMP_AREA=(660, 108, 710, 149))
+                  COLOR_RGB2BGR=0), logger=Mock(), DESTINATION_QUEST_WAIT=30., LOBBY_JUMP_AREA=(660, 108, 710, 149))
         frames = iter([main, None, outpost.check_button, outpost.check_button])
-        runner = SimpleNamespace(device=Mock(), lobby_outpost_instruction=True)
+        runner = SimpleNamespace(device=Mock(), lobby_destination_instruction=True, lobby_quest_text='前往【前哨基地】')
         current = SimpleNamespace(frame=None)
         runner.device.screenshot.side_effect = lambda: setattr(current, 'frame', next(frames))
         runner.appear = lambda button, **_: button is current.frame
@@ -526,7 +527,7 @@ class CampaignStartTests(unittest.TestCase):
         def read():
             """先是完成提示中仍为前往前哨基地，之后更新为出击。"""
             runner.lobby_quest_text = next(texts)
-            runner.lobby_outpost_instruction = runner.lobby_quest_text == '前往【前哨基地】'
+            runner.lobby_destination_instruction = runner.lobby_quest_text == '前往【前哨基地】'
         runner.quest_stage = read
         runner.device.sleep.side_effect = lambda seconds: setattr(clock, 'now', clock.now+seconds)
         self.assertTrue(fn(runner))
@@ -534,7 +535,7 @@ class CampaignStartTests(unittest.TestCase):
         clock.now = 0.
         frames = iter([main] + [object()]*40)
         runner.device.click_xy.reset_mock()
-        self.assertFalse(fn(runner))
+        self.assertIsNone(fn(runner))
         runner.device.click_xy.assert_called_once()
         self.assertLessEqual(clock.now, 31.5)
         point.return_value = None
