@@ -129,5 +129,26 @@ class MinimapOcclusionTests(unittest.TestCase):
         restore.assert_called_once_with(session)
 
 
+    def test_blue_scene_with_compact_minimap_is_not_expanded(self):
+        """实录22章：中部是青蓝地面且紧凑小地图仍在，不能判为展开面板；紧凑面板消失后才看中部。"""
+        import ast
+        from pathlib import Path
+        tree = ast.parse((Path(__file__).resolve().parents[1]/'module/campaign/campaign.py').read_text(encoding='utf-8'))
+        node = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == 'minimap_expanded')
+        compact = {'visible': True}
+        field = np.zeros((999, 1776, 3), np.uint8)
+        field[280:742, 644:1130] = 1
+        namespace = dict(cv2=cv2, EXPANDED_ROI=(644, 280, 1130, 742),
+                         map_visible=lambda crop: bool(crop.any()) or (crop.shape[:2] == (155, 180)
+                                                                        and compact['visible']),
+                         minimap_control_visible=lambda crop: compact['visible'])
+        exec(compile(ast.Module(body=[node], type_ignores=[]), 'campaign', 'exec'), namespace)
+        owner = SimpleNamespace()
+        self.assertFalse(namespace['minimap_expanded'](owner, field))
+        compact['visible'] = False
+        self.assertTrue(namespace['minimap_expanded'](owner, field))
+        field[280:742, 644:1130] = 0
+        self.assertFalse(namespace['minimap_expanded'](owner, field))
+
 if __name__ == '__main__':
     unittest.main()

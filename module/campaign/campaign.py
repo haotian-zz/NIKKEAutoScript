@@ -12,7 +12,7 @@ from module.campaign.vision.chapter import CLIENT_SIZE, chapter_identity
 from module.campaign.goals import choose_goal, describe
 from module.campaign.map.map_state import StaticMap
 from module.campaign.map.catalog import chapter_map
-from module.campaign.vision.minimap import map_visible
+from module.campaign.vision.minimap import map_visible, minimap_control_visible
 from module.campaign.navigation.targets import TargetFinder
 from module.campaign.vision.observation import EXPANDED_ROI, CampaignObserver
 from module.campaign.navigation.routing import CutRoads
@@ -178,6 +178,10 @@ class Campaign(ModuleBase):
         """
         if image is None:
             image = cv2.cvtColor(self.device.image, cv2.COLOR_RGB2BGR)
+        # 实录 2026-10-21（22 章）：场景中部本身是青蓝色地面，紧凑小地图仍在时也满足颜色判据，
+        # 收起连续失败而中断；与观察器一致，紧凑面板及其控件可见时一律不算展开。
+        if map_visible(image[118:273, 27:207]) and minimap_control_visible(image[76:120, 20:64]):
+            return False
         left, top, right, bottom = EXPANDED_ROI
         return map_visible(image[top:bottom, left:right])
 
