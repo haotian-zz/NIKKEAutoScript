@@ -118,6 +118,17 @@ class ChapterCompletionTests(unittest.TestCase):
             self.assertEqual(found['accepted'], accepted)
             self.assertEqual(found['point'] is not None, accepted)
 
+    def test_unlock_announcements_are_accepted_by_category(self):
+        """实录21章通关后“开启兑换商店／点击继续。”可继续；非解锁正文即使有继续提示也保持阻塞。"""
+        cv2.putText(self.field, 'CONTINUE', (850, 635), cv2.FONT_HERSHEY_SIMPLEX, .4, (255, 255, 255), 1)
+        for title, accepted in [('开启兑换商店', True), ('开启兑換商店', True), ('确认购买', False), ('开启', False)]:
+            self.reader.paddleocr.recognize.side_effect = [
+                [dict(rec_text=title, rec_score=.96)], [dict(rec_text='点击继续。', rec_score=.99)]]
+            with patch('module.campaign.vision.chapter_completion.overlay_anchor',
+                       return_value=dict(kind='chapter_unlock', anchor_score=.99)):
+                found = chapter_overlay(self.field, self.reader)
+            self.assertEqual(found['accepted'], accepted, title)
+
     def test_chapter_list_close_requires_complete_x_not_plus_or_diagonal(self):
         """列表只能点实际完整X，其他黑色装饰不会因为位于预定区域就获得点击许可。"""
         for shape, accepted in [('x', True), ('plus', False), ('diagonal', False)]:

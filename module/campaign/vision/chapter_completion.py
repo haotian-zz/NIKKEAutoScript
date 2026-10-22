@@ -14,6 +14,9 @@ NEXT_CONTROL = (470, 560, 1305, 750)
 UNLOCK_LINE = (839, 393, 948, 433)
 UNLOCK_TITLE = (740, 550, 1040, 610)
 UNLOCK_TITLES = {'开放探索', '開放探索', '解锁快速模拟立即完成', '解鎖快速模擬立即完成'}
+# 实录 2026-10-21：21 章通关后出现“开启兑换商店／点击继续。”。解锁公告按类别接受：标题以下列词开头，
+# 下方必须正好是“点击继续”；其他正文（如购买确认）仍保持阻塞。
+UNLOCK_PREFIXES = ('开启', '開啟', '开放', '開放', '解锁', '解鎖')
 UNLOCK_PROMPT = (815, 613, 965, 656)
 CHAPTER_LIST_LINE = (658, 105, 766, 135)
 CHAPTER_LIST_CLOSE = (1075, 95, 1126, 145)
@@ -256,7 +259,7 @@ def completion_overlay(field, reader):
 def chapter_overlay(field, reader):
     """完整核验已知章节浮层；解锁须独立识别完整正文及继续文字，不能凭UNLOCK直接点击。
 
-    只接受已实测的开放探索及快速模拟立即完成两类正文；未知语言/正文保持阻塞且point=None。
+    只接受开启／开放／解锁类公告正文（含已实测的开放探索、快速模拟、兑换商店）；其他正文保持阻塞且point=None。
     不修改章节清理记录，不把解锁、浮层消失或按钮响应视为关卡胜利或全清。
     """
     anchor = overlay_anchor(field)
@@ -271,7 +274,8 @@ def chapter_overlay(field, reader):
     title, title_score = read_line(field, UNLOCK_TITLE, reader, scale=3)
     prompt, prompt_score = read_line(field, UNLOCK_PROMPT, reader, scale=3)
     accepted = (np.isfinite([title_score, prompt_score]).all() and min(title_score, prompt_score) >= .9
-                and title.strip() in UNLOCK_TITLES
+                and (title.strip() in UNLOCK_TITLES
+                     or title.strip().startswith(UNLOCK_PREFIXES) and 3 <= len(title.strip()) <= 16)
                 and re.fullmatch(r'\s*[点點][击擊][继繼][续續][。.]?\s*', prompt) is not None)
     result = dict(anchor, accepted=bool(accepted), title=title, title_score=title_score,
                   prompt=prompt, prompt_score=prompt_score, point=None)
