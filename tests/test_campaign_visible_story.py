@@ -321,6 +321,16 @@ class VisibleStoryTests(unittest.TestCase):
         self.executor.battle.assert_not_called()
         self.assertIsNone(self.runner.memory.previous)
 
+    def test_locator_revalidation_miss_does_not_end_the_run(self):
+        """实录22-21：任务OCR贴着门槛，输入前复核漏读只放弃这次定位，不抛出终止整轮推图。"""
+        self.runner.quest = (20, 18)
+        self.ns['quest_jump_point'] = Mock(return_value=(1749., 100.))
+        self.ns['read_stage'] = Mock(return_value=(20, 18))
+        self.session.tap_verified_ui.side_effect = self.ns['UiControlChanged']('ocr miss')
+        self.assertFalse(self.runner.guide_quest(self.field))
+        self.assertFalse(self.runner.guide_quest(self.field))
+        self.session.tap_verified_ui.assert_called_once()
+
     def test_quest_change_between_frames_rejects_locator(self):
         """任务或控件在两帧间变化时不发送旧定位指令。"""
         self.runner.quest = (20, 18)

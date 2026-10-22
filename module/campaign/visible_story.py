@@ -559,6 +559,11 @@ class VisibleStoryRunner:
                 return False
         except TargetTriggered:
             return True
+        except UiControlChanged:
+            # 实录 2026-10-21（22-21）：任务文字OCR分数贴着0.9门槛（0.899/0.901），输入前复核漏读；
+            # 定位只是辅助，不点击并交回主循环，不能因此终止整轮推图。
+            logger.info('主线任务控件在输入前复核未通过，未点击；交回主循环继续扫描。')
+            return False
         logger.info(f'已请求游戏定位主线任务 {stage_text(self.quest)}，下一步重新扫描全部普通／分支红圈。')
         self.session.pause(1.5)
         return True
