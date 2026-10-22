@@ -4,6 +4,10 @@
 真正的开关在同一连通区南侧崖尖，镜头向南约四屏、向东两屏才进入画面，点一次后游戏
 原生寻路走过去踩下，镜头随即切到原门且光幕消失。原有±360/240四次换视角看不到它。
 
+实录 2026-10-21（21-32）：首领所在高台东口被光幕封住，光幕外站着未清的 21-20（灰色机器人
+脚圈，置信度约0.71）；原搜索只找机关，镜头扫过它也不理会。因此同时找任务菱形下方以外的
+两帧稳定敌人脚圈：守关敌人是真实关卡，开战仍须备战标题复核，不把找到当作开门。
+
 镜头移动只用于观察；找到后由调用方点击并按实际结果复核。目录记录尽力而为，目录无法
 重定位时不阻止本次新鲜检测，也不以新编号覆盖旧设施的尝试历史。
 """
@@ -15,13 +19,18 @@ import numpy as np
 from module.campaign.facility_memory import FacilityUnconfirmed, stable_facilities
 from module.campaign.navigation import controls as goto
 from module.campaign.navigation.camera_navigation import pan_scene
+from module.campaign.vision.enemy_ring import scene_ring_candidates
 from module.campaign.vision.objects import detect_objects
 from module.campaign.vision.perception import squad_arrow
+from module.campaign.vision.story_marker import story_markers
 from module.logger import logger
 
 # 拖动手势向量（手指方向，镜头反向移动）；实测600px竖拖约半屏，边界处会被游戏夹住。
 HORIZONTAL_DRAG = 700.
 VERTICAL_DRAG = 520.
+# 任务菱形正下方这一带的脚圈就是受阻的主线目标本身，不当作守关敌人。
+QUEST_RING_DX = 120.
+QUEST_RING_DY = 700.
 
 
 def spiral_drags(rings=4):
@@ -41,10 +50,31 @@ def off_switches(first, second):
             if item['kind'] == 'ground_mechanism' and item['state'] == 'off']
 
 
+def ring_centers(image):
+    """本帧可点击敌人脚圈的框中心；覆盖小队落点的歧义框已由识别层剔除。"""
+    rings, _ = scene_ring_candidates(image)
+    return [(np.asarray([(item.box[0]+item.box[2])/2., (item.box[1]+item.box[3])/2.]), item.confidence)
+            for item in rings]
+
+
+def gate_enemies(first, second, markers):
+    """两帧同位置（≤20px）且不在任务菱形正下方的敌人脚圈；返回第二帧中心与置信度。"""
+    quest = [np.asarray(item['position'], float) for item in markers if item['kind'] == 'scene']
+    found = []
+    for center, confidence in second:
+        if not any(np.linalg.norm(center-old) <= 20. for old, _ in first):
+            continue
+        if any(abs(center[0]-mark[0]) <= QUEST_RING_DX and 0. < center[1]-mark[1] <= QUEST_RING_DY
+               for mark in quest):
+            continue
+        found.append((center, confidence))
+    return found
+
+
 class SwitchSearch:
     """有界螺旋镜头搜索；任何真实备战弹窗立即交回战斗流程，不把找到当作开门。"""
 
-    def __init__(self, runner, catalog=None, pans=20, seconds=100., skip=()):
+    def __init__(self, runner, catalog=None, pans=20, seconds=180., skip=()):
         """skip是本受阻点已尝试过且未解决的搜索键，避免同状态下重复点同一个机关。"""
         self.runner, self.session, self.catalog = runner, runner.session, catalog
         self.drags = spiral_drags()[:pans]
@@ -57,11 +87,18 @@ class SwitchSearch:
         if goto.battle_popup_score(field) > .8:
             return 'entry', None, field
         first = detect_objects(field, ('ground_mechanism', 'elevator', 'barrier'))
+        first_rings = ring_centers(field)
         self.session.pause(.25)
         fresh = self.runner.map_frame()
         if goto.battle_popup_score(fresh) > .8:
             return 'entry', None, fresh
         second = detect_objects(fresh, ('ground_mechanism', 'elevator', 'barrier'))
+        enemies = []
+        for center, confidence in gate_enemies(first_rings, ring_centers(fresh), story_markers(fresh)):
+            key = ('enemy', step, *np.round(center/80.).astype(int).tolist())
+            if key not in self.skip:
+                enemies.append(dict(kind='enemy_ring', state='pending', position=center.tolist(),
+                                    confidence=float(confidence), search_key=key))
         self.views += 1
         registered = []
         if self.catalog is not None:
@@ -79,17 +116,19 @@ class SwitchSearch:
                 continue
             candidates.append(dict(item, search_key=key, **({'facility_id': known[0]} if known else {})))
         self.session.record_evidence('switch_search_view', fresh, step=step, detections=second,
-                                     candidates=candidates, arrays=dict(field=fresh))
+                                     candidates=candidates, enemies=enemies, arrays=dict(field=fresh))
         self.session.preview(fresh)
-        if not candidates:
+        # 守关敌人优先：开战是真实关卡进展，机关只是可能开门。
+        state, pool = ('enemy', enemies) if enemies else ('found', candidates)
+        if not pool:
             return 'none', None, fresh
         arrow = squad_arrow(fresh)
         anchor = np.asarray(goto.VIEWPORT_PIXEL if arrow is None else arrow, float)
-        return 'found', min(candidates, key=lambda item: np.linalg.norm(
+        return state, min(pool, key=lambda item: np.linalg.norm(
             np.asarray(item['position'])-anchor)), fresh
 
     def run(self):
-        """原地先看一屏，再按螺旋逐步拖镜头；返回dict(state=found/entry/exhausted, ...)。"""
+        """原地先看一屏，再按螺旋逐步拖镜头；返回dict(state=found/enemy/entry/exhausted, ...)。"""
         started = time.monotonic()
         logger.info(f'目标受阻：开始螺旋寻找关闭机关，最多 {len(self.drags)} 次镜头移动。')
         for step in range(len(self.drags)+1):
@@ -106,10 +145,11 @@ class SwitchSearch:
             state, target, field = self.look(step)
             if state == 'entry':
                 return dict(state='entry', field=field, views=self.views, pans=self.pans)
-            if state == 'found':
-                logger.info(f"螺旋搜索第 {step} 屏发现关闭机关 {target['position']}"
-                            f"（{target['confidence']:.2f}），交由原生寻路前往；开门须另行复核。")
-                return dict(state='found', target=target, field=field, views=self.views, pans=self.pans)
+            if state in ('found', 'enemy'):
+                what = '关闭机关' if state == 'found' else '未清敌人脚圈'
+                logger.info(f"螺旋搜索第 {step} 屏发现{what} {target['position']}"
+                            f"（{target['confidence']:.2f}），交由原生寻路前往；开门或开战须另行复核。")
+                return dict(state=state, target=target, field=field, views=self.views, pans=self.pans)
         logger.info(f'螺旋搜索未发现可用关闭机关：{self.views} 屏，{self.pans} 次镜头移动，'
                     f'目录无法重定位 {self.catalog_errors} 次。')
         return dict(state='exhausted', views=self.views, pans=self.pans, catalog_errors=self.catalog_errors)

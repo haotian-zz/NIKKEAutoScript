@@ -128,6 +128,34 @@ def wait_structure_settle(runner, before=None):
     raise StructureUnconfirmed('设施交互后未确认小队及道路停稳，已保留原图；不发送下一个目标。')
 
 
+# 每个受阻目标最多尝试几个搜索发现的守关敌人；每次开战后允许为同一目标再搜一次。
+GATE_ENEMY_TRIES = 3
+
+
+def attack_gate_enemy(runner, searched, blocked_goal):
+    """点击螺旋搜索发现的未清敌人脚圈，按原生寻路反馈等待备战；返回'entry'或'scouted'。
+
+    开战与否只看真实备战弹窗，关卡身份由战斗流程读标题复核；停滞则记下搜索键不再点同一处。
+    """
+    session, target, fresh = runner.session, searched['target'], searched['field']
+    runner.switch_skip.add(target['search_key'])
+    tries = runner.gate_enemy_tries
+    tries[blocked_goal] = tries.get(blocked_goal, 0) + 1
+    if tries[blocked_goal] < GATE_ENEMY_TRIES:
+        runner.switch_searches[blocked_goal] -= 1
+    session.begin_target('gate_enemy')
+    session.record_evidence('gate_enemy_attempt', fresh, target=target, arrays=dict(field=fresh))
+    logger.info(f"目标受阻，先打搜索发现的未清敌人 {target['position']}；开门须等首领目标重新尝试时确认。")
+    try:
+        session.tap(target['position'])
+    except TargetTriggered:
+        return 'entry'
+    if runner.wait_entry(fresh, arrow=squad_arrow(fresh), target=dict(click=target['position'])):
+        return 'entry'
+    runner.memory.previous = None
+    return 'scouted'
+
+
 def recover_visible_structure(runner, field, allow_unanchored=False):
     """普通目标受阻后尝试可见设施或有界换视角；真实胜利前最多两次交互、四次镜头动作。
 
@@ -204,6 +232,8 @@ def recover_visible_structure(runner, field, allow_unanchored=False):
                                 **{key: value for key, value in searched.items() if key != 'field'})
         if searched['state'] == 'entry':
             return 'entry'
+        if searched['state'] == 'enemy':
+            return attack_gate_enemy(runner, searched, blocked_goal)
         if searched['state'] == 'found':
             fresh = searched['field']
             candidates = [searched['target']]

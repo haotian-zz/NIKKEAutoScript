@@ -113,6 +113,24 @@ class NativeMotionTests(unittest.TestCase):
         mini = MinimapStability(None, reader=lambda field: (road, valid, player))
         self.assertEqual(mini.observe(None)['state'], 'unknown')
 
+    def test_large_minimap_change_counts_as_walking_when_scene_is_ambiguous(self):
+        """实录21-32：绕远路时场景拟合歧义，小地图持续明显变化应续等，而不是二十秒后停止。"""
+        road, valid, player = self.minimap()
+        moved = cv2.warpAffine(road, np.float32([[1, 0, 8], [0, 1, 0]]), road.shape[::-1])
+        reader = iter([(road, valid, player), (moved, valid, player)])
+        mini = MinimapStability(None, reader=lambda field: next(reader))
+        scene = dict(state='unknown', reason='background_fit_ambiguous')
+        observation = combine_motion(scene, mini.observe(None))
+        self.assertEqual(observation['state'], 'moving')
+        self.assertEqual(observation['reason'], 'minimap_moving')
+        progress = ClickProgress(0., total_limit=90.)
+        self.assertEqual(progress.update(19., observation), 'waiting')
+        self.assertEqual(progress.update(24., dict(state='unknown')), 'waiting')
+        tiny = dict(state='unknown', reason='minimap_changed', ring_shift_px=.9, road_change=.012)
+        self.assertEqual(combine_motion(scene, tiny)['state'], 'unknown')
+        self.assertEqual(combine_motion(dict(state='stationary'), dict(tiny, ring_shift_px=5.))['state'],
+                         'stationary')
+
     def test_conflicting_real_motion_remains_unknown(self):
         """超出已标定箭头动画的场景移动与小地图冲突时，不选更方便的静止结果。"""
         scene = dict(state='moving', movement_vector=[40., 0.])

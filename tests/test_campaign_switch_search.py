@@ -32,9 +32,10 @@ class SwitchSearchTests(unittest.TestCase):
             patcher = patch.object(search.goto, name, return_value=value)
             patcher.start()
             self.addCleanup(patcher.stop)
-        patcher = patch.object(search, 'squad_arrow', return_value=None)
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        for name, value in (('squad_arrow', None), ('ring_centers', []), ('story_markers', [])):
+            patcher = patch.object(search, name, return_value=value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
 
     def test_spiral_expands_south_east_then_north_west(self):
         """先向南、东各一屏，再北、西各两屏，逐圈外扩；手势是手指方向。"""
@@ -71,6 +72,26 @@ class SwitchSearchTests(unittest.TestCase):
         self.assertEqual(result['state'], 'exhausted')
         self.assertEqual(pan.call_count, 2)
 
+    def test_uncleared_gate_enemy_is_returned_before_switch(self):
+        """实录21-32：光幕外的21-20两帧稳定，搜索交回敌人；同屏机关排在之后。"""
+        ring = [(np.array([830., 470.]), .71)]
+        with patch.object(search, 'detect_objects', return_value=[fixture()]), \
+                patch.object(search, 'ring_centers', side_effect=[ring, [(np.array([833., 472.]), .72)]]), \
+                patch.object(search, 'pan_scene') as pan:
+            result = search.SwitchSearch(self.runner).run()
+        self.assertEqual(result['state'], 'enemy')
+        self.assertEqual(result['target']['position'], [833., 472.])
+        self.assertEqual(result['target']['search_key'][0], 'enemy')
+        pan.assert_not_called()
+
+    def test_ring_under_quest_marker_or_single_frame_is_not_a_gate_enemy(self):
+        """任务菱形正下方的脚圈就是受阻首领本身；只出现一帧的脚圈也不算。"""
+        boss = (np.array([810., 729.]), .9)
+        marker = dict(kind='scene', position=[805., 537.], confidence=.9)
+        self.assertEqual(search.gate_enemies([boss], [boss], [marker]), [])
+        self.assertEqual(search.gate_enemies([], [boss], []), [])
+        self.assertEqual(len(search.gate_enemies([boss], [boss], [dict(marker, kind='edge')])), 1)
+
     def test_battle_popup_returns_entry_without_more_pans(self):
         """途中真实备战弹窗立即交回战斗流程。"""
         with patch.object(search.goto, 'battle_popup_score', return_value=.95), \
@@ -88,7 +109,7 @@ class RecoveryOrderTests(unittest.TestCase):
         """正式恢复入口的替身环境：目录关闭、地图定位不可用。"""
         self.field = np.zeros((999, 1776, 3), np.uint8)
         self.runner = Mock(structure_inputs=0, structure_pans=0, quest=(21, 15),
-                           switch_searches={}, switch_skip=set())
+                           switch_searches={}, switch_skip=set(), gate_enemy_tries={})
         self.runner.map_frame.return_value = self.field
         self.runner.session = Mock()
         for name, value in (('facility_catalog', None), ('nearby_platforms', []), ('visible_platforms', []),
@@ -119,6 +140,24 @@ class RecoveryOrderTests(unittest.TestCase):
         self.assertIn((5, 16, 8), self.runner.switch_skip)
         self.assertEqual(self.runner.switch_searches, {'quest:(21, 15)': 1})
         self.assertEqual(self.runner.structure_inputs, 1)
+
+    def test_gate_enemy_is_tapped_and_search_stays_available(self):
+        """搜索到守关敌人：点脚圈、按原生寻路等备战；开战后同一受阻目标还能再搜。"""
+        enemy = dict(kind='enemy_ring', state='pending', position=[833., 472.], confidence=.72,
+                     search_key=('enemy', 3, 10, 6))
+        self.runner.wait_entry.return_value = True
+        result, _ = self.recover(dict(state='enemy', target=enemy, field=self.field, views=4, pans=3))
+        self.assertEqual(result, 'entry')
+        self.runner.session.tap.assert_called_once_with([833., 472.])
+        self.assertEqual(self.runner.wait_entry.call_args.kwargs['target'], dict(click=[833., 472.]))
+        self.assertIn(('enemy', 3, 10, 6), self.runner.switch_skip)
+        self.assertEqual(self.runner.switch_searches, {'quest:(21, 15)': 0})
+        self.assertEqual(self.runner.structure_inputs, 0)
+        self.runner.wait_entry.return_value = False
+        self.runner.gate_enemy_tries['quest:(21, 15)'] = 2
+        result, _ = self.recover(dict(state='enemy', target=enemy, field=self.field))
+        self.assertEqual(result, 'scouted')
+        self.assertEqual(self.runner.switch_searches, {'quest:(21, 15)': 1})
 
     def test_exhausted_search_rescans_then_falls_back_to_platform(self):
         """搜索无果不点旧帧平台；下一次受阻不再搜索，改为新鲜确认的平台。"""

@@ -158,9 +158,15 @@ class MinimapStability:
         changed = float(np.mean((road[union] > 0) != (old_road[union] > 0)))
         if shift > .75 or changed > .01:
             self.reference = current
-            return dict(state='unknown', reason='minimap_changed')
+            return dict(state='unknown', reason='minimap_changed', ring_shift_px=round(shift, 3),
+                        road_change=round(changed, 5))
         return dict(state='stationary', reason='independent_minimap_stable',
                     ring_shift_px=round(shift, 3), road_change=round(changed, 5))
+
+
+# 相邻帧小地图明显变化即视为小队仍在走（等待期间不发镜头输入，镜头只会跟随小队）。
+MINIMAP_MOVING_SHIFT = 3.
+MINIMAP_MOVING_ROAD = .03
 
 
 def combine_motion(scene, minimap):
@@ -168,7 +174,14 @@ def combine_motion(scene, minimap):
 
     已标定箭头动画为竖直10～18px振幅；只有横向≤3px、纵向≤18px的场景残差可由
     稳定小地图消歧。更大位移不被小地图覆盖，避免以别名道路图案否认真实行走。
+
+    实录 2026-10-21（21-32）：原生寻路绕远路时镜头跟随小队、路径虚线流动，场景光流
+    连续二十秒拟合歧义，任务因此停止。场景不是可靠静止时，小地图明显变化作为移动证据。
     """
+    if (minimap.get('reason') == 'minimap_changed' and scene['state'] != 'stationary'
+            and (minimap.get('ring_shift_px', 0.) >= MINIMAP_MOVING_SHIFT
+                 or minimap.get('road_change', 0.) >= MINIMAP_MOVING_ROAD)):
+        return dict(state='moving', reason='minimap_moving', minimap_feedback=minimap, scene_feedback=scene)
     if minimap['state'] != 'stationary':
         return dict(scene, minimap_feedback=minimap)
     if scene['state'] == 'moving':

@@ -403,6 +403,16 @@ class VisibleStoryTests(unittest.TestCase):
         self.ns['pan_scene'].assert_called_once()
         self.assertEqual(self.session.tap_verified_ui.call_count, 1)
 
+    def test_in_scene_marker_near_top_is_panned_not_tapped(self):
+        """实录21-32：y≈159的场内菱形不是顶栏夹住的边缘菱形，点了会触发原生寻路，只能平移镜头。"""
+        marker = dict(kind='scene', position=[499., 159.], confidence=.94)
+        self.ns['story_markers'] = Mock(return_value=[marker])
+        self.ns['squad_arrow'].return_value = [1100., 400.]
+        self.ns['goto'].ARROW_GROUND_OFFSET = 90.
+        self.assertTrue(self.runner.reveal_marked_area(self.field))
+        self.session.tap_verified_ui.assert_not_called()
+        self.ns['pan_scene'].assert_called_once()
+
     def test_blinking_edge_marker_failing_final_check_is_not_a_run_stop(self):
         """实录右下边缘菱形闪烁：输入前复核失败只放弃这次点击，不抛出停止整轮的窗口异常。"""
         marker = dict(kind='edge', position=[1688., 828.], confidence=.91)

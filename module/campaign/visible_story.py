@@ -28,6 +28,8 @@ LOBBY_QUEST_AREA = (445, 108, 657, 147)
 ENTRY_AREA = (570, 465, 1195, 625)
 ENTRY_TITLE_AREA = (620, 535, 970, 580)
 ENTRY_WAIT_SECONDS = 20.
+# 原生寻路绕远路的总跟随时限；只有持续的移动证据才能延到这里。
+ENTRY_MOVE_SECONDS = 90.
 ENTRY_READ_SECONDS = 10.
 QUEST_JUMP_AREA = (1726, 80, 1769, 119)
 
@@ -262,6 +264,7 @@ class VisibleStoryRunner:
         self.facility_survey_attempted = False
         # 受阻目标 → 已做螺旋机关搜索次数；已点过但未解决的搜索键（同状态下不重复点击）。
         self.switch_searches, self.switch_skip = {}, set()
+        self.gate_enemy_tries = {}
         self.entry_outcome = None
         self.journal = ClearanceJournal(owner.config.config_name)
         self.journal.begin(owner.current_chapter)
@@ -303,12 +306,12 @@ class VisibleStoryRunner:
         三次且跨2秒的可靠静止才返回False请求设施诊断。观测不足或持续移动超过总时限
         均保留未确认并停止，不能将二十秒没弹窗写成道路不可达，也不在途中追加目标点击。
         """
-        progress = ClickProgress(time.monotonic(), unknown_limit=ENTRY_WAIT_SECONDS)
+        progress = ClickProgress(time.monotonic(), unknown_limit=ENTRY_WAIT_SECONDS, total_limit=ENTRY_MOVE_SECONDS)
         motion = NativeMotion(before, arrow, None if target is None else target['click'])
         minimap = MinimapStability(before)
         previous_state = None
         while True:
-            field = self.map_frame(timeout=max(.1, min(30., progress.started+60.-time.monotonic())))
+            field = self.map_frame(timeout=max(.1, min(30., progress.started+ENTRY_MOVE_SECONDS-time.monotonic())))
             if goto.battle_popup_score(field) > .8:
                 self.entry_outcome = dict(state='entry')
                 return True
@@ -592,10 +595,12 @@ class VisibleStoryRunner:
         length = np.linalg.norm(drag)
         if length < 120.:
             return False
-        clamped = target[1] <= 260. or target[0] <= 100. or target[0] >= 1676.
+        # 顶栏夹住的菱形实测都在 y≈225；场内菱形（如 21-32 的 y≈133～159）点了会触发原生寻路，不能当作边缘。
+        clamped = 200. <= target[1] <= 250. or target[0] <= 100. or target[0] >= 1676.
         if self.marker_jumps < 2 and length > 250. and clamped:
             # 实录 2026-10-21（21-15）：目标在多屏之外时菱形贴在顶栏下沿（y≈225）或左右边缘，480px
-            # 小步平移追不上；            # 点一下边缘菱形，游戏会把镜头移到任务目标（同头像回中）。只移动镜头，之后重新扫描脚圈；
+            # 小步平移追不上；
+            # 点一下边缘菱形，游戏会把镜头移到任务目标（同头像回中）。只移动镜头，之后重新扫描脚圈；
             # 场内菱形仍按原规则只平移镜头。
             self.marker_jumps += 1
             point = target.tolist()
