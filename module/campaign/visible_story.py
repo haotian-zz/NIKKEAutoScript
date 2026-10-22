@@ -276,6 +276,8 @@ class VisibleStoryRunner:
         self.switch_searches, self.switch_skip = {}, set()
         # 已用任务定位看过目标旁的受阻目标（每个只看一次）。
         self.goal_views = set()
+        # 刚受阻、设施恢复尚未开始：先把画面内其余可见敌人逐个试一遍（可能就是挡路的支线怪）。
+        self.try_visible = False
         self.gate_enemy_tries = {}
         self.blocked_since, self.blocked_click = {}, None
         self.entry_outcome = None
@@ -801,7 +803,10 @@ class VisibleStoryRunner:
             preferred, marked = self.quest_target(field, fresh, candidates)
             if marked and preferred is None and self.reveal_marked_area(fresh, has_targets=bool(candidates)):
                 continue
-            if self.blocked_views and preferred is None:
+            # 实录 2026-10-21（22-27）：受阻时画面内还有 3 个可选敌人，挡在机关前的支线怪就在其中，
+            # 原先直接进入设施恢复，一个都没打。恢复开始后则保持恢复优先，不插入敌人点击。
+            if self.blocked_views and preferred is None and not (self.try_visible and candidates):
+                self.try_visible = False
                 from module.campaign.structures import recover_visible_structure
                 recovery = recover_visible_structure(self, fresh)
                 if recovery != 'scouted':
@@ -841,11 +846,17 @@ class VisibleStoryRunner:
                 won = self.fight_entry(target)
                 if not won:
                     self.deferred.add(target['id'])
+                elif self.blocked_views:
+                    # 打掉挡路的怪后道路可能已通：重新尝试暂缓的目标，而不是继续设施恢复。
+                    logger.info('受阻期间打赢一个可见敌人，重新尝试之前受阻的目标。')
+                    self.blocked_views, self.try_visible = 0, False
+                    self.deferred.clear()
             else:
                 self.memory.attempt(target['id'], 'stalled', self.entry_outcome)
                 self.blocked_click = list(target['click'])
                 self.blocked_views += 1
-                logger.info('原生寻路已确认连续停滞，进入有界设施诊断；道路可达性保持未确认。')
+                self.try_visible = True
+                logger.info('原生寻路已确认连续停滞：先试画面内其余可见敌人，都走不到再进入有界设施诊断。')
                 self.deferred.add(target['id'])
         return dict(state='continue', reason='tick_budget')
 

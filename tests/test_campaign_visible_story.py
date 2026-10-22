@@ -596,6 +596,38 @@ class VisibleStoryTests(unittest.TestCase):
         self.session.tap.assert_not_called()
         self.executor.battle.assert_not_called()
 
+    def test_fresh_stall_tries_other_visible_enemy_before_facility_recovery(self):
+        """实录22-27：刚受阻时画面内还有可选敌人（挡在机关前的支线怪），先打它；打赢后重试原目标。"""
+        self.runner.blocked_views, self.runner.try_visible = 1, True
+        self.runner.deferred.add('blocked-goal')
+        self.ns['read_stage'] = Mock(return_value=(20, 25))
+        self.runner.scan = Mock(return_value=(self.field, [self.target]))
+        self.runner.wait_entry = Mock(return_value=True)
+        self.runner.fight_entry = Mock(return_value=True)
+        recover = Mock(return_value='scouted')
+        with patch.dict(sys.modules, {'module.campaign.structures':
+                                     SimpleNamespace(recover_visible_structure=recover)}):
+            self.runner.run(ticks=1)
+        recover.assert_not_called()
+        self.session.tap.assert_called_once_with(self.target['click'])
+        self.assertEqual((self.runner.blocked_views, self.runner.try_visible), (0, False))
+        self.assertNotIn('blocked-goal', self.runner.deferred)
+
+    def test_stall_marks_visible_alternatives_then_recovery_keeps_priority(self):
+        """停滞后标记先试可见敌人；没有其他可选目标时进入恢复，恢复开始后不再插入敌人点击。"""
+        self.ns['read_stage'] = Mock(return_value=(20, 25))
+        self.runner.scan = Mock(return_value=(self.field, [self.target]))
+        self.runner.wait_entry = Mock(return_value=False)
+        self.runner.run(ticks=1)
+        self.assertEqual((self.runner.blocked_views, self.runner.try_visible), (1, True))
+        self.assertIn(self.target['id'], self.runner.deferred)
+        recover = Mock(return_value='scouted')
+        with patch.dict(sys.modules, {'module.campaign.structures':
+                                     SimpleNamespace(recover_visible_structure=recover)}):
+            self.runner.run(ticks=1)
+        recover.assert_called_once()
+        self.assertFalse(self.runner.try_visible)
+
     def test_entry_inspection_requires_two_actual_reads(self):
         """实际遇敌连续两次相同才能交战斗，不沿用原先点击的目标号。"""
         self.ns['goto'].battle_popup_score.return_value = 1.
