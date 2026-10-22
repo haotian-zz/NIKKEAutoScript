@@ -102,6 +102,20 @@ class SwitchSearchTests(unittest.TestCase):
         self.assertEqual(search.gate_enemies([], [boss], []), [])
         self.assertEqual(len(search.gate_enemies([boss], [boss], [dict(marker, kind='edge')])), 1)
 
+    def test_goal_view_ignores_enemies_and_prefers_switch_next_to_quest_marker(self):
+        """实录22-21：目标旁的敌人与目标同在光幕后不算守关敌人；两个开关取离任务菱形近的。"""
+        near, far = fixture(position=(1041., 467.)), fixture(position=(300., 800.))
+        ring = [(np.array([880., 520.]), .9)]
+        marker = [dict(kind='scene', position=[900., 420.], confidence=.9)]
+        with patch.object(search, 'detect_objects', return_value=[far, near]), \
+                patch.object(search, 'ring_centers', return_value=ring), \
+                patch.object(search, 'story_markers', return_value=marker), \
+                patch.object(search, 'squad_arrow', return_value=np.array([320., 760.])):
+            state, target, _ = search.SwitchSearch(self.runner, pans=0).look('goal', goal=True)
+        self.assertEqual(state, 'found')
+        self.assertEqual(target['position'], [1041., 467.])
+        self.assertEqual(target['search_key'][0], 'goal')
+
     def test_battle_popup_returns_entry_without_more_pans(self):
         """途中真实备战弹窗立即交回战斗流程。"""
         with patch.object(search.goto, 'battle_popup_score', return_value=.95), \
@@ -128,11 +142,13 @@ class RecoveryOrderTests(unittest.TestCase):
             patcher.start()
             self.addCleanup(patcher.stop)
 
-    def recover(self, searched):
-        """以门旁到达平台为唯一可见设施执行一次恢复。"""
+    def recover(self, searched, look=None):
+        """以门旁到达平台为唯一可见设施执行一次恢复；look注入目标旁那一屏的结果。"""
         pad = fixture('elevator', 'end', (726., 605.))
         finder = Mock()
         finder.return_value.run.return_value = searched
+        if look is not None:
+            finder.return_value.look = look
         with patch.object(structure, 'detect_objects', return_value=[pad]), \
                 patch.object(structure, 'squad_arrow', return_value=np.array([885., 420.])), \
                 patch.object(structure.goto, 'battle_popup_score', return_value=0.), \
@@ -188,6 +204,55 @@ class RecoveryOrderTests(unittest.TestCase):
         self.runner.session.tap.assert_called_once_with([960., 492.])
         catalog.attempt.assert_called_once_with('scene-0007', 'quest:(21, 15)')
         self.assertIn(('survey', 'scene-0007'), self.runner.switch_skip)
+
+    def goal_runner(self, focused=True):
+        """带任务定位能力的真实受阻目标替身：每个目标只看一次目标旁。"""
+        self.runner.goal_views = set()
+        self.runner.focus_quest = Mock(return_value=focused)
+        return self.runner
+
+    def test_goal_view_switch_is_tried_before_spiral(self):
+        """实录22-21：任务定位后目标旁的开关先踩；不占螺旋次数，原位两帧开启即确认。"""
+        switch = dict(fixture(position=(1041., 467.)), search_key=('goal', 13, 6))
+        self.goal_runner()
+        look = Mock(return_value=('found', switch, self.field))
+        with patch.object(structure, 'recenter_squad') as recenter, \
+                patch.object(structure, 'watch_switch', return_value=(self.field, 'activated')) as watch:
+            result, finder = self.recover(dict(state='exhausted'), look)
+        self.assertEqual(result, 'attempted')
+        finder.return_value.run.assert_not_called()
+        self.assertEqual(finder.call_args.kwargs['enemies'], False)
+        recenter.assert_not_called()
+        self.runner.focus_quest.assert_called_once()
+        self.assertEqual(look.call_args.kwargs, dict(goal=True))
+        self.runner.session.tap.assert_called_once_with([1041., 467.])
+        watch.assert_called_once()
+        self.assertEqual(self.runner.switch_searches, {})
+        self.assertIn(('goal', 13, 6), self.runner.switch_skip)
+        self.assertEqual(self.runner.goal_views, {'quest:(21, 15)'})
+
+    def test_empty_goal_view_recenters_squad_then_spirals(self):
+        """目标旁没有开关：点头像回到小队再螺旋；同一目标下一次受阻不再看目标旁。"""
+        self.goal_runner()
+        look = Mock(return_value=('none', None, self.field))
+        with patch.object(structure, 'recenter_squad') as recenter:
+            result, finder = self.recover(dict(state='exhausted'), look)
+            self.assertEqual(result, 'scouted')
+            finder.return_value.run.assert_called_once()
+            recenter.assert_called_once()
+            self.runner.switch_searches.clear()
+            self.recover(dict(state='exhausted'))
+        self.assertEqual(self.runner.focus_quest.call_count, 1)
+
+    def test_switch_watch_confirms_on_state_or_ends_when_switch_leaves_view(self):
+        """点开关后盯原位：连续两帧开启才确认；原位连续三帧不见开关即结束观察。"""
+        target = fixture(position=(1041., 467.))
+        frames = iter([[target], [dict(target, state='on')], [dict(target, state='on', position=[1043., 468.])]])
+        with patch.object(structure, 'detect_objects', side_effect=lambda *a: next(frames)), \
+                patch.object(structure.goto, 'battle_popup_score', return_value=0.):
+            self.assertEqual(structure.watch_switch(self.runner, target)[1], 'activated')
+            frames = iter([[target], [], [], []])
+            self.assertEqual(structure.watch_switch(self.runner, target)[1], 'unconfirmed')
 
     def test_blocked_goal_past_time_limit_stops_and_reports(self):
         """同一受阻目标超过总时限即停止，不再搜索或点击。"""

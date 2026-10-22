@@ -269,6 +269,8 @@ class VisibleStoryRunner:
         self.facility_survey_attempted = False
         # 受阻目标 → 已做螺旋机关搜索次数；已点过但未解决的搜索键（同状态下不重复点击）。
         self.switch_searches, self.switch_skip = {}, set()
+        # 已用任务定位看过目标旁的受阻目标（每个只看一次）。
+        self.goal_views = set()
         self.gate_enemy_tries = {}
         self.blocked_since, self.blocked_click = {}, None
         self.entry_outcome = None
@@ -529,19 +531,33 @@ class VisibleStoryRunner:
         if (self.quest is None or self.quest[0] != self.owner.current_chapter
                 or self.quest in self.guided_quests or self.quest in self.owner.story_wins):
             return False
+        focused = self.focus_quest(field, 'quest_guide', on_confirm=lambda: self.guided_quests.add(self.quest))
+        if not focused:
+            return False
+        if focused == 'entry':
+            return True
+        logger.info(f'已请求游戏定位主线任务 {stage_text(self.quest)}，下一步重新扫描全部普通／分支红圈。')
+        return True
+
+    def focus_quest(self, field, purpose, on_confirm=None):
+        """点击两帧一致的主线任务箭头，让游戏把镜头移到当前任务目标；返回'entry'、True或False。
+
+        任务号、箭头位置及章节身份在真正输入前再核一次；复核漏读只放弃本次，不终止推图。
+        on_confirm在两帧确认后、发送点击前调用（任务定位据此只尝试一次）。镜头移动不计进展。
+        """
         point = quest_jump_point(field)
-        if point is None:
+        if point is None or self.quest is None:
             return False
         self.session.pause(.25)
         fresh = self.map_frame()
         if goto.battle_popup_score(fresh) > .8:
-            return True
+            return 'entry'
         current = read_stage(fresh, self.owner.chapter_ocr, quest=True)
         confirmed = quest_jump_point(fresh)
         if current != self.quest or confirmed is None or np.linalg.norm(np.asarray(point) - confirmed) > 5.:
             return False
-        self.session.begin_target('quest_guide')
-        self.session.record_evidence('quest_guide', fresh, quest=self.quest, control=confirmed)
+        self.session.begin_target(purpose)
+        self.session.record_evidence(purpose, fresh, quest=self.quest, control=confirmed)
         self.memory.previous = None
         expected_quest = self.quest
 
@@ -553,18 +569,18 @@ class VisibleStoryRunner:
                     and np.linalg.norm(np.asarray(confirmed)-control) <= 5.
                     and chapter_identity(latest, self.owner.chapter_ocr) == (self.owner.current_chapter, 'normal'))
 
-        self.guided_quests.add(self.quest)
+        if on_confirm is not None:
+            on_confirm()
         try:
             if not self.session.tap_verified_ui(confirmed, validate):
                 return False
         except TargetTriggered:
-            return True
+            return 'entry'
         except UiControlChanged:
             # 实录 2026-10-21（22-21）：任务文字OCR分数贴着0.9门槛（0.899/0.901），输入前复核漏读；
             # 定位只是辅助，不点击并交回主循环，不能因此终止整轮推图。
             logger.info('主线任务控件在输入前复核未通过，未点击；交回主循环继续扫描。')
             return False
-        logger.info(f'已请求游戏定位主线任务 {stage_text(self.quest)}，下一步重新扫描全部普通／分支红圈。')
         self.session.pause(1.5)
         return True
 

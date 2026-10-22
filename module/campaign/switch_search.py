@@ -91,8 +91,12 @@ class SwitchSearch:
         self.seconds, self.skip = seconds, set(skip)
         self.views, self.pans, self.catalog_errors = 0, 0, 0
 
-    def look(self, step):
-        """取两帧检测关闭机关并登记目录；返回(状态, 候选, 新鲜帧)。"""
+    def look(self, step, goal=False):
+        """取多帧检测关闭机关并登记目录；返回(状态, 候选, 新鲜帧)。
+
+        goal为真表示镜头已由任务定位移到受阻目标旁：此处敌人多与目标同在障碍后，不找守关敌人；
+        候选按离任务菱形最近排序（没有菱形时按画面中心），而不是按小队位置。
+        """
         field = self.runner.map_frame()
         if goto.battle_popup_score(field) > .8:
             return 'entry', None, field
@@ -108,7 +112,7 @@ class SwitchSearch:
         second = frames[-1]
         enemies = []
         for center, confidence in (gate_enemies(first_rings, ring_centers(fresh), story_markers(fresh))
-                                   if self.enemies else ()):
+                                   if self.enemies and not goal else ()):
             # 实录 2026-10-21（21-32）：原地第一屏选中的“守关敌人”就是刚撞墙的同一个目标。
             if not step and any(np.linalg.norm(center-point) <= BLOCKED_RADIUS for point in self.blocked):
                 continue
@@ -139,8 +143,12 @@ class SwitchSearch:
         state, pool = ('enemy', enemies) if enemies else ('found', candidates)
         if not pool:
             return 'none', None, fresh
-        arrow = squad_arrow(fresh)
-        anchor = np.asarray(goto.VIEWPORT_PIXEL if arrow is None else arrow, float)
+        if goal:
+            marks = [item['position'] for item in story_markers(fresh) if item['kind'] == 'scene']
+            anchor = np.asarray(marks[0] if len(marks) == 1 else goto.VIEWPORT_PIXEL, float)
+        else:
+            arrow = squad_arrow(fresh)
+            anchor = np.asarray(goto.VIEWPORT_PIXEL if arrow is None else arrow, float)
         return state, min(pool, key=lambda item: np.linalg.norm(
             np.asarray(item['position'])-anchor)), fresh
 

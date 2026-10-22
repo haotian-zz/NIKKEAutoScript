@@ -130,12 +130,88 @@ def wait_structure_settle(runner, before=None):
 
 # 每个受阻目标最多尝试几个搜索发现的守关敌人；每次开战后允许为同一目标再搜一次。
 GATE_ENEMY_TRIES = 3
-# 受阻后逐级放大的耗时：原地两圈螺旋（约1分钟）→ 全章设施巡检（一次性，结果持久化）→ 平台与换视角。
+# 受阻后逐级放大的耗时：任务定位看目标旁（约5秒）→ 回小队螺旋（约1分钟）→ 全章设施巡检
+# （一次性，结果持久化）→ 平台与换视角。
 SPIRAL_PANS = 8
 SPIRAL_SECONDS = 60.
 SURVEY_SECONDS = 360.
 # 同一受阻目标的总时限；超过即停止并报告，不等任务一小时总时限。
 BLOCKED_GOAL_SECONDS = 900.
+
+
+# 点关闭机关后盯住机关本身的时长，以及原位判定半径（客户区像素）。
+SWITCH_WATCH_SECONDS = 20.
+SWITCH_NEAR = 40.
+
+
+def recenter_squad(runner):
+    """小队不在画面时点击已核验的离屏头像找回镜头；地图恢复失败按设施未确认停止。"""
+    from module.campaign.vision.minimap_occlusion import recenter_offscreen
+    try:
+        marker = recenter_offscreen(runner.session)
+    except RuntimeError as exc:
+        raise StructureUnconfirmed(f'找回小队镜头失败：{exc}')
+    if marker is None:
+        logger.info('未读到稳定的离屏小队头像，镜头保持原位。')
+    runner.memory.previous = None
+    return marker
+
+
+def goal_view_switch(runner, catalog, blocked_goal):
+    """第零级：点任务定位让游戏把镜头移到受阻目标旁，只在这一屏找关闭机关。
+
+    实录 2026-10-21（22-21）：开关就在任务菱形右侧，任务定位那一帧已检测到（0.95），但受阻后
+    螺旋以小队为中心，两三屏就停在光幕后的敌人和远处另一个开关上，一直没看目标旁边。
+    每个受阻目标只做一次；返回None（未定位）或dict(state=entry/found/none, ...)。
+    """
+    from module.campaign.switch_search import SwitchSearch
+    views = getattr(runner, 'goal_views', None)
+    focus = getattr(runner, 'focus_quest', None)
+    if not isinstance(views, set) or blocked_goal in views or focus is None:
+        return None
+    views.add(blocked_goal)
+    focused = focus(runner.map_frame(), 'goal_view')
+    if focused == 'entry':
+        return dict(state='entry')
+    if not focused:
+        return None
+    search = SwitchSearch(runner, catalog, pans=0, skip=runner.switch_skip, enemies=False)
+    state, target, fresh = search.look('goal', goal=True)
+    if state == 'entry':
+        return dict(state='entry', field=fresh)
+    runner.session.record_evidence('goal_view_result', fresh, state=state, target=target, arrays=dict(field=fresh))
+    if state == 'found':
+        logger.info(f"任务目标旁发现关闭机关 {target['position']}（{target['confidence']:.2f}），交由原生寻路前往。")
+        return dict(state='found', target=target, field=fresh)
+    logger.info('任务目标旁没有可用的关闭机关，回到小队附近继续螺旋搜索。')
+    return dict(state='none', field=fresh)
+
+
+def watch_switch(runner, target):
+    """点关闭机关后先盯机关本身：原位连续两帧读到开启即确认；返回(帧, entry/activated/unconfirmed)。
+
+    实录 2026-10-21（22-21）：开关在任务目标旁、镜头停在那里时小队在画面外，原有停稳判据只得到
+    squad_unobserved 而中止。原位连续三帧读不到机关（游戏切镜头或跟随小队）即提前结束观察。
+    """
+    position = np.asarray(target['position'], float)
+    started, on, missing, field = time.monotonic(), 0, 0, None
+    while time.monotonic()-started < SWITCH_WATCH_SECONDS:
+        runner.session.pause(1.)
+        field = runner.map_frame()
+        if goto.battle_popup_score(field) > .8:
+            return field, 'entry'
+        near = [item for item in detect_objects(field, ('ground_mechanism',))
+                if item['kind'] == 'ground_mechanism'
+                and np.linalg.norm(np.asarray(item['position'])-position) <= SWITCH_NEAR]
+        missing = 0 if near else missing+1
+        on = on+1 if any(item['state'] == 'on' for item in near) else 0
+        if on >= 2:
+            runner.session.record_evidence('switch_activated', field, target=target, arrays=dict(field=field))
+            logger.info(f"机关已在原位变为开启：{target['position']}；通行仍由后续实际寻路确认。")
+            return field, 'activated'
+        if missing >= 3:
+            break
+    return field, 'unconfirmed'
 
 
 def survey_for_switch(runner, catalog):
@@ -254,16 +330,22 @@ def recover_visible_structure(runner, field, allow_unanchored=False):
     if (isinstance(searches, dict) and ground is not None and runner.structure_inputs < 2
             and not any(item['kind'] == 'ground_mechanism' for item in candidates)
             and searches.get(blocked_goal, 0) < 1):
-        # 门旁平台可能只是单向到达端；每个受阻目标先螺旋找一次关闭机关，找不到再退回平台尝试。
+        # 门旁平台可能只是单向到达端；每个受阻目标先看目标旁，再螺旋找一次关闭机关，找不到再退回平台尝试。
         from module.campaign.switch_search import SwitchSearch
-        searches[blocked_goal] = searches.get(blocked_goal, 0) + 1
-        enemies = runner.gate_enemy_tries.get(blocked_goal, 0) < GATE_ENEMY_TRIES
-        blocked = getattr(runner, 'blocked_click', None)
-        searched = SwitchSearch(runner, catalog, pans=SPIRAL_PANS, seconds=SPIRAL_SECONDS,
-                                skip=runner.switch_skip, enemies=enemies,
-                                blocked=[blocked] if isinstance(blocked, (list, tuple, np.ndarray)) else []).run()
-        session.record_evidence('switch_search_result', searched.get('field', fresh),
-                                **{key: value for key, value in searched.items() if key != 'field'})
+        searched = goal_view_switch(runner, catalog, blocked_goal)
+        if searched is not None and searched['state'] == 'entry':
+            return 'entry'
+        if searched is None or searched['state'] != 'found':
+            if searched is not None:
+                recenter_squad(runner)
+            searches[blocked_goal] = searches.get(blocked_goal, 0) + 1
+            enemies = runner.gate_enemy_tries.get(blocked_goal, 0) < GATE_ENEMY_TRIES
+            blocked = getattr(runner, 'blocked_click', None)
+            searched = SwitchSearch(runner, catalog, pans=SPIRAL_PANS, seconds=SPIRAL_SECONDS,
+                                    skip=runner.switch_skip, enemies=enemies,
+                                    blocked=[blocked] if isinstance(blocked, (list, tuple, np.ndarray)) else []).run()
+            session.record_evidence('switch_search_result', searched.get('field', fresh),
+                                    **{key: value for key, value in searched.items() if key != 'field'})
         if searched['state'] == 'entry':
             return 'entry'
         if searched['state'] == 'enemy':
@@ -317,8 +399,18 @@ def recover_visible_structure(runner, field, allow_unanchored=False):
             session.tap(target['position'])
         except TargetTriggered:
             return 'entry'
-        observed = wait_structure_settle(runner, fresh)
-        location_result = dict(state='unknown', transfer='unconfirmed', activated='unconfirmed')
+        switch_state = 'unconfirmed'
+        if target['kind'] == 'ground_mechanism':
+            observed, switch_state = watch_switch(runner, target)
+            if switch_state == 'entry':
+                return 'entry'
+            if observed is not None and squad_arrow(observed) is None:
+                recenter_squad(runner)
+            observed = wait_structure_settle(runner)
+        else:
+            observed = wait_structure_settle(runner, fresh)
+        location_result = dict(state='unknown', transfer='unconfirmed', activated=(
+            'confirmed' if switch_state == 'activated' else 'unconfirmed'))
         if before_location is not None and goto.battle_popup_score(observed) <= .8:
             after_location = locate_squad(session, 'structure_after_location')
             location_result = position_feedback(before_location, after_location)
