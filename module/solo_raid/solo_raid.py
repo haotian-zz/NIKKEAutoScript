@@ -17,6 +17,10 @@ class SoloRaidIsUnavailable(Exception):
     pass
 
 
+class SoloRaidSettling(Exception):
+    """本期突击已结束、正在结算，没有可挑战关卡。"""
+
+
 class SoloRaidTeamUnavailable(Exception):
     """五组均无法入场且自动补队未解决，保留当前突击进度。"""
 
@@ -27,6 +31,7 @@ class SoloRaid(SoloRaidChallenge):
         logger.hr('SOLO RAID START')
         click_timer = Timer(0.3)
         confirm_timer = Timer(15, count=10).start()
+        settle_timer = Timer(1)
 
         while 1:
             if skip_first_screenshot:
@@ -67,6 +72,14 @@ class SoloRaid(SoloRaidChallenge):
 
             if not self.appear(MAIN_CHECK, offset=10) and self.dismiss_raid_result():
                 continue
+
+            # 本期突击结束后、下期开放前关卡锁定显示「结算中」，按钮全灰，页面模板也认不出
+            if settle_timer.reached() and not self.appear(MAIN_CHECK, offset=10):
+                settle_timer.reset()
+                if self.raid_settling():
+                    logger.info('Solo raid is settling')
+                    report('skipped', '本期单人突击结算中，暂无可挑战关卡')
+                    raise SoloRaidSettling
 
             if confirm_timer.reached():
                 logger.error('Solo raid not found')
@@ -309,6 +322,8 @@ class SoloRaid(SoloRaidChallenge):
             if self.config.SoloRaid_Challenge:
                 self.ui_ensure(page_main)
                 self.ensure_into_challenge()
+        except SoloRaidSettling:
+            pass
         except SoloRaidIsUnavailable:
             report('unknown', '单人突击入口不可用', '请确认活动开放情况与入口识别', retryable=True)
         except NoOpportunityRemain:

@@ -151,6 +151,11 @@ class SoloRaidChallenge(UI):
         match = re.search(r'(?<!\d)([0-5])\s*[/／]\s*5(?!\d)', text)
         return int(match[1]) if match else None
 
+    def raid_settling(self):
+        text = Ocr((200, 540, 520, 590), name='SOLO_RAID_SETTLING',
+                   model_type=self.config.Optimization_OcrModelType).ocr(self.device.image)['text']
+        return '结算中' in text.replace(' ', '')
+
     def dismiss_raid_result(self):
         text = Ocr((180, 1060, 610, 1180), name='SOLO_RAID_RESULT_NEXT',
                    model_type=self.config.Optimization_OcrModelType).ocr(self.device.image)['text']

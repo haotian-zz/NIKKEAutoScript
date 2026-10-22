@@ -124,6 +124,12 @@ class RaidResultTests(unittest.TestCase):
         node = next(n for n in ast.walk(source) if isinstance(n, ast.FunctionDef) and n.name == name)
         exec(compile(ast.Module(body=[node], type_ignores=[]), name, 'exec'), ns)
         return ns[name]
+    def test_settling_text_detected_only_when_present(self):
+        # 本期突击结束后中央显示「结算中」，按钮全灰；其他画面不能误判
+        for text, expected in (('结算中', True), ('结 算 中', True), ('', False), ('挑战', False)):
+            runner = SimpleNamespace(config=SimpleNamespace(Optimization_OcrModelType='mobile'), device=Mock())
+            self.assertEqual(self.load('raid_settling', [text])(runner), expected)
+
     def test_round_battle_counter_is_not_daily_counter(self):
         for text, expected in (('剩余战斗次数2/5', 2), ('0／5', 0), ('2/3', None), ('25', None), ('6/5', None)):
             runner = SimpleNamespace(config=SimpleNamespace(Optimization_OcrModelType='mobile'), device=Mock())
