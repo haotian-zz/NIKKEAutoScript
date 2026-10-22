@@ -186,7 +186,9 @@ def control_title_prefix(field, box):
     count, _, stats, _ = cv2.connectedComponentsWithStats(mask)
     columns = {}
     for x, y, width, height, area in stats[1:count]:
-        if 1 <= width <= 4 and 1 <= height <= 4 and 2 <= area <= 20:
+        # 实录 2026-10-21（21→22“侵略”）：分隔点渲染偏小，六个点中四个只有 1 像素；
+        # 成对列、间距、跨度及唯一性要求不变。
+        if 1 <= width <= 4 and 1 <= height <= 4 and 1 <= area <= 20:
             columns.setdefault(int(x), []).append((int(y), int(width)))
     columns = [(x, min(y for y, _ in dots), max(y for y, _ in dots), max(w for _, w in dots))
                for x, dots in sorted(columns.items()) if len(dots) >= 2

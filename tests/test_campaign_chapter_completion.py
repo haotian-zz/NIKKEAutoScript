@@ -6,7 +6,8 @@ from unittest.mock import Mock, patch
 import cv2
 import numpy as np
 
-from module.campaign.vision.chapter_completion import chapter_list_close, chapter_number, chapter_overlay, completion_overlay
+from module.campaign.vision.chapter_completion import (chapter_list_close, chapter_number, chapter_overlay,
+                                                       completion_overlay, control_title_prefix)
 
 
 class ChapterCompletionTests(unittest.TestCase):
@@ -82,6 +83,27 @@ class ChapterCompletionTests(unittest.TestCase):
         self.assertFalse(found['accepted'])
         self.assertIsNone(found['point'])
         self.reader.paddleocr.recognize.assert_not_called()
+
+    def test_one_pixel_separator_dots_still_split_the_next_title(self):
+        """实录21→22“侵略”：分隔点六个里四个只有1像素，仍须找到唯一一对点列并保留完整编号。"""
+        field = np.zeros((999, 1776, 3), np.uint8)
+        box = [773, 617, 1001, 669]
+        field[box[1]:box[3], box[0]:box[2]] = (160, 110, 30)
+        cv2.putText(field, 'CHAPTER 22', (box[0]+20, box[1]+38), cv2.FONT_HERSHEY_SIMPLEX, .75, (255, 255, 255), 2)
+        x = box[0]+150
+        for dx in (0, 4):
+            field[box[1]+19:box[1]+21, x+dx] = 255
+            field[box[1]+25, x+dx] = 255
+            field[box[1]+30, x+dx] = 255
+        prefix = control_title_prefix(field, box)
+        self.assertIsNotNone(prefix)
+        self.assertLessEqual(prefix[2], x+6)
+        self.assertLessEqual(prefix[0], box[0]+22)
+        field[box[1]+19:box[1]+21, x+30] = 255
+        field[box[1]+30, x+30] = 255
+        field[box[1]+19:box[1]+21, x+34] = 255
+        field[box[1]+30, x+34] = 255
+        self.assertIsNone(control_title_prefix(field, box))
 
     def test_unlock_requires_both_complete_chinese_lines(self):
         """UNLOCK不能单独放行；标题与继续提示均须完整且高分，按钮点取自实际文字区域。"""
