@@ -230,6 +230,19 @@ class FacilityMemoryTests(unittest.TestCase):
         self.assertEqual(register.call_count, 1)
         self.assertIs(register.call_args_list[0].args[0], self.catalog.frames[1])
 
+    def test_manual_entry_is_projected_after_camera_moves(self):
+        """实录22-36：EX 关闭后换镜头就是新编号；按关键帧记下位置，平移后的画面能投影出它。"""
+        self.assertFalse(self.catalog.has_manual_entries())
+        registered = self.catalog.remember_manual(self.field, [800., 500.], (22, 0, 'EX', 1))
+        identifier = registered[0]['facility_id']
+        self.assertEqual(self.catalog.data['facilities'][identifier]['stage'], [22, 0, 'EX', 1])
+        self.assertTrue(self.catalog.has_manual_entries())
+        self.catalog.observe(self.panned, [])
+        self.assertEqual([entry['facility_id'] for entry in self.catalog.manual_projected], [identifier])
+        np.testing.assert_allclose(self.catalog.manual_projected[0]['position'], [980., 500.], atol=3.)
+        again = self.catalog.remember_manual(self.panned, [985., 505.], (22, 0, 'EX', 1))
+        self.assertEqual(again[0]['facility_id'], identifier)
+
 
 if __name__ == '__main__':
     unittest.main()

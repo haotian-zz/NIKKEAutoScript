@@ -152,6 +152,7 @@ class FacilityMemory:
                 self.frames[number] = RingFrame(np.empty((0, 2)), keys, descriptors, np.zeros(2), [], [])
         self.current = {}
         self.expected = []
+        self.manual_projected = []
         self.unresolved = []
         self.last_bridge_at = 0.
         self.vote_index = None
@@ -367,6 +368,7 @@ class FacilityMemory:
             current[identifier] = dict(item, facility_id=identifier)
         self.current = current
         self.expected = self._expected(matches, current)
+        self.manual_projected = self._manual_projected(matches)
         self.unresolved = unresolved
         self.data['unresolved'] = unresolved
         self.save()
@@ -461,6 +463,40 @@ class FacilityMemory:
                                       position=project(matrix, old['position']).tolist()))
                     break
         return hints
+
+    def _manual_projected(self, matches):
+        """已记下的需手动关卡（EX）位置投影到本帧；只用于跳过目标，不授予任何点击。"""
+        result = []
+        for identifier, record in self.data['facilities'].items():
+            if record['kind'] != 'manual_entry':
+                continue
+            for number, matrix, _, _ in matches:
+                old = next((item for item in record['observations'] if item['view'] == number), None)
+                if old is not None:
+                    result.append(dict(facility_id=identifier, stage=record.get('stage'),
+                                       position=project(matrix, old['position']).tolist()))
+                    break
+        return result
+
+    def has_manual_entries(self):
+        """本章是否记过需手动关卡位置。"""
+        return any(record['kind'] == 'manual_entry' for record in self.data['facilities'].values())
+
+    def remember_manual(self, field, position, stage):
+        """把需手动关卡（EX）的位置作为设施登记到关键帧坐标系，换镜头后仍能认出。
+
+        实录 2026-10-22（22-36）：三个 EX 敌人每次关闭备战后换了镜头就是新编号，下一轮又被选中；
+        展开地图定位在 EX 旁常常不通过，因此用设施目录的关键帧配准记位置。position 是关闭备战
+        时小队脚下的客户区位置（小队触发备战时站在该敌人旁）。
+        """
+        x, y = map(float, position)
+        item = dict(kind='manual_entry', state='manual', confidence=1., position=[x, y],
+                    box=[x-30., y-30., x+30., y+30.])
+        registered = self.observe(field, [item])
+        for entry in registered:
+            self.data['facilities'][entry['facility_id']]['stage'] = list(stage)
+        self.save()
+        return registered
 
     def track_background(self, field, force=False):
         """保留移动途中的静态桥接关键帧，不修改设施身份、状态或尝试记录。

@@ -23,6 +23,10 @@ from module.campaign.navigation.camera_navigation import pan_scene
 from module.campaign.window import UiControlChanged
 from module.logger import logger
 
+# 目标脚圈离已记下的需手动关卡（小队触发备战时的脚下位置）多近算同一个敌人（客户区像素）：
+# 小队在脚圈约28底图像素内触发备战，约75客户区像素，再留关键帧投影误差。
+MANUAL_ENTRY_RADIUS = 120.
+
 QUEST_AREA = (1565, 88, 1710, 114)
 LOBBY_QUEST_AREA = (445, 108, 657, 147)
 ENTRY_AREA = (570, 465, 1195, 625)
@@ -464,24 +468,39 @@ class VisibleStoryRunner:
         return fresh, candidates
 
     def remember_manual_entry(self, stage):
-        """把需手动关卡的位置记进本章设施目录（底图坐标），目录不可用时跳过。"""
+        """需手动关卡关闭后按小队脚下位置记进设施目录；小队不在画面或目录无法配准时跳过。"""
         from module.campaign.facility_memory import FacilityUnconfirmed
-        from module.campaign.navigation.facility_map import remember_manual_entry
         from module.campaign.structures import facility_catalog
+        field = self.map_frame(track=False)
+        arrow = squad_arrow(field)
+        if arrow is None:
+            logger.info('关闭需手动关卡后未看到小队，未记下它的位置。')
+            return
         try:
-            remember_manual_entry(self, facility_catalog(self), stage)
+            facility_catalog(self).remember_manual(field, np.asarray(arrow)+[0., goto.ARROW_GROUND_OFFSET], stage)
         except (FacilityUnconfirmed, OSError) as exc:
-            logger.info(f'设施目录不可用，未记下需手动关卡位置：{exc}')
+            logger.info(f'未记下需手动关卡位置：{exc}')
+            return
+        logger.info(f'记下需手动关卡 {stage_text(stage)} 的位置，之后选目标时跳过这里的敌人。')
 
     def manual_entry_check(self, target, field):
-        """目标是否是已知需手动关卡；返回 'skip'、'changed' 或 None。"""
+        """目标落点是否在已记下的需手动关卡旁；返回 'skip' 或 None（目录无法配准时照常尝试）。"""
         from module.campaign.facility_memory import FacilityUnconfirmed
-        from module.campaign.navigation.facility_map import manual_entry_check
         from module.campaign.structures import facility_catalog
         try:
-            return manual_entry_check(self, facility_catalog(self), target['click'], field)
+            catalog = facility_catalog(self)
+            if not catalog.has_manual_entries():
+                return None
+            catalog.observe(field, [])
         except (FacilityUnconfirmed, OSError):
             return None
+        for entry in catalog.manual_projected:
+            distance = float(np.linalg.norm(np.asarray(entry['position'])-target['click']))
+            if distance <= MANUAL_ENTRY_RADIUS:
+                logger.info(f"目标 {target['id']} 在已记下的需手动关卡 {entry['facility_id']} 旁"
+                            f"（{distance:.0f}px），跳过。")
+                return 'skip'
+        return None
 
     def selectable(self, item):
         """过滤本轮暂不可达和需手动战斗的 EX；被过滤目标仍保留在巡检与观察簿中。
@@ -870,15 +889,11 @@ class VisibleStoryRunner:
             target = preferred or min(candidates, key=lambda item: (
                 stage_order(item['stage']) if item['stage'] is not None else (99, 99, '', 0),
                 float(np.linalg.norm(np.asarray(item['click']) - anchor))))
-            # 每个目标只核对一次：实录 2026-10-22（22-36）同一目标每轮核对都判“开合地图后画面变了”，
-            # 重扫后又核对，十分钟没有点击。
+            # 每个目标编号只核对一次，避免同一目标每轮都重新配准目录。
             checked = None if target['id'] in self.manual_checked else self.manual_entry_check(target, fresh)
             self.manual_checked.add(target['id'])
             if checked == 'skip':
                 self.deferred.add(target['id'])
-                continue
-            if checked == 'changed':
-                logger.info('核对需手动关卡时开合地图后画面有变化，重新扫描后再点。')
                 continue
             self.session.begin_target(target['id'])
             self.session.preview(fresh)

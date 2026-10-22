@@ -8,8 +8,6 @@
 标定的 A_INV 与 ROI→参考平面单应。结果只用于“去哪里看”，点击仍须当场两帧新鲜检测。
 """
 
-import time
-
 import numpy as np
 
 from module.campaign.navigation import controls as goto
@@ -26,9 +24,6 @@ SEEK_PANS = 6
 SEEK_VIEW = (250., 200., 1500., 820.)
 # 镜头注视点离目标的底图距离几乎没缩短，视为拖不动（地图边界或拖动被吞）。
 SEEK_STUCK = 5.
-# 目标落点离已知需手动关卡（EX）底图位置多近就视为同一个敌人：小队触发备战时站在脚圈旁
-# 约28底图像素内（controls.SQUAD_REACH），再留一点换算误差。
-MANUAL_ENTRY_RADIUS = 30.
 
 
 def map_localizer(runner):
@@ -174,50 +169,3 @@ def seek_map_point(runner, point, tag='facility_seek', pans=SEEK_PANS):
         pan_scene(runner.session, drag, squad_ground=ground, settle=None, paced=True)
     return None
 
-
-def remember_manual_entry(runner, catalog, stage):
-    """需手动的备战（EX）关闭后小队就站在该敌人旁：记下小队底图坐标，换了镜头也认得它。
-
-    实录 2026-10-22（22-36）：三个 EX 敌人每次关闭备战后换了镜头就是新编号，下一轮又被选中，
-    来回走了两圈没有进展。展开地图里没看到小队时不记，保持原有行为。
-    """
-    if catalog is None:
-        return None
-    try:
-        report = locate_view(runner, 'manual_entry')
-    except ValueError as exc:
-        logger.info(f'未能记下需手动关卡位置：{exc}')
-        return None
-    if report.get('position_kind') != 'squad':
-        logger.info('展开地图里没看到小队，未记下需手动关卡位置。')
-        return None
-    point = np.asarray(report['position'], float)
-    entries = catalog.data.setdefault('manual_entries', [])
-    if not any(np.linalg.norm(np.asarray(entry['map_position']) - point) <= MANUAL_ENTRY_RADIUS
-               for entry in entries):
-        entries.append(dict(stage=list(stage), map_position=point.tolist(), at=time.time()))
-        catalog.save()
-    logger.info(f'记下需手动关卡 {list(stage)} 的底图位置 {np.round(point).astype(int).tolist()}，'
-                '之后选目标时跳过这个位置的敌人。')
-    return point
-
-
-def manual_entry_check(runner, catalog, point, field):
-    """目标落点是否就是已知需手动关卡；返回 'skip'、'changed'（开合地图后画面变了）或 None。
-
-    只有本章记过需手动关卡时才配准一次展开地图；配准失败按 None 处理，照常尝试目标。
-    """
-    entries = [] if catalog is None else catalog.data.get('manual_entries', [])
-    if not entries:
-        return None
-    try:
-        report = locate_view(runner, 'manual_entry_check')
-    except ValueError:
-        return None
-    where = client_to_map(gaze_chart(map_localizer(runner)), report, point)
-    nearest = min(entries, key=lambda entry: np.linalg.norm(np.asarray(entry['map_position']) - where))
-    distance = float(np.linalg.norm(np.asarray(nearest['map_position']) - where))
-    if distance <= MANUAL_ENTRY_RADIUS:
-        logger.info(f"目标落点在已知需手动关卡 {nearest['stage']} 旁（底图距离 {distance:.0f}px），跳过。")
-        return 'skip'
-    return None if scene_unchanged(field, runner.map_frame(track=False)) else 'changed'
