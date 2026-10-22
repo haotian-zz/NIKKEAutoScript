@@ -595,6 +595,23 @@ class VisibleStoryTests(unittest.TestCase):
         self.assertIsNone(self.runner.follow_mainline(self.field, (21, 1)))
         self.session.tap_verified_ui.assert_not_called()
 
+    def test_mainline_recheck_tolerates_one_flaky_quest_frame(self):
+        """实录22→23：复核帧任务 OCR 偶尔读空；重读下一帧通过即切章。"""
+        self.ns['read_stage'] = Mock(side_effect=[None, (21, 1), (21, 1)])
+        self.ns['chapter_identity'].side_effect = [(20, 'normal')] * 5 + [(21, 'normal')] * 2
+        self.session.tap_verified_ui.side_effect = lambda point, validator: validator(self.field)
+        self.assertEqual(self.runner.follow_mainline(self.field, (21, 1))['reason'], 'chapter_changed')
+
+    def test_next_chapter_quest_never_sweeps_old_chapter(self):
+        """持续模式任务已在下一章但切章核对不过：不扫描旧章，三轮后停止并说明原因。"""
+        self.ns['read_stage'] = Mock(return_value=(21, 1))
+        self.runner.follow_mainline = Mock(return_value=None)
+        self.runner.scan = Mock()
+        with self.assertRaises(self.ns['StoryVerificationError']):
+            self.runner.run(ticks=5)
+        self.assertEqual(self.runner.follow_mainline.call_count, 3)
+        self.runner.scan.assert_not_called()
+
     def test_ex_identity_requires_title_and_is_not_silently_skipped(self):
         """EX 连续两帧标题通过后进入清怪范围；使用内部序号且不虚构普通关卡号。"""
         self.ns['goto'].battle_popup_score.return_value = 1.

@@ -282,6 +282,8 @@ class VisibleStoryRunner:
         self.known_switch_tries = {}
         # 已核对过是否为需手动关卡（EX）位置的目标编号。
         self.manual_checked = set()
+        # 任务已在下一章但切章核对未通过的轮数。
+        self.next_chapter_misses = 0
         # 最近一次点击画面内目标时的那帧；需手动关卡按它记位置。
         self.tap_frame = None
         self.map_localizer = None
@@ -797,11 +799,21 @@ class VisibleStoryRunner:
         if (not getattr(self.owner, 'continuous', False) or quest is None
                 or quest[0] != expected[0] + 1):
             return None
-        self.session.pause(.35)
-        fresh = self.map_frame()
-        if (chapter_identity(field, self.owner.chapter_ocr) != expected
-                or chapter_identity(fresh, self.owner.chapter_ocr) != expected
-                or read_stage(fresh, self.owner.chapter_ocr, quest=True) != quest):
+        # 实录 2026-10-22（22→23）：任务已是「通关【23-3】」，复核帧有一项没过就静默返回，
+        # 主循环随后进了旧章全章巡检空转。复核最多重读三帧，并记录每次没过的是哪一项。
+        previous = field
+        for attempt in range(3):
+            self.session.pause(.35)
+            fresh = self.map_frame()
+            checks = dict(old_identity=chapter_identity(previous, self.owner.chapter_ocr),
+                          fresh_identity=chapter_identity(fresh, self.owner.chapter_ocr),
+                          quest=read_stage(fresh, self.owner.chapter_ocr, quest=True))
+            if checks['old_identity'] == checks['fresh_identity'] == expected and checks['quest'] == quest:
+                break
+            logger.info(f'切到第 {quest[0]} 章前复核未通过（第 {attempt+1} 次）：章节 {checks["old_identity"]}／'
+                        f'{checks["fresh_identity"]}，任务 {checks["quest"]}。')
+            previous = fresh
+        else:
             return None
 
         def valid(latest):
@@ -865,6 +877,14 @@ class VisibleStoryRunner:
                 advanced = self.follow_mainline(field, current)
                 if advanced is not None:
                     return advanced
+                if getattr(self.owner, 'continuous', False) and current[0] == self.owner.current_chapter+1:
+                    # 任务已在下一章：旧章可选内容按设计保留待办，不在旧章扫描或巡检。
+                    self.next_chapter_misses += 1
+                    if self.next_chapter_misses >= 3:
+                        raise StoryVerificationError(
+                            f'主线任务已在第 {current[0]} 章，切章前核对连续三轮未通过；未在旧章巡检，已停止。',
+                            'story_chapter_unconfirmed')
+                    continue
                 if self.guide_quest(field):
                     continue
             fresh, candidates = self.scan(field)
