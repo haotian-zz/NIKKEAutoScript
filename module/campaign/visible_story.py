@@ -276,6 +276,8 @@ class VisibleStoryRunner:
         self.chapter_surveyed = False
         # 受阻目标 → 已按底图坐标去看过的目录机关编号；踩亮开关后清空。
         self.known_switch_tries = {}
+        # 已核对过是否为需手动关卡（EX）位置的目标编号。
+        self.manual_checked = set()
         self.map_localizer = None
         # 受阻目标 → 已做螺旋机关搜索次数；已点过但未解决的搜索键（同状态下不重复点击）。
         self.switch_searches, self.switch_skip = {}, set()
@@ -868,11 +870,15 @@ class VisibleStoryRunner:
             target = preferred or min(candidates, key=lambda item: (
                 stage_order(item['stage']) if item['stage'] is not None else (99, 99, '', 0),
                 float(np.linalg.norm(np.asarray(item['click']) - anchor))))
-            checked = self.manual_entry_check(target, fresh)
+            # 每个目标只核对一次：实录 2026-10-22（22-36）同一目标每轮核对都判“开合地图后画面变了”，
+            # 重扫后又核对，十分钟没有点击。
+            checked = None if target['id'] in self.manual_checked else self.manual_entry_check(target, fresh)
+            self.manual_checked.add(target['id'])
             if checked == 'skip':
                 self.deferred.add(target['id'])
                 continue
             if checked == 'changed':
+                logger.info('核对需手动关卡时开合地图后画面有变化，重新扫描后再点。')
                 continue
             self.session.begin_target(target['id'])
             self.session.preview(fresh)

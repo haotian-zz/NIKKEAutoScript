@@ -80,6 +80,17 @@ class VisibleStoryTests(unittest.TestCase):
             self.runner.scan.assert_not_called()
             self.assertTrue(self.runner.chapter_surveyed)
 
+    def test_manual_entry_check_runs_once_per_target(self):
+        """实录22-36：同一目标每轮核对都判画面变化，重扫又核对，十分钟没有点击；每个目标只核对一次。"""
+        self.ns['read_stage'] = Mock(return_value=(20, 9))
+        self.runner.manual_entry_check = Mock(return_value='changed')
+        self.runner.scan = Mock(return_value=(self.field, [self.target]))
+        self.runner.wait_entry = Mock(return_value=True)
+        self.runner.inspect_entry = Mock(return_value=(20, 7))
+        self.runner.run(ticks=2)
+        self.runner.manual_entry_check.assert_called_once()
+        self.session.tap.assert_called_once_with(self.target['click'])
+
     def test_parse_only_complete_unique_stage(self):
         """任务必须含通关动词，多个编号和零值均不得作为关卡身份。"""
         parse = self.ns['parse_stage']
