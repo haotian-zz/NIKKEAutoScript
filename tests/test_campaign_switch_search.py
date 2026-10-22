@@ -116,6 +116,17 @@ class SwitchSearchTests(unittest.TestCase):
         self.assertEqual(target['position'], [1041., 467.])
         self.assertEqual(target['search_key'][0], 'goal')
 
+    def test_ring_under_blue_cue_marker_is_the_blocked_boss(self):
+        """实录22-27第4屏：蓝底菱形识别为cue，正下方(703,460)是首领本身，不当守关敌人。"""
+        boss = [(np.array([703., 460.]), .92)]
+        marker = dict(kind='cue', position=[713., 185.], confidence=.9)
+        with patch.object(search, 'detect_objects', return_value=[]), \
+                patch.object(search, 'ring_centers', return_value=boss), \
+                patch.object(search, 'story_markers', return_value=[marker]), \
+                patch.object(search, 'pan_scene'):
+            result = search.SwitchSearch(self.runner, pans=1).run()
+        self.assertEqual(result['state'], 'exhausted')
+
     def test_resumed_spiral_only_pans_through_seen_screens(self):
         """续看第4屏：前4次拖动照常重放镜头，但第0～3屏不取帧，不会再选中那批敌人。"""
         ring = [(np.array([974., 147.]), .88)]

@@ -34,6 +34,8 @@ QUEST_RING_DY = 700.
 # 每屏取帧数与投票门槛：烟雾会让单帧漏检（实录21-32三帧漏一帧）。
 FACILITY_FRAMES = 4
 FACILITY_VOTES = 2
+# 场内主线菱形：蓝底提示样式识别为cue（实录22-27），同样标出受阻目标；edge是屏幕边缘的离屏指示。
+QUEST_MARKER_KINDS = ('scene', 'cue')
 # 原地第一屏中，刚撞墙目标附近的脚圈与它同在障碍后（实录21-32首领两侧普通敌人）。
 BLOCKED_RADIUS = 300.
 FACILITY_KINDS = ('ground_mechanism', 'elevator', 'barrier')
@@ -65,7 +67,7 @@ def ring_centers(image):
 
 def gate_enemies(first, second, markers):
     """两帧同位置（≤20px）且不在任务菱形正下方的敌人脚圈；返回第二帧中心与置信度。"""
-    quest = [np.asarray(item['position'], float) for item in markers if item['kind'] == 'scene']
+    quest = [np.asarray(item['position'], float) for item in markers if item['kind'] in QUEST_MARKER_KINDS]
     found = []
     for center, confidence in second:
         if not any(np.linalg.norm(center-old) <= 20. for old, _ in first):
@@ -145,7 +147,7 @@ class SwitchSearch:
         if not pool:
             return 'none', None, fresh
         if goal:
-            marks = [item['position'] for item in story_markers(fresh) if item['kind'] == 'scene']
+            marks = [item['position'] for item in story_markers(fresh) if item['kind'] in QUEST_MARKER_KINDS]
             anchor = np.asarray(marks[0] if len(marks) == 1 else goto.VIEWPORT_PIXEL, float)
         else:
             arrow = squad_arrow(fresh)
