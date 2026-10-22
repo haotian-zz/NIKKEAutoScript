@@ -364,7 +364,9 @@ class VirtualMouseInput(Input):
     # ------------------------------------------------------------------
     # 拖拽
     # ------------------------------------------------------------------
-    def mouse_swipe(self, p1, p2, speed=1.0):
+    def mouse_swipe(self, p1, p2, speed=1.0, paced=False):
+        """paced为真时（仅光标直定位后端）按流逝时间推进路点，单次定位慢时跳过中间点，
+        手势总时长保持名义值；默认按固定段数逐点推进（RDP 下每段约15ms，150段实际约2.7秒）。"""
         x1, y1 = int(p1[0]), int(p1[1])
         x2, y2 = int(p2[0]), int(p2[1])
         distance = ((x2 - x1) ** 2 + (y2 - y1) ** 2) ** 0.5
@@ -382,7 +384,9 @@ class VirtualMouseInput(Input):
                 self._checked(False, f'drag down ({x1}, {y1})')
                 return
             try:
-                if self.move_backend == 'cursor':
+                if self.move_backend == 'cursor' and paced:
+                    ok = self._drag_paced(x1, y1, x2, y2, duration)
+                elif self.move_backend == 'cursor':
                     ok = self._drag_absolute(x1, y1, x2, y2, steps, interval)
                 else:
                     ok = self.mouse_driver.drag_stream(x2, y2, steps, interval, buttons=BTN_LEFT)
@@ -394,7 +398,23 @@ class VirtualMouseInput(Input):
             if not self._checked(ok, f'drag ({x1}, {y1}) -> ({x2}, {y2})'):
                 return
             time.sleep(DRAG_SETTLE_DELAY)
-        logger.debug(f'Virtual mouse drag ({x1}, {y1}) -> ({x2}, {y2}), {duration:.2f}s / {steps} 段')
+        logger.debug(f'Virtual mouse drag ({x1}, {y1}) -> ({x2}, {y2}), {duration:.2f}s / '
+                     + ('按时长推进' if paced and self.move_backend == 'cursor' else f'{steps} 段'))
+
+    def _drag_paced(self, x1, y1, x2, y2, duration):
+        """按流逝时间把光标沿直线推到终点：每次定位到「此刻应到」的位置，定位慢就少发中间点。"""
+        start = time.perf_counter()
+        span_x, span_y = x2 - x1, y2 - y1
+        ratio = 0.
+        while ratio < 1.:
+            time.sleep(DRAG_REPORT_INTERVAL)
+            ratio = min(1., (time.perf_counter() - start) / duration)
+            target = (round(x1 + span_x * ratio), round(y1 + span_y * ratio))
+            if not self.mouse_driver.set_cursor(*target):
+                logger.error(f'Virtual mouse paced drag failed: target={target}, '
+                             f'actual={self.mouse_driver.cursor()}, elapsed={time.perf_counter() - start:.3f}s')
+                return False
+        return True
 
     def _drag_absolute(self, x1, y1, x2, y2, steps, interval):
         """直定位拖动：按等间隔把光标沿直线推到终点，每个路点都是绝对坐标。

@@ -273,15 +273,22 @@ class SwitchSearch:
 
     def pan(self, drag, before):
         """发送一次观察用镜头手势并用前后两帧配准实测镜头位移；返回(拖后帧, 镜头位移)。"""
+        marks = [time.monotonic()]
         ground = self.squad_ground(before)
+        marks.append(time.monotonic())
         self.session.begin_target('switch_search_pan')
-        pan_scene(self.session, drag, squad_ground=ground, settle=None)
+        pan_scene(self.session, drag, squad_ground=ground, settle=None, paced=True)
         self.pans += 1
+        marks.append(time.monotonic())
         after = self.runner.map_frame(track=False)
+        marks.append(time.monotonic())
         first = self.features[1] if self.features is not None and self.features[0] is before else None
         second = facility_frame(after, [])
         self.features = (after, second)
         shift = content_shift(before, after, drag, first, second)
+        marks.append(time.monotonic())
+        logger.debug('switch_search_pan timing squad=%.2f pan=%.2f frame=%.2f shift=%.2f reuse=%s'
+                     % (*np.diff(marks), first is not None))
         if shift is None:
             # 配准失败时按当前增益估算，只用于决定下一次拖动，不作为点击依据；前后两帧留证查原因。
             self.unmeasured += 1

@@ -1,5 +1,6 @@
 """共享的远点镜头规划；小队位置与镜头观测分开保存，点击后重新确认小队停稳。"""
 
+import inspect
 import time
 from types import SimpleNamespace
 
@@ -12,6 +13,7 @@ from module.campaign.navigation import evidence as runtime
 from module.campaign.report import CAMERA_TRACKING, LOCALIZATION, label
 from module.campaign.vision import perception
 from module.campaign.vision.surface_motion import project
+from module.logger import logger
 
 FIELD_BOUNDS = (300, 220, 1450, 820)
 # 拖动后固定等待上限；按需等待时连续两帧（四分之一分辨率灰度）变化像素比例低于此值视为镜头已停。
@@ -232,7 +234,7 @@ def wait_still(session, limit=PAN_SETTLE):
     return False
 
 
-def pan_scene(session, drag, squad_ground=None, squad_box=None, settle=PAN_SETTLE):
+def pan_scene(session, drag, squad_ground=None, squad_box=None, settle=PAN_SETTLE, paced=False):
     """收起小地图并核对身份后，把客户区拖动端点换算为屏幕坐标发送一次手势。
 
     端点越界或驱动失败立即抛错；成功后等待场景稳定，本方法不发送小队移动点击。
@@ -240,19 +242,30 @@ def pan_scene(session, drag, squad_ground=None, squad_box=None, settle=PAN_SETTL
     手势到空地，拖动向量保持不变。可信当前人物框可单独通过squad_box提供按下区域保护，
     不为它构造地面坐标；调用方负责连续核验新鲜框。小队确实不在画面时两者均传None。
     settle为秒数时固定等待；为None时按画面静止判定提前结束（上限同PAN_SETTLE）。
+    paced为真且输入后端支持时，手势按名义时长推进（RDP 下逐段定位慢，默认会被拖长到数秒）。
     """
+    marks = [time.monotonic()]
     goto.map_close(session.win)
+    marks.append(time.monotonic())
     field = goto.capture_client(session.win)
     session.identity(field)
+    marks.append(time.monotonic())
     region, _ = pan_region(drag)
     start, end = pan_endpoints(region, drag, squad_ground, squad_box)
     session.check()
     origin = np.array(session.win.gui.ClientToScreen(session.win.hwnd, (0, 0)))
-    session.win.handler.mouse_swipe(tuple(origin + start), tuple(origin + end))
+    if paced and 'paced' in inspect.signature(session.win.handler.mouse_swipe).parameters:
+        session.win.handler.mouse_swipe(tuple(origin + start), tuple(origin + end), paced=True)
+    else:
+        session.win.handler.mouse_swipe(tuple(origin + start), tuple(origin + end))
     if session.win.handler._failures:
         raise RuntimeError('镜头平移失败，未发送移动点击。')
+    marks.append(time.monotonic())
     if settle is None:
-        wait_still(session)
+        still = wait_still(session)
+        marks.append(time.monotonic())
+        logger.debug('pan_scene timing close=%.2f identity=%.2f swipe=%.2f settle=%.2f still=%s'
+                     % (*np.diff(marks), still))
     else:
         session.pause(settle)
 

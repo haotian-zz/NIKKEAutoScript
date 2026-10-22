@@ -711,6 +711,29 @@ class DriverSchemeTests(unittest.TestCase):
                 driver.release.assert_called_once_with()
                 self.assertEqual(handler._failures, 1)
 
+    def test_paced_drag_skips_waypoints_when_positioning_is_slow(self):
+        """RDP 下单次定位约15ms：按时长推进时少发中间点，终点仍准确，总时长按名义值而非段数。"""
+        with (
+            patch.object(VirtualMouseInput, '_preflight', return_value=None),
+            patch.object(Input, '__init__', return_value=None),
+        ):
+            handler = VirtualMouseInput(config_name='nkas', move_backend='cursor')
+        handler.mouse_driver = Mock()
+        handler.mouse_driver.set_cursor.return_value = True
+        clock = {'now': 0.}
+        def slow_cursor(*args):
+            clock['now'] += .015
+            return True
+        handler.mouse_driver.set_cursor.side_effect = slow_cursor
+        with patch.object(handler, '_move_to', return_value=True), \
+                patch('module.device.win.virtual_mouse.input.time.sleep'), \
+                patch('module.device.win.virtual_mouse.input.time.perf_counter', side_effect=lambda: clock['now']):
+            handler.mouse_swipe((730, 820), (1830, 840), paced=True)
+        calls = handler.mouse_driver.set_cursor.call_args_list
+        self.assertLessEqual(len(calls), 45)
+        self.assertEqual(calls[-1].args, (1830, 840))
+        handler.mouse_driver.release.assert_called_once_with()
+
     def test_successful_complete_gesture_resets_failure_count(self):
         for method, args in (('press_mouse', ()), ('mouse_swipe', ((100, 100), (100, 350)))):
             with self.subTest(method=method):

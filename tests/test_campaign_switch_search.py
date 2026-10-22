@@ -73,6 +73,7 @@ class SwitchSearchTests(unittest.TestCase):
         self.assertEqual(calls[0].args[3:], (None, 'f1'))
         self.assertEqual(calls[1].args[3:], ('f1', 'f2'))
         self.assertIsNone(pan.call_args.kwargs['settle'])
+        self.assertTrue(pan.call_args.kwargs['paced'])
 
     def test_spiral_expands_south_east_then_north_west(self):
         """航点先向南、东各一格，再北、西各两格，逐圈外扩；第一圈8个航点围住起点。"""
