@@ -546,9 +546,10 @@ class RecoveryOrderTests(unittest.TestCase):
         survey = object.__new__(survey_module.FacilitySurvey)
         survey.content, survey.squad_away, survey.occlusion_checked = np.zeros(2), None, True
         survey.proof, survey.session = {}, Mock()
-        with patch.object(survey_module, 'squad_arrow', return_value=None), \
-                patch.object(survey_module, 'squad_offscreen',
-                             side_effect=[dict(center=[30., 400.], direction=180.), None, None]):
+        # 离屏推算在清怪巡检基类里，设施巡检与清怪巡检共用。
+        # 测试导入时 sys.modules 被临时替换，按函数自身的全局表打补丁。
+        with patch.dict(survey_module.ChapterSweep.pan_anchor.__globals__, squad_arrow=Mock(return_value=None),
+                        squad_offscreen=Mock(side_effect=[dict(center=[30., 400.], direction=180.), None, None])):
             self.assertIsNone(survey.pan_anchor(self.field))
             survey.content = np.array([-300., -120.])
             self.assertIsNone(survey.pan_anchor(self.field))

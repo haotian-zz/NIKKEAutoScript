@@ -10,14 +10,8 @@ from module.campaign.navigation.camera_navigation import pan_scene
 from module.campaign.navigation.facility_map import record_map_positions
 from module.campaign.sweep import ChapterSweep, HORIZONTAL_STEP, VERTICAL_STEP, SweepUnconfirmed, camera_motion
 from module.campaign.vision.objects import detect_objects
-from module.campaign.vision.offscreen import squad_offscreen
-from module.campaign.vision.perception import squad_arrow
 from module.campaign.vision.story_marker import story_markers
 from module.logger import logger
-
-# 确认离屏后镜头往回（朝小队方向）累计移动超过这么多像素，就不再沿用离屏结论，重新识别。
-SQUAD_RETURN = 40.
-
 
 class FacilitySurvey(ChapterSweep):
     """复用已有镜头避让与运动检验，独立记录设施及覆盖，不把扫过当作清怪或道路已打开。
@@ -32,10 +26,6 @@ class FacilitySurvey(ChapterSweep):
         self.catalog, self.seconds, self.wanted = catalog, min(420., max(1., seconds)), wanted
         self.first_off = bool(first_off)
         self.visible = []
-        self.occlusion_checked = False
-        # 巡检开始以来画面内容的累计实测位移；确认小队离屏时记下离屏方向和当时的累计位移。
-        self.content = np.zeros(2)
-        self.squad_away = None
         self.proof = dict(state='partial', source='scene_scan', origin='camera_top_right',
                           rows=0, pans=0, views=0, facilities=[], detection_complete=False)
 
@@ -124,34 +114,6 @@ class FacilitySurvey(ChapterSweep):
                                                reason=str(exc)))
             logger.info(f'镜头严格配准未通过，按主平移 {np.round(shift).astype(int).tolist()} 继续巡检；覆盖记为存疑。')
             return shift
-
-    def pan_anchor(self, field):
-        """真实箭头或离屏标记允许拖镜头；确认离屏后镜头继续远离小队时沿用离屏结论。
-
-        实录 2026-10-22（22-36）：镜头巡到地图右缘，小队离屏头像在左侧正好被小地图挡住；
-        每次巡检只允许一次收起小地图复核，第二次就停了。离屏方向和累计实测位移足以判断：
-        画面内容沿离屏方向继续移动，小队只会更远，不可能落到拖动按下点上。
-        """
-        arrow = squad_arrow(field)
-        if arrow is not None:
-            self.squad_away = None
-            return np.asarray(arrow)+[0., goto.ARROW_GROUND_OFFSET]
-        marker = squad_offscreen(field)
-        if marker is None and self.squad_away is not None:
-            direction, content = self.squad_away
-            if (self.content-content) @ direction >= -SQUAD_RETURN:
-                return None
-        if marker is None and not self.occlusion_checked:
-            self.occlusion_checked = True
-            from module.campaign.vision.minimap_occlusion import unoccluded_offscreen
-            self.session.begin_target('facility_avatar_occlusion')
-            marker = unoccluded_offscreen(self.session)
-            self.proof['unoccluded_avatar'] = marker
-        if marker is None:
-            raise SweepUnconfirmed('未确认小队位置或离屏标记，停止镜头巡检以避免发送走位。')
-        angle = np.radians(marker['direction'])
-        self.squad_away = (np.array([np.cos(angle), np.sin(angle)]), self.content.copy())
-        return None
 
     def run(self):
         """先确认右、上边界，再左右交替向下巡视；下边界双帧静止和两轴运动通过才记coverage。
