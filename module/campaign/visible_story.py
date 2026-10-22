@@ -272,6 +272,11 @@ class VisibleStoryRunner:
         self.structure_pans = 0
         self.facilities = None
         self.facility_survey_attempted = False
+        # 本章开局设施巡检是否已处理（每个运行器一次，是否真的巡检由目录记录决定）。
+        self.chapter_surveyed = False
+        # 受阻目标 → 已按底图坐标去看过的目录机关编号；踩亮开关后清空。
+        self.known_switch_tries = {}
+        self.map_localizer = None
         # 受阻目标 → 已做螺旋机关搜索次数；已点过但未解决的搜索键（同状态下不重复点击）。
         self.switch_searches, self.switch_skip = {}, set()
         # 已用任务定位看过目标旁的受阻目标（每个只看一次）。
@@ -775,6 +780,14 @@ class VisibleStoryRunner:
             if goto.battle_popup_score(field) > .8:
                 self.fight_entry()
                 continue
+            if not self.chapter_surveyed:
+                self.chapter_surveyed = True
+                from module.campaign.structures import chapter_start_survey
+                surveyed = chapter_start_survey(self)
+                if surveyed == 'entry':
+                    self.fight_entry()
+                if surveyed is not None:
+                    continue
             identity = chapter_identity(field, self.owner.chapter_ocr)
             if identity is not None and identity[0] > self.owner.current_chapter:
                 if getattr(self.owner, 'continuous', False):

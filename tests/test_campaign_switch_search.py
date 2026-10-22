@@ -10,8 +10,10 @@ import numpy as np
 with patch.dict('sys.modules', {'module.logger': SimpleNamespace(logger=Mock())}):
     from module.campaign import structures as structure
     from module.campaign import switch_search as search
+    from module.campaign import facility_survey as survey_module
 # 恢复入口在运行时导入搜索模块；patch.dict退出会移除它，放回同一对象避免重复加载cv2。
 sys.modules.setdefault('module.campaign.switch_search', search)
+sys.modules.setdefault('module.campaign.facility_survey', survey_module)
 
 
 def fixture(kind='ground_mechanism', state='off', position=(1285., 650.), confidence=.95):
@@ -460,6 +462,70 @@ class RecoveryOrderTests(unittest.TestCase):
         self.assertEqual(self.runner.switch_skip, set())
         self.assertEqual(self.runner.switch_searches, {})
         catalog.switch_activated.assert_called_once()
+
+    def known_catalog(self):
+        """目录：远近两个未用过的关闭机关，另有已开启、无底图坐标的机关和一个平台。"""
+        catalog = Mock()
+        catalog.observe.return_value = []
+        catalog.eligible.return_value = True
+        catalog.data = dict(survey={}, facilities={
+            'scene-1': dict(kind='ground_mechanism', activated='observed_off', map_position=[900., 0.]),
+            'scene-2': dict(kind='ground_mechanism', activated='unconfirmed', map_position=[100., 0.]),
+            'scene-3': dict(kind='ground_mechanism', activated='observed_on', map_position=[10., 0.]),
+            'scene-4': dict(kind='ground_mechanism', activated='observed_off'),
+            'scene-5': dict(kind='elevator', activated='unconfirmed', map_position=[5., 0.])})
+        self.runner.known_switch_tries = {}
+        return catalog
+
+    def test_known_catalog_switch_is_seen_before_goal_view_and_spiral(self):
+        """用户反馈22-36：目录知道开关没用过就直接去试；按底图坐标由近及远，点击仍用新鲜检测。"""
+        catalog = self.known_catalog()
+        switch = dict(fixture(position=(900., 600.)), search_key=(('catalog', 'scene-2'), 11, 8))
+        seek = Mock(return_value=dict(client=np.array([890., 610.]), field=self.field))
+        with patch.object(structure, 'facility_catalog', return_value=catalog), \
+                patch.object(structure, 'locate_view', return_value={}), \
+                patch.object(structure, 'gaze_position', return_value=np.zeros(2)), \
+                patch.object(structure, 'seek_map_point', seek), \
+                patch.object(structure, 'watch_switch', return_value=(self.field, 'unconfirmed')):
+            result, finder = self.recover(None, look=Mock(return_value=('found', switch, self.field)))
+        self.assertEqual(result, 'attempted')
+        np.testing.assert_allclose(seek.call_args.args[1], [100., 0.])
+        finder.return_value.run.assert_not_called()
+        self.runner.session.tap.assert_called_once_with([900., 600.])
+        self.assertEqual(self.runner.known_switch_tries, {'quest:(21, 15)': {'scene-2'}})
+
+    def test_known_switch_misses_recenter_then_fall_back_to_spiral(self):
+        """已知机关处都没新鲜确认到：每个只看一次，已开启和无坐标的不看，找回小队后照常螺旋。"""
+        catalog = self.known_catalog()
+        seek = Mock(return_value=dict(client=np.array([890., 610.]), field=self.field))
+        with patch.object(structure, 'facility_catalog', return_value=catalog), \
+                patch.object(structure, 'locate_view', return_value={}), \
+                patch.object(structure, 'gaze_position', return_value=np.zeros(2)), \
+                patch.object(structure, 'seek_map_point', seek), \
+                patch.object(structure, 'recenter_squad') as recenter:
+            result, finder = self.recover(dict(state='exhausted'), look=Mock(return_value=('none', None, self.field)))
+        self.assertEqual(result, 'scouted')
+        self.assertEqual([call.args[1].tolist() for call in seek.call_args_list], [[100., 0.], [900., 0.]])
+        recenter.assert_called()
+        finder.return_value.run.assert_called_once()
+        self.assertEqual(self.runner.known_switch_tries, {'quest:(21, 15)': {'scene-1', 'scene-2'}})
+
+    def test_chapter_start_survey_runs_once_and_skips_verified(self):
+        """开局巡检每章只跑一次并找回小队；已完整覆盖的章节不再巡检。"""
+        catalog = Mock()
+        catalog.data = dict(survey={}, facilities={})
+        survey = Mock()
+        survey.return_value.run.return_value = dict(state='surveyed')
+        with patch.object(structure, 'facility_catalog', return_value=catalog), \
+                patch.object(survey_module, 'FacilitySurvey', survey), \
+                patch.object(structure, 'recenter_squad') as recenter:
+            self.assertEqual(structure.chapter_start_survey(self.runner), 'surveyed')
+            self.assertIsNone(structure.chapter_start_survey(self.runner))
+            catalog.data.update(survey_runs=0, survey=dict(state='camera_coverage_verified'))
+            self.assertIsNone(structure.chapter_start_survey(self.runner))
+        survey.return_value.run.assert_called_once()
+        self.assertFalse(survey.call_args.kwargs.get('first_off', False))
+        recenter.assert_called_once()
 
     def test_recenter_skipped_when_squad_already_visible(self):
         """实录22-27：任务定位后小队仍在画面内，没有离屏头像可点，不算找回失败。"""

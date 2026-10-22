@@ -13,6 +13,8 @@ from module.campaign.vision.surface_motion import project
 
 MAX_VIEWS = 64
 MAX_FACILITIES = 256
+# 每个设施保留最近几次视野观测；更早的视野不再锚定它，可作为桥接帧淘汰。
+MAX_OBSERVATIONS = 4
 
 
 class FacilityUnconfirmed(RuntimeError):
@@ -103,8 +105,13 @@ def stable_facilities(first, second):
 class FacilityMemory:
     """通过有界关键帧重定位设施，跨任务保存尝试历史，绝不把历史像素当成新落点。
 
-    身份由实例、章、难度、底图摘要共同隔离。最多64个静态关键帧和256个设施；达到容量
-    停止登记而不淘汰已尝试设施。首次重新观察必须和历史关键帧配准，失败不另建重复身份。
+    身份由实例、章、难度、底图摘要共同隔离。最多64个静态关键帧和256个设施；首次重新观察
+    必须和历史关键帧配准，失败不另建重复身份。
+
+    关键帧分两类（用户 2026-10-22 指出“顺手记下的背景帧”不该占满容量）：锚点帧被某个设施的
+    观测引用，设施身份靠它重定位，永不淘汰；桥接帧只是移动途中保持配准连续的背景，满了按最久
+    未命中先淘汰。实录 2026-10-22（22-36）：64个关键帧里40个是桥接帧，容量耗尽后全章巡检一屏
+    都没登记，用户自己找到的开关目录里没有。
     """
 
     def __init__(self, instance, identity, map_sha256=None, root=None):
@@ -156,8 +163,8 @@ class FacilityMemory:
         facilities = {identifier: dict(id=identifier, kind=record['kind'], source=record['source'],
                                        observations=[dict(view=old['view'], position=old['position'])
                                                      for old in record['observations']],
-                                       **({'map_position': record['map_position']}
-                                          if 'map_position' in record else {}),
+                                       **({key: record[key] for key in ('map_position', 'map_source', 'map_samples')
+                                           if key in record}),
                                        # 屏障的状态是部件外观（光幕/立柱），身份关联要用。
                                        **({'last_state': record['last_state']}
                                           if record['kind'] == 'barrier' and 'last_state' in record else {}))
@@ -307,14 +314,15 @@ class FacilityMemory:
             raise FacilityUnconfirmed('多个当前设施竞争同一历史身份，未合并或点击。')
         # 每次确认视野保留一个特征关键帧；同一屏或小幅漂移时复用旧关键帧，避免常规轮询耗尽容量。
         reuse = next((number for number, matrix, _, _ in matches if same_screen(matrix)), None)
+        if reuse is not None:
+            # 命中即刷新，淘汰桥接帧时按最久未命中先淘汰；只改内存，下次保存目录时一并写入。
+            next(item for item in self.data['views'] if item['id'] == reuse)['at'] = time.time()
         if background and reuse is not None:
             # 同屏背景不新增关键帧，记录没有变化，不必重写目录。
             return []
         view = reuse
         if view is None:
-            if len(self.frames) >= MAX_VIEWS:
-                raise FacilityUnconfirmed('设施关键帧达到容量，保留部分巡检结果，不声明全图完成。')
-            view = len(self.frames)
+            view = self._free_view({number for number, *_ in matches})
             self.folder.mkdir(parents=True, exist_ok=True)
             temporary = self.folder/f'view-{view:03d}.tmp'
             with temporary.open('wb') as stream:
@@ -340,7 +348,7 @@ class FacilityMemory:
                 position = project(np.linalg.inv(matrix), position)
             observation = dict(view=view, position=position.tolist(), state=item['state'], at=time.time())
             record['observations'] = ([old for old in record['observations'] if old['view'] != view]
-                                      + [observation])
+                                      + [observation])[-MAX_OBSERVATIONS:]
             record['last_state'] = item['state']
             if item['kind'] == 'ground_mechanism' and item['state'] == 'on':
                 if record['activated'] == 'observed_off':
@@ -355,6 +363,55 @@ class FacilityMemory:
         self.data['unresolved'] = unresolved
         self.save()
         return list(current.values())
+
+    def anchors(self):
+        """被设施观测引用的锚点关键帧编号；其余都是可淘汰的桥接帧。"""
+        return {old['view'] for record in self.data['facilities'].values() for old in record['observations']}
+
+    def _free_view(self, matched):
+        """返回新关键帧可用的编号；满了淘汰一个最久未命中的桥接帧，只有锚点帧时拒绝登记。
+
+        优先淘汰这次没配准上的桥接帧：刚配准上的帧连着当前视野，淘汰它会让下一屏更难重定位。
+        """
+        used = {item['id'] for item in self.data['views']}
+        if len(used) < MAX_VIEWS:
+            return min(set(range(MAX_VIEWS))-used)
+        anchors = self.anchors()
+        bridges = [item for item in self.data['views'] if item['id'] not in anchors]
+        if not bridges:
+            raise FacilityUnconfirmed('设施关键帧全部是锚点帧，保留部分巡检结果，不声明全图完成。')
+        number = min(bridges, key=lambda item: (item['id'] in matched, item.get('at', 0.)))['id']
+        (self.folder/f'view-{number:03d}.npz').unlink(missing_ok=True)
+        self.frames.pop(number, None)
+        self.data['views'] = [item for item in self.data['views'] if item['id'] != number]
+        return number
+
+    def needs_map(self, items):
+        """本帧已登记设施里还没有底图坐标的；外部标注自带坐标，不需要补。"""
+        return [item for item in items if 'map_position' not in self.data['facilities'][item['facility_id']]]
+
+    def place(self, items, to_map):
+        """把本帧设施的客户区位置换成底图坐标，只作“去哪里看”的估计，不授予点击许可。
+
+        to_map 把客户区像素换到底图像素。已有坐标的设施只返回本次估计与记录的偏差（标注坐标
+        不被改写，偏差用来核对换算精度）；实测估计按最多8次取平均，减少单次配准误差。
+        """
+        errors = []
+        for item in items:
+            record = self.data['facilities'][item['facility_id']]
+            point = np.asarray(to_map(item['position']), float)
+            source = record.get('map_source', 'annotations' if 'map_position' in record else 'viewport_estimate')
+            if 'map_position' in record:
+                errors.append(dict(facility_id=item['facility_id'], source=source,
+                                   error=round(float(np.linalg.norm(point-record['map_position'])), 1)))
+            if source != 'viewport_estimate':
+                continue
+            count = min(record.get('map_samples', 0), 7)
+            old = np.asarray(record.get('map_position', point), float)
+            record['map_position'] = ((old*count+point)/(count+1)).tolist()
+            record['map_source'], record['map_samples'] = 'viewport_estimate', count+1
+        self.save()
+        return errors
 
     def _expected(self, matches, current):
         """已知仍关闭的地面机关投影到本帧的位置，作为“去哪里看”的线索；本帧已检测到的不列入。

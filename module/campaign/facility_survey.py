@@ -6,6 +6,8 @@ import numpy as np
 
 from module.campaign.facility_memory import FacilityUnconfirmed, facility_frame, voted_facilities
 from module.campaign.navigation import controls as goto
+from module.campaign.navigation.camera_navigation import pan_scene
+from module.campaign.navigation.facility_map import record_map_positions
 from module.campaign.sweep import ChapterSweep, HORIZONTAL_STEP, VERTICAL_STEP, SweepUnconfirmed, camera_motion
 from module.campaign.vision.objects import detect_objects
 from module.campaign.vision.story_marker import story_markers
@@ -38,9 +40,13 @@ class FacilitySurvey(ChapterSweep):
         if goto.battle_popup_score(field) > .8:
             self.found = dict(state='entry')
             return None
-        from module.campaign.switch_search import FACILITY_FRAMES, FACILITY_KINDS, FACILITY_VOTES, ring_centers
+        from module.campaign.switch_search import (FACILITY_FRAMES, FACILITY_KINDS, FACILITY_QUICK_FRAMES,
+                                                   FACILITY_VOTES, frames_agree, ring_centers)
         frames = [detect_objects(field, FACILITY_KINDS)]
-        for _ in range(FACILITY_FRAMES-1):
+        while len(frames) < FACILITY_FRAMES:
+            # 与螺旋相同：两帧设施一致即结束，不一致才补到四帧投票。
+            if len(frames) >= FACILITY_QUICK_FRAMES and frames_agree(frames):
+                break
             self.session.pause(.25)
             field = self.runner.map_frame()
             if goto.battle_popup_score(field) > .8:
@@ -51,6 +57,12 @@ class FacilitySurvey(ChapterSweep):
         # 烟雾会让单帧漏检，按多帧投票登记；同屏敌人脚圈与任务标记一并记录，供全章概览。
         stable = voted_facilities(frames, FACILITY_VOTES)
         self.visible = self.catalog.observe(field, stable)
+        moved = record_map_positions(self.runner, self.catalog, self.visible, field)
+        if moved is not None:
+            # 开合地图后以新帧作运动基准；画面若变了，本屏检测结果不再当作当前像素。
+            field = moved['field']
+            if not moved['unchanged']:
+                self.visible, second = [], detect_objects(field, FACILITY_KINDS)
         enemies = [dict(position=center.tolist(), confidence=float(score)) for center, score in ring_centers(field)]
         markers = story_markers(field)
         self.proof['views'] += 1
@@ -70,6 +82,10 @@ class FacilitySurvey(ChapterSweep):
         if self.wanted is not None and any(item['facility_id'] == self.wanted for item in self.visible):
             self.found = dict(state='facility_visible', facility_id=self.wanted)
         return dict(field=field, frame=facility_frame(field, second))
+
+    def pan(self, drag, ground):
+        """按时长推进拖动、画面静止即取帧（与螺旋相同，实测每屏省约2秒），不改变运动校验。"""
+        pan_scene(self.session, drag, squad_ground=ground, settle=None, paced=True)
 
     def measure_motion(self, before, after, drag):
         """允许有几何支持的斜向边缘响应继续登记；父类始终记录其覆盖缺口，不授予全图许可。

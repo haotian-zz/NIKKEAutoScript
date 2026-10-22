@@ -20,6 +20,7 @@ import numpy as np
 from module.campaign.facility_memory import FacilityUnconfirmed, facility_frame, voted_facilities
 from module.campaign.navigation import controls as goto
 from module.campaign.navigation.camera_navigation import pan_region, pan_scene
+from module.campaign.navigation.facility_map import record_map_positions
 from module.campaign.vision.enemy_ring import scene_registration, scene_ring_candidates
 from module.campaign.vision.surface_motion import project
 from module.campaign.vision.objects import detect_objects
@@ -180,7 +181,7 @@ class SwitchSearch:
         # 上一次拖动后帧的配准特征，作为下一次拖动的前帧特征复用。
         self.features = None
 
-    def look(self, step, goal=False):
+    def look(self, step, goal=False, placed=False):
         """取两帧（不一致补到四帧）检测关闭机关并登记目录；返回(状态, 候选, 新鲜帧)。
 
         goal为真表示镜头已由任务定位移到受阻目标旁：此处敌人多与目标同在障碍后，不找守关敌人；
@@ -226,6 +227,11 @@ class SwitchSearch:
                 relocated = True
             except FacilityUnconfirmed:
                 self.catalog_errors += 1
+        if registered and not placed:
+            # 新登记的设施补底图坐标；开合地图若让画面变了，本屏重看一次，不用旧帧像素点击。
+            moved = record_map_positions(self.runner, self.catalog, registered, fresh)
+            if moved is not None and not moved['unchanged']:
+                return self.look(step, goal, placed=True)
         marks['catalog'] = time.monotonic()
         candidates = []
         for item in off_switches(frames):

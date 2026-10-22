@@ -133,7 +133,7 @@ class ChapterSweep:
         field = before['field']
         ground = self.pan_anchor(field)
         self.session.begin_target('chapter_sweep_pan')
-        pan_scene(self.session, np.asarray(drag, float), squad_ground=ground)
+        self.pan(np.asarray(drag, float), ground)
         self.steps += 1
         after = self.sample()
         if self.found is not None:
@@ -148,6 +148,10 @@ class ChapterSweep:
         self.session.record_evidence('chapter_sweep_motion', after['field'], drag=drag,
                                      actual=delta.tolist(), pans=self.steps, rows=self.rows)
         return delta
+
+    def pan(self, drag, ground):
+        """发送一次避开小队的镜头手势，固定等待画面稳定。"""
+        pan_scene(self.session, drag, squad_ground=ground)
 
     def measure_motion(self, before, after, drag):
         """清怪扫描使用严格轴向响应；设施子类可观察斜向运动，但必须保留覆盖存疑。"""

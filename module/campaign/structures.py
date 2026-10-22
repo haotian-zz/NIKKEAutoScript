@@ -7,6 +7,7 @@ import numpy as np
 
 from module.campaign.navigation import controls as goto
 from module.campaign.navigation.camera_navigation import pan_scene
+from module.campaign.navigation.facility_map import gaze_position, locate_view, record_map_positions, seek_map_point
 from module.campaign.navigation.movement_feedback import TargetTriggered
 from module.campaign.navigation.hybrid_localization import locate_squad, position_feedback
 from module.campaign.facility_memory import FacilityMemory, FacilityUnconfirmed, stable_facilities
@@ -229,7 +230,7 @@ def reset_switch_marks(runner, catalog):
     走不到的地方都可能已经能到了。开关在原位变为开启是已验证的道路状态改变，不是参数放宽。
     """
     runner.switch_skip.clear()
-    for name in ('switch_searches', 'gate_enemy_tries', 'spiral_resume', 'blocked_since'):
+    for name in ('switch_searches', 'gate_enemy_tries', 'spiral_resume', 'blocked_since', 'known_switch_tries'):
         marks = getattr(runner, name, None)
         if isinstance(marks, dict):
             marks.clear()
@@ -252,11 +253,115 @@ def survey_for_switch(runner, catalog):
     from module.campaign.facility_survey import FacilitySurvey
     from module.campaign.sweep import SweepUnconfirmed
     runner.facility_survey_attempted = True
+    if catalog.data.get('survey', {}).get('state') == 'camera_coverage_verified':
+        # 开局巡检已完整登记过全章设施，未试过的关闭机关已由 known_switch_view 逐个看过。
+        return None
     try:
         return FacilitySurvey(runner, catalog, seconds=SURVEY_SECONDS, first_off=True).run()
     except (SweepUnconfirmed, FacilityUnconfirmed) as exc:
         logger.info(f'全章设施巡检未完整：{exc}；已登记的设施保留在目录。')
         return None
+
+
+# 每个受阻目标最多去看几个目录里的已知关闭机关（每个约几次配准加拖动，二三十秒）。
+KNOWN_SWITCH_TRIES = 3
+
+
+def known_switches(catalog, blocked_goal, tried):
+    """目录里有底图坐标、未确认开启、对本受阻目标未试过的地面机关编号与坐标。"""
+    return [(identifier, np.asarray(record['map_position'], float))
+            for identifier, record in catalog.data['facilities'].items()
+            if record['kind'] == 'ground_mechanism' and 'map_position' in record
+            and record.get('activated') != 'observed_on' and identifier not in tried
+            and catalog.eligible(identifier, blocked_goal)]
+
+
+def known_switch_view(runner, catalog, blocked_goal):
+    """第负一级：按底图坐标把镜头移到目录里已知、未用过的关闭机关处，当场两帧确认后交回。
+
+    用户反馈（2026-10-22，22-36）：开关离起点很远，点感叹号敌人会被引导到错误方向，螺旋只看
+    小队附近；目录里既然知道这个机关没用过，就应该直接去试。坐标只决定往哪看，点击仍用
+    新鲜检测；按镜头注视点由近及远，每个受阻目标最多看 KNOWN_SWITCH_TRIES 个。
+    返回 None（没有可看的或都没确认到，镜头已找回小队）或 dict(state=entry/found, ...)。
+    """
+    from module.campaign.switch_search import SwitchSearch
+    tries = getattr(runner, 'known_switch_tries', None)
+    if catalog is None or not isinstance(tries, dict):
+        return None
+    tried = tries.setdefault(blocked_goal, set())
+    if len(tried) >= KNOWN_SWITCH_TRIES or not known_switches(catalog, blocked_goal, tried):
+        return None
+    try:
+        gaze = gaze_position(locate_view(runner, 'known_switch_start'))
+    except ValueError as exc:
+        logger.info(f'目录里有未用过的已知机关，但镜头配准未通过：{exc}')
+        return None
+    moved = False
+    while len(tried) < KNOWN_SWITCH_TRIES:
+        pool = known_switches(catalog, blocked_goal, tried)
+        if not pool:
+            break
+        identifier, point = min(pool, key=lambda item: np.linalg.norm(item[1]-gaze))
+        tried.add(identifier)
+        logger.info(f'目标受阻：目录里的关闭机关 {identifier} 未对本目标试过，按底图坐标 '
+                    f'{np.round(point).astype(int).tolist()} 移镜头过去用新鲜检测确认。')
+        moved = True
+        reached = seek_map_point(runner, point, tag='known_switch')
+        if reached is None:
+            continue
+        search = SwitchSearch(runner, catalog, pans=0, skip=runner.switch_skip, enemies=False)
+        state, target, fresh = search.look(('catalog', identifier))
+        runner.session.record_evidence('known_switch_view', fresh, facility_id=identifier,
+                                       map_position=point.tolist(), expected=np.asarray(reached['client']).tolist(),
+                                       state=state, target=target, arrays=dict(field=fresh))
+        if state == 'entry':
+            return dict(state='entry', field=fresh)
+        if state == 'found':
+            logger.info(f"已知机关附近新鲜确认关闭机关 {target['position']}（{target['confidence']:.2f}，"
+                        f"预计 {np.round(reached['client']).astype(int).tolist()}），交由原生寻路前往。")
+            return dict(state='found', target=target, field=fresh)
+        logger.info(f'已知机关 {identifier} 附近未新鲜确认到可用的关闭机关。')
+    if moved:
+        recenter_squad(runner)
+    return None
+
+
+# 开局全章巡检每个实例每章最多跑几次（结果持久化在目录；未完整的留给受阻时的巡检补）。
+START_SURVEY_RUNS = 1
+
+
+def chapter_start_survey(runner):
+    """进入本章地图后先巡检一次全章设施，登记机关位置与底图坐标；返回None/'entry'/'surveyed'。
+
+    用户反馈（2026-10-22，22-36）：开局就该知道全图有哪些机关，受阻时直接去试没用过的。原先巡检
+    只在螺旋失败后才跑，且关键帧容量被桥接帧占满，一屏都没登记。巡检只看设施，不打怪、不走位；
+    已完整覆盖或已跑过 START_SURVEY_RUNS 次的章节跳过，结束后镜头找回小队。
+    """
+    from module.campaign.facility_survey import FacilitySurvey
+    from module.campaign.sweep import SweepUnconfirmed
+    try:
+        catalog = facility_catalog(runner)
+    except FacilityUnconfirmed as exc:
+        logger.info(f'设施目录不可用，跳过开局巡检：{exc}')
+        return None
+    runs = catalog.data.get('survey_runs', 0)
+    if catalog.data.get('survey', {}).get('state') == 'camera_coverage_verified' or runs >= START_SURVEY_RUNS:
+        return None
+    catalog.data['survey_runs'] = runs + 1
+    catalog.save()
+    try:
+        result = FacilitySurvey(runner, catalog, seconds=SURVEY_SECONDS).run() or {}
+    except (SweepUnconfirmed, FacilityUnconfirmed) as exc:
+        logger.info(f'开局设施巡检未完整：{exc}；已登记的设施保留在目录。')
+        result = {}
+    if result.get('state') == 'entry':
+        return 'entry'
+    known = [identifier for identifier, record in catalog.data['facilities'].items()
+             if record['kind'] == 'ground_mechanism']
+    logger.info(f"开局设施巡检结束：目录 {len(catalog.data['facilities'])} 个设施，其中地面机关 {len(known)} 个，"
+                f"有底图坐标 {sum('map_position' in catalog.data['facilities'][item] for item in known)} 个。")
+    recenter_squad(runner)
+    return 'surveyed'
 
 
 def attack_gate_enemy(runner, searched, blocked_goal):
@@ -344,6 +449,11 @@ def recover_visible_structure(runner, field, allow_unanchored=False):
             # 目录只提供去重和历史；无法重定位时不新建编号，本轮由单目标预算限制重复尝试。
             session.record_evidence('facility_catalog_unrelocated', fresh, reason=str(exc))
             registered, catalog = [], None
+        moved = record_map_positions(runner, catalog, registered, fresh)
+        if moved is not None and not moved['unchanged']:
+            # 开合地图后画面变了：本帧候选的像素不再可用，下一轮重新扫描。
+            runner.memory.previous = None
+            return 'scouted'
     if catalog is not None:
         candidates = [dict(item, facility_id=known['facility_id']) for item in candidates
                       for known in registered if known['kind'] == item['kind']
@@ -365,7 +475,12 @@ def recover_visible_structure(runner, field, allow_unanchored=False):
             and searches.get(blocked_goal, 0) < 1):
         # 门旁平台可能只是单向到达端；每个受阻目标先看目标旁，再螺旋找一次关闭机关，找不到再退回平台尝试。
         from module.campaign.switch_search import SwitchSearch
-        searched = goal_view_switch(runner, catalog, blocked_goal)
+        # 目录里已知、对本目标还没试过的关闭机关先去看：它可能远在螺旋范围之外。
+        searched = known_switch_view(runner, catalog, blocked_goal)
+        if searched is not None and searched['state'] == 'entry':
+            return 'entry'
+        if searched is None:
+            searched = goal_view_switch(runner, catalog, blocked_goal)
         if searched is not None and searched['state'] == 'entry':
             return 'entry'
         if searched is None or searched['state'] != 'found':

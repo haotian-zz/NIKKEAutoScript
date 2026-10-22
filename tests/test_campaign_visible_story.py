@@ -58,11 +58,24 @@ class VisibleStoryTests(unittest.TestCase):
         self.executor = Mock()
         self.runner = self.ns['VisibleStoryRunner'](self.owner, self.session, self.executor)
         self.runner.map_frame = Mock(return_value=self.field)
+        # 开局设施巡检单独验证（test_chapter_start_survey_runs_before_first_target）。
+        self.runner.chapter_surveyed = True
         self.reveal = Mock()
         patcher = patch.dict(sys.modules, {'module.campaign.navigation.story_navigation':
                                          SimpleNamespace(reveal_story_marker=self.reveal)})
         patcher.start()
         self.addCleanup(patcher.stop)
+
+    def test_chapter_start_survey_runs_before_first_target(self):
+        """进入本章地图的第一轮先做设施巡检，巡检后重新取帧，不沿用巡检前的画面选目标。"""
+        self.runner.chapter_surveyed = False
+        start = Mock(return_value='surveyed')
+        self.runner.scan = Mock()
+        with patch.dict(sys.modules, {'module.campaign.structures': SimpleNamespace(chapter_start_survey=start)}):
+            self.assertEqual(self.runner.run(ticks=1)['reason'], 'tick_budget')
+            start.assert_called_once_with(self.runner)
+            self.runner.scan.assert_not_called()
+            self.assertTrue(self.runner.chapter_surveyed)
 
     def test_parse_only_complete_unique_stage(self):
         """任务必须含通关动词，多个编号和零值均不得作为关卡身份。"""

@@ -1,0 +1,161 @@
+"""设施的底图坐标：配准展开小地图得到当前镜头位置，把客户区像素与底图像素互相换算。
+
+关键帧只能在画面有重叠时重定位设施；隔着几屏的已知机关没有办法知道“往哪边拖”。
+实录 2026-10-22（22-36）：用户找到的开关离起点很远，螺旋只看小队附近，目录线索也只在
+当前画面±300px内才用。底图坐标是全章统一的，记下后可以从任何位置闭环拖镜头过去。
+
+换算按镜头注视点建立：展开 ROI 的 EXPANDED_CENTER 对应客户区 VIEWPORT_PIXEL，局部投影沿用
+标定的 A_INV 与 ROI→参考平面单应。结果只用于“去哪里看”，点击仍须当场两帧新鲜检测。
+"""
+
+import numpy as np
+
+from module.campaign.navigation import controls as goto
+from module.campaign.navigation.camera_navigation import (
+    ROI_BOUNDS, camera_drag, inside, pan_scene, scene_unchanged)
+from module.campaign.vision.offscreen import squad_offscreen
+from module.campaign.vision.perception import squad_arrow
+from module.campaign.vision.surface_motion import project
+from module.logger import logger
+
+# 闭环拖镜头的次数上限；每次都先重新配准展开地图（约2～3秒）。
+SEEK_PANS = 6
+# 目标投影进入这块客户区（避开顶部遮挡与底部 HUD）即停止拖动，交给新鲜检测确认。
+SEEK_VIEW = (250., 200., 1500., 820.)
+# 镜头注视点离目标的底图距离几乎没缩短，视为拖不动（地图边界或拖动被吞）。
+SEEK_STUCK = 5.
+
+
+def map_localizer(runner):
+    """取当前章节的展开地图定位器；主线可见目标会话不预加载底图，首次使用时才加载。"""
+    session = runner.session
+    if getattr(session, 'localizer', None) is not None:
+        return session.localizer
+    cached = getattr(runner, 'map_localizer', None)
+    if cached is not None:
+        return cached
+    from module.campaign.session import CampaignLocalizer
+    observer, identity = runner.owner.observer, tuple(session.expected_identity)
+    if observer.matcher is None or observer.chapter != identity[0]:
+        observer.observe(session.win.client(), identity, objects=False)
+    if observer.matcher is None:
+        return None
+    # 只用配准，不规划道路，因此不需要切开图。
+    runner.map_localizer = CampaignLocalizer(observer.matcher, None)
+    return runner.map_localizer
+
+
+def gaze_chart(localizer):
+    """展开 ROI → 客户区的投影，平移项钉在镜头注视点上；不依赖小队是否在画面里。"""
+    affine = np.eye(3)
+    affine[:2, :2] = goto.A_INV
+    chart = affine @ np.asarray(localizer.old_matrix, float)
+    translation = np.eye(3)
+    translation[:2, 2] = np.asarray(goto.VIEWPORT_PIXEL, float) - project(chart, goto.EXPANDED_CENTER)
+    return translation @ chart
+
+
+def client_to_map(chart, report, point):
+    """客户区像素 → 本次展开地图 ROI → 底图像素。"""
+    return project(np.asarray(report['roi_to_map'], float), project(np.linalg.inv(chart), point))
+
+
+def map_to_client(chart, report, point):
+    """底图像素在当前镜头下的客户区位置；不在展开 ROI 里的点返回 None（远处投影不可信）。"""
+    roi = project(np.linalg.inv(np.asarray(report['roi_to_map'], float)), point)
+    if not inside(roi, ROI_BOUNDS):
+        return None
+    return project(chart, roi)
+
+
+def gaze_position(report):
+    """镜头注视点的底图坐标。"""
+    return project(np.asarray(report['roi_to_map'], float), goto.EXPANDED_CENTER)
+
+
+def locate_view(runner, tag):
+    """展开小地图配准当前镜头视野后收起；配准失败也先收起再抛 ValueError，不影响后续流程。
+
+    小队可以离屏，结果只代表镜头位置。停止信号、窗口变化等会话异常照常上抛，不补发收起。
+    """
+    localizer = map_localizer(runner)
+    if localizer is None:
+        raise ValueError('本章底图不可用，无法换算设施坐标。')
+    session = runner.session
+    session.check()
+    goto.map_open(session.win)
+    try:
+        panel = session.win.capture()
+        report = localizer.locate(panel, tag, require_player=False)
+        if np.mean(goto.terrain(panel) != goto.terrain(session.win.capture())) > .03:
+            raise ValueError('镜头定位期间画面仍在变化。')
+    except (RuntimeError, ValueError) as exc:
+        goto.map_close(session.win)
+        raise ValueError(str(exc)) from exc
+    goto.map_close(session.win)
+    return report
+
+
+def record_map_positions(runner, catalog, items, field):
+    """本帧刚登记、还没有底图坐标的设施，配准一次展开地图补上坐标；失败只记日志。
+
+    返回 None（无需或未能补坐标）或 dict(field=收起地图后的新帧, unchanged=镜头是否未变)。
+    unchanged 为假时调用方不能再用 field 之前那帧的像素点击。
+    """
+    if catalog is None or not items or not catalog.needs_map(items):
+        return None
+    try:
+        report = locate_view(runner, 'facility_map')
+    except ValueError as exc:
+        logger.info(f'设施底图坐标未补上：{exc}')
+        return None
+    chart = gaze_chart(map_localizer(runner))
+    errors = catalog.place(items, lambda point: client_to_map(chart, report, point))
+    after = runner.map_frame(track=False)
+    unchanged = scene_unchanged(field, after)
+    runner.session.record_evidence('facility_map_position', after, gaze=gaze_position(report).tolist(),
+                                   facilities=[item['facility_id'] for item in items], errors=errors,
+                                   unchanged=unchanged)
+    logger.info(f"设施底图坐标：{', '.join(item['facility_id'] for item in items)}，镜头注视点 "
+                f"{np.round(gaze_position(report)).astype(int).tolist()}"
+                + (f'，已有坐标偏差 {errors}' if errors else '') + '。')
+    return dict(field=after, unchanged=unchanged)
+
+
+def seek_map_point(runner, point, tag='facility_seek', pans=SEEK_PANS):
+    """闭环把镜头拖到底图点附近：每次重新配准展开地图，按局部方向拖动。
+
+    返回 dict(client=目标预计客户区位置, field=新帧) 或 None（拖不动、配准失败或未确认小队
+    位置）。只移动镜头，不发送走位；拖动前要求真实小队箭头或离屏标记，与巡检相同。
+    """
+    localizer = map_localizer(runner)
+    if localizer is None:
+        return None
+    chart, point, previous = gaze_chart(localizer), np.asarray(point, float), None
+    for index in range(pans + 1):
+        try:
+            report = locate_view(runner, f'{tag}_{index:02d}')
+        except ValueError as exc:
+            logger.info(f'寻找已知设施时镜头配准未通过：{exc}')
+            return None
+        field = runner.map_frame(track=False)
+        client = map_to_client(chart, report, point)
+        if client is not None and inside(client, SEEK_VIEW):
+            return dict(client=client, field=field)
+        distance = float(np.linalg.norm(gaze_position(report) - point))
+        if index == pans or (previous is not None and distance > previous - SEEK_STUCK):
+            logger.info(f'镜头未能移到已知设施附近（剩余底图距离 {distance:.0f}px）。')
+            return None
+        previous = distance
+        arrow = squad_arrow(field)
+        if arrow is None and squad_offscreen(field) is None:
+            logger.info('未确认小队位置或离屏标记，停止拖镜头以免误发走位。')
+            return None
+        try:
+            drag = camera_drag(chart, report, point)
+        except ValueError:
+            return None
+        runner.session.begin_target(tag)
+        pan_scene(runner.session, drag, squad_ground=None if arrow is None else
+                  np.asarray(arrow) + [0., goto.ARROW_GROUND_OFFSET], settle=None, paced=True)
+    return None

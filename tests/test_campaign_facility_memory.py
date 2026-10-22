@@ -163,6 +163,59 @@ class FacilityMemoryTests(unittest.TestCase):
         with self.assertRaises(FacilityUnconfirmed):
             other.import_annotations(document)
 
+    def test_full_catalog_evicts_oldest_bridge_but_never_anchor_views(self):
+        """实录22-36：64个关键帧40个是桥接帧，满了巡检一屏都没登记；满了只淘汰最久未命中的桥接帧。"""
+        rng = np.random.default_rng(902)
+        gray = cv2.resize(rng.integers(0, 256, (500, 2400), dtype=np.uint8), (4800, 999))
+        canvas = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+        strips = [canvas[:, x:x+1776] for x in (0, 600, 1200, 1800)]
+        names = FacilityMemory.observe.__globals__
+        with patch.dict(names, MAX_VIEWS=3):
+            identifier = self.catalog.observe(strips[0], [observed()])[0]['facility_id']
+            for strip in strips[1:]:
+                self.assertTrue(self.catalog.track_background(strip, force=True))
+            self.assertEqual(len(self.catalog.data['views']), 3)
+            self.assertEqual(self.catalog.anchors(), {0})
+            self.assertIn(0, self.catalog.frames)
+            self.assertEqual(len(list(self.catalog.folder.glob('view-*.npz'))), 3)
+            restarted = FacilityMemory('isolated', (21, 'normal'), 'sha-A', root=self.temporary.name)
+            self.assertEqual(restarted.observe(strips[0], [observed()])[0]['facility_id'], identifier)
+            only_anchor = FacilityMemory('anchors', (22, 'normal'), 'sha-A', root=self.temporary.name)
+        with patch.dict(names, MAX_VIEWS=1):
+            only_anchor.observe(strips[0], [observed()])
+            with self.assertRaises(FacilityUnconfirmed):
+                only_anchor.observe(strips[1], [observed((300., 500.), 'off', 'ground_mechanism')])
+
+    def test_old_observations_stop_anchoring_views(self):
+        """每个设施只保留最近几次视野观测，更早的视野变回可淘汰的桥接帧。"""
+        names = FacilityMemory.observe.__globals__
+        with patch.dict(names, MAX_OBSERVATIONS=1):
+            identifier = self.catalog.observe(self.field, [observed()])[0]['facility_id']
+            self.catalog.observe(self.panned, [observed((980., 500.))])
+        self.assertEqual([old['view'] for old in self.catalog.data['facilities'][identifier]['observations']], [1])
+        self.assertEqual(self.catalog.anchors(), {1})
+
+    def test_map_positions_average_estimates_and_keep_annotations(self):
+        """实测底图坐标取平均；标注坐标不改写，只报告偏差；共享副本带坐标。"""
+        items = self.catalog.observe(self.field, [observed(kind='ground_mechanism', state='off')])
+        identifier = items[0]['facility_id']
+        self.assertEqual(self.catalog.needs_map(items), items)
+        self.assertEqual(self.catalog.place(items, lambda point: np.asarray(point)/10.), [])
+        errors = self.catalog.place(items, lambda point: np.asarray(point)/10.+[2., 0.])
+        record = self.catalog.data['facilities'][identifier]
+        self.assertEqual(errors, [dict(facility_id=identifier, source='viewport_estimate', error=2.)])
+        np.testing.assert_allclose(record['map_position'], [81., 50.])
+        self.assertEqual(record['map_samples'], 2)
+        self.assertEqual(self.catalog.needs_map(items), [])
+        self.catalog._new('map-a', 'ground_mechanism', 'annotations')
+        self.catalog.data['facilities']['map-a']['map_position'] = [10., 10.]
+        errors = self.catalog.place([dict(facility_id='map-a', position=[0., 0.])], lambda point: [13., 14.])
+        self.assertEqual(errors[0]['error'], 5.)
+        self.assertEqual(self.catalog.data['facilities']['map-a']['map_position'], [10., 10.])
+        other = FacilityMemory('another-account', (21, 'normal'), 'sha-A', root=self.temporary.name)
+        np.testing.assert_allclose(other.data['facilities'][identifier]['map_position'], [81., 50.])
+        self.assertEqual(other.data['facilities'][identifier]['map_source'], 'viewport_estimate')
+
 
 if __name__ == '__main__':
     unittest.main()
