@@ -52,14 +52,14 @@ class AutoPush(UI):
         """从竖屏主线读取具体关卡，并独立保留已核对的非数字前往地面出击指令。
 
         固定单行识别优先，低分保留旧大区域OCR；两者均只保留0.9以上文字。
-        出击须为完整指令，不将其虚构成下一关编号。
+        出击须为完整指令，不将其虚构成下一关编号；实录 2026-10-21 前哨基地任务完成后只显示「【出击】」。
         """
         reader = Ocr((390, 65, 710, 185), name='CAMPAIGN_MAIN_QUEST',
                      model_type=self.config.Optimization_OcrModelType)
         text = read_quest_text(self.device.image, reader)
         if text is None:
             text = reader.ocr(self.device.image, threshold=.9)['text']
-        self.lobby_sortie_instruction = bool(re.fullmatch(r'前往地面(?:【出[击擊]】|\[出[击擊]\])',
+        self.lobby_sortie_instruction = bool(re.fullmatch(r'(?:前往地面)?(?:【出[击擊]】|\[出[击擊]\])',
                                                          re.sub(r'\s+', '', text)))
         self.lobby_return_pending = return_lobby_quest(text)
         self.lobby_outpost_instruction = outpost_lobby_quest(text)

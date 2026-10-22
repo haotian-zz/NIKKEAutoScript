@@ -483,7 +483,7 @@ class CampaignStartTests(unittest.TestCase):
 
     def test_sortie_instruction_is_distinct_from_a_numbered_stage(self):
         """完整出击指令独立保存，活动或残缺文字不得虚构下一关，也不接受弱分文本。"""
-        for text, accepted in [('前往地面【出击】', True), ('前往地面【出擊】', True),
+        for text, accepted in [('前往地面【出击】', True), ('前往地面【出擊】', True), ('【出击】', True), ('出击', False),
                                ('前往地面', False), ('领取地面出击奖励', False), ('通关【21-1】', False)]:
             reader = Mock()
             reader.ocr.return_value = dict(text=text)
