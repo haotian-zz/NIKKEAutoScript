@@ -18,10 +18,11 @@ class FacilitySurvey(ChapterSweep):
     任何配准、边界、超时失败都保存partial；完整覆盖仅表示巡视过的镜头范围，不保证零漏检。
     """
 
-    def __init__(self, runner, catalog, seconds=180., wanted=None):
-        """绑定当前实例目录；wanted只允许在本帧重新确认指定历史设施后提前返回。"""
+    def __init__(self, runner, catalog, seconds=180., wanted=None, first_off=False):
+        """绑定当前实例目录；wanted复核指定历史设施，显式first_off只找当前未试的关闭机关。"""
         super().__init__(runner)
         self.catalog, self.seconds, self.wanted = catalog, min(240., max(1., seconds)), wanted
+        self.first_off = bool(first_off)
         self.visible = []
         self.occlusion_checked = False
         self.proof = dict(state='partial', source='scene_scan', origin='camera_top_right',
@@ -51,6 +52,13 @@ class FacilitySurvey(ChapterSweep):
         self.session.record_evidence('facility_survey_view', field, pans=self.steps, rows=self.rows,
                                      facilities=self.visible, detections=second, arrays=dict(field=field))
         self.session.preview(field)
+        if self.first_off:
+            candidates = [item for item in self.visible
+                          if item['kind'] == 'ground_mechanism' and item['state'] == 'off'
+                          and self.catalog.eligible(item['facility_id'], 'quest:'+str(self.runner.quest))]
+            if candidates:
+                self.found = dict(state='facility_visible', facility_id=candidates[0]['facility_id'],
+                                  target=candidates[0], source='fresh_two_frame_scan')
         if self.wanted is not None and any(item['facility_id'] == self.wanted for item in self.visible):
             self.found = dict(state='facility_visible', facility_id=self.wanted)
         return dict(field=field, frame=facility_frame(field, second))

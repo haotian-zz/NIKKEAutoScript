@@ -39,6 +39,9 @@ class MinimapOcclusionTests(unittest.TestCase):
         with patch.dict('sys.modules', {'module.logger': SimpleNamespace(logger=Mock())}):
             from module.campaign.vision.observation import CampaignObserver
         self.assertTrue(CampaignObserver.minimap_closed(field))
+        blue = cv2.cvtColor(np.uint8([[[100, 230, 210]]]), cv2.COLOR_HSV2BGR)[0, 0]
+        field[118:273, 27:207] = blue
+        self.assertTrue(CampaignObserver.minimap_closed(field))
         ring = np.zeros_like(control)
         cv2.circle(ring, (22, 22), 12, (255, 255, 255), 4)
         self.assertFalse(minimap_closed_control_visible(ring))
@@ -52,10 +55,11 @@ class MinimapOcclusionTests(unittest.TestCase):
             session.win.client.return_value = np.zeros((999, 1776, 3), np.uint8)
             session.owner.observer.minimap_closed.side_effect = [False, True, True, True]
             with patch.object(occlusion, 'compact_close_point', return_value=[204., 101.]), \
+                    patch.object(occlusion, 'restore_compact_map', return_value=True) as restore, \
                     patch.object(occlusion, 'squad_offscreen', side_effect=values):
                 self.assertEqual(occlusion.unoccluded_offscreen(session), expected)
             session.tap_verified_ui.assert_called_once()
-            session.owner.reopen_minimap_if_closed.assert_called_once()
+            restore.assert_called_once_with(session)
 
     def test_read_failure_still_restores_and_never_clicks_avatar(self):
         """隐藏后读取失败也走finally恢复，不发送头像点击或场景拖动。"""
@@ -63,11 +67,12 @@ class MinimapOcclusionTests(unittest.TestCase):
         session.win.client.return_value = np.zeros((999, 1776, 3), np.uint8)
         session.owner.observer.minimap_closed.side_effect = [False, True, True]
         with patch.object(occlusion, 'compact_close_point', return_value=[204., 101.]), \
+                patch.object(occlusion, 'restore_compact_map', return_value=True) as restore, \
                 patch.object(occlusion, 'squad_offscreen', side_effect=ValueError('unreadable')):
             with self.assertRaises(ValueError):
                 occlusion.unoccluded_offscreen(session)
         self.assertEqual(session.tap_verified_ui.call_args.args[0], [204., 101.])
-        session.owner.reopen_minimap_if_closed.assert_called_once()
+        restore.assert_called_once_with(session)
         session.win.handler.mouse_swipe.assert_not_called()
 
     def test_initially_closed_map_reads_and_restores_without_clicking_missing_x(self):
@@ -76,10 +81,11 @@ class MinimapOcclusionTests(unittest.TestCase):
         session.win.client.return_value = np.zeros((999, 1776, 3), np.uint8)
         session.owner.observer.minimap_closed.return_value = True
         marker = dict(center=[85., 315.], radius=32.5)
-        with patch.object(occlusion, 'squad_offscreen', return_value=marker):
+        with patch.object(occlusion, 'restore_compact_map', return_value=True) as restore, \
+                    patch.object(occlusion, 'squad_offscreen', return_value=marker):
             self.assertEqual(occlusion.unoccluded_offscreen(session), marker)
         session.tap_verified_ui.assert_not_called()
-        session.owner.reopen_minimap_if_closed.assert_called_once()
+        restore.assert_called_once_with(session)
 
     def test_recenter_requires_actual_avatar_again_at_final_input(self):
         """显式回中只点真实头像；最终帧头像消失则拒绝，仍恢复地图。"""
@@ -98,7 +104,8 @@ class MinimapOcclusionTests(unittest.TestCase):
                 sent.append(point)
 
             session.tap_verified_ui.side_effect = send
-            with patch.object(occlusion, 'squad_offscreen', side_effect=[marker, marker, final_marker]):
+            with patch.object(occlusion, 'restore_compact_map', return_value=True) as restore, \
+                    patch.object(occlusion, 'squad_offscreen', side_effect=[marker, marker, final_marker]):
                 if final_marker is None:
                     with self.assertRaisesRegex(RuntimeError, 'avatar changed'):
                         occlusion.recenter_offscreen(session)
@@ -107,7 +114,7 @@ class MinimapOcclusionTests(unittest.TestCase):
             self.assertEqual(len(sent), expected_calls)
             if sent:
                 self.assertEqual(sent[0], marker['center'])
-            session.owner.reopen_minimap_if_closed.assert_called_once()
+            restore.assert_called_once_with(session)
             session.win.handler.mouse_swipe.assert_not_called()
 
     def test_recenter_missing_second_avatar_sends_no_avatar_click(self):
@@ -115,10 +122,11 @@ class MinimapOcclusionTests(unittest.TestCase):
         session = Mock()
         session.win.client.return_value = np.zeros((999, 1776, 3), np.uint8)
         session.owner.observer.minimap_closed.return_value = True
-        with patch.object(occlusion, 'squad_offscreen', side_effect=[dict(center=[85., 315.]), None]):
+        with patch.object(occlusion, 'restore_compact_map', return_value=True) as restore, \
+                    patch.object(occlusion, 'squad_offscreen', side_effect=[dict(center=[85., 315.]), None]):
             self.assertIsNone(occlusion.recenter_offscreen(session))
         session.tap_verified_ui.assert_not_called()
-        session.owner.reopen_minimap_if_closed.assert_called_once()
+        restore.assert_called_once_with(session)
 
 
 if __name__ == '__main__':

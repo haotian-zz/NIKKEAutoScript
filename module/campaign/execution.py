@@ -202,7 +202,7 @@ class CampaignExecutor:
         if kind == 'mechanism':
             self.owner.state.mark_tried(goal['id'], goal.get('block'))
             logger.info(f"已到达地面机关 {goal['id']}（坐标来自{label(TARGET_SOURCES, goal.get('source'))}），"
-                        '按开启状态记录，本次任务不再重复选择。')
+                        '已记录到点尝试，开启与通行状态须由后续观测确认。')
             if goal.get('block'):
                 logger.info(f"机关 {goal['id']} 对应光幕 {goal['block']} 待复核。")
         elif kind == 'review_block':

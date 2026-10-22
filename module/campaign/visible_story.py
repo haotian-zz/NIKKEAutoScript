@@ -277,6 +277,8 @@ class VisibleStoryRunner:
                 return field
             if battle.field_visible(field):
                 self.session.identity(field)
+                if self.facilities is not None:
+                    self.facilities.track_background(field)
                 return field
             state = battle.battle_state(field)['state']
             if state == 'story':

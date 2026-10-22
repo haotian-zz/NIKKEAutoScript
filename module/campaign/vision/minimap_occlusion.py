@@ -57,6 +57,8 @@ def _unoccluded_offscreen(session, recenter):
     field = session.win.client()
     session.identity(field)
     already_closed = session.owner.observer.minimap_closed(field)
+    session.record_evidence('offscreen_map_state', field, closed=bool(already_closed),
+                            compact=compact_close_point(field) is not None, arrays=dict(field=field))
     point = None
     if not already_closed:
         first = compact_close_point(field)
@@ -111,9 +113,33 @@ def _unoccluded_offscreen(session, recenter):
                                     outcome='camera_and_squad_unconfirmed', arrays=dict(field=after))
         return marker
     finally:
-        session.owner.device.screenshot()
-        current = session.win.client()
-        if session.owner.observer.minimap_closed(current):
-            restored = session.owner.reopen_minimap_if_closed(current, check=session.before_input, pause=session.pause)
-            if not restored:
-                raise RuntimeError('头像补查后小地图未恢复，停止后续行动。')
+        if not restore_compact_map(session):
+            raise RuntimeError('头像补查后小地图未恢复，停止后续行动。')
+
+
+def restore_compact_map(session):
+    """通过同一路客户区截图确认并恢复紧凑地图；关闭态只允许单次实测图钉UI点击。
+
+    紧凑态须同时有面板、放大控件和X；未知态不点击。关闭态连续两帧须确认图钉，最终
+    输入前再核验一次。返回值只表示面板恢复，不能作为通行或小队位置改变的证据。
+    """
+    owner = session.owner
+    field = session.win.client()
+    session.identity(field)
+    if compact_close_point(field) is not None:
+        return True
+    if not owner.observer.minimap_closed(field):
+        return False
+    session.pause(.25)
+    fresh = session.win.client()
+    session.identity(fresh)
+    if not owner.observer.minimap_closed(fresh):
+        return compact_close_point(fresh) is not None
+    from module.campaign.campaign import MINIMAP_TOGGLE_POSITION
+    session.tap_verified_ui(MINIMAP_TOGGLE_POSITION, owner.observer.minimap_closed)
+    session.pause(.7)
+    after = session.win.client()
+    session.identity(after)
+    restored = compact_close_point(after) is not None
+    session.record_evidence('offscreen_map_restore', after, compact_restored=restored, arrays=dict(field=after))
+    return restored

@@ -39,13 +39,14 @@ def route_path(cut, squad, target):
 def refresh_route(state, chart, snapshot, cut):
     """保持未完成路程目标，只有完成、失败冷却或机关抢占主线时更换。
 
-    已知开启和导航已到点的机关均排除；未知机关仅在小队沿道路接近时补踩。
+    已知开启与已尝试机关分别保留状态并排除重复选择；未知机关仅在小队沿道路接近时补踩。
     场景发现的未开启机关还要求有邻近脚圈证据及道路邻近敌人，不能仅凭屏幕距离抢占。
     主线只使用已通过场景与小地图身份核验的稳定敌人编号，漏一帧标记不丢弃目的地。
     """
     current = state.route_goal
     if current is not None:
-        done = (state.mechanisms.get(current['id'], {}).get('state') == 'on'
+        done = ((state.mechanisms.get(current['id'], {}).get('state') == 'on'
+                 or state.mechanisms.get(current['id'], {}).get('attempted', False))
                 if current['kind'] == 'mechanism'
                 else state.enemies.get(current['id'], {}).get('status') != 'pending')
         if done:
@@ -63,7 +64,7 @@ def refresh_route(state, chart, snapshot, cut):
     best = None
     for item in candidates:
         record = state.mechanisms.get(item['id'], {})
-        if record.get('state') == 'on' or state.cooling(item['id']):
+        if record.get('state') == 'on' or record.get('attempted') or state.cooling(item['id']):
             continue
         route = route_path(cut, squad, item['position'])
         if route is None:

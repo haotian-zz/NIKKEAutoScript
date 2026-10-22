@@ -99,6 +99,7 @@ class FacilityMemory:
                 self.frames[number] = RingFrame(np.empty((0, 2)), keys, descriptors, np.zeros(2), [], [])
         self.current = {}
         self.unresolved = []
+        self.last_bridge_at = 0.
 
     def save(self):
         """原子替换小型目录；关键帧先落盘，目录只引用已完成的不可变特征文件。"""
@@ -140,13 +141,16 @@ class FacilityMemory:
         self.data['facilities'][identifier] = dict(id=identifier, kind=kind, source=source,
                                                   observations=[], attempts=[], activated='unconfirmed')
 
-    def observe(self, field, objects):
+    def observe(self, field, objects, background=False):
         """把当前两帧确认设施关联到已存关键帧，返回本帧检测与持久身份的对应。
 
         每次点击仍需调用方的新鲜双帧许可。身份关联允许平台外观start/end改变，只按几何和
         语义；两边凸包支持、15px距离、12px次选间隔及互为最近共同防止将不同设施合并。
         历史无法重定位时拒绝建立新身份，避免靠重新编号绕过已尝试记录。
+        background=True只追加背景关键帧，不改变设施状态、当前检测及未决身份；objects须为空。
         """
+        if background and objects:
+            raise ValueError('背景桥接不能混入设施观测。')
         frame = facility_frame(field, objects)
         if frame.descriptors is None or len(frame.keys) < 30:
             raise FacilityUnconfirmed('静态纹理不足，无法登记可靠设施身份。')
@@ -213,6 +217,9 @@ class FacilityMemory:
             temporary.replace(self.folder/f'view-{view:03d}.npz')
             self.frames[view] = frame
             self.data['views'].append(dict(id=view, at=time.time()))
+        if background:
+            self.save()
+            return []
         current = {}
         for item, identifier in zip(objects, assignments):
             if identifier is False:
@@ -242,6 +249,23 @@ class FacilityMemory:
         self.data['unresolved'] = unresolved
         self.save()
         return list(current.values())
+
+    def track_background(self, field, force=False):
+        """保留移动途中的静态桥接关键帧，不修改设施身份、状态或尝试记录。
+
+        普通地图帧最多每1.5秒处理一次；显式镜头寻位使用force确保每步被跟踪。只接受
+        与旧图有可靠重叠的背景，失败返回False，不建立新身份、不删除历史。True在非force
+        模式也可能代表本次被限频，不能作为通行或设施重新定位许可。
+        """
+        now = time.monotonic()
+        if not force and now-self.last_bridge_at < 1.5:
+            return True
+        self.last_bridge_at = now
+        try:
+            self.observe(field, [], background=True)
+        except (FacilityUnconfirmed, cv2.error, np.linalg.LinAlgError):
+            return False
+        return True
 
     def eligible(self, identifier, blocked_goal):
         """只跳过已确认开启机关或针对同一受阻目标已尝试设施，不永久封禁可重复使用的传送点。"""

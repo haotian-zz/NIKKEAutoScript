@@ -357,12 +357,13 @@ class RunState:
         return [record for record in self.blocks.values() if record['status'] in ('active', 'stale')]
 
     def mark_tried(self, mechanism, block=None):
-        """导航确认到点即记为开启，本次任务不再选择；有关联光幕时另行复核道路。
+        """记录已到达的机关尝试，保留实际开关状态；有关联光幕时必须另行复核。
 
-        不以发送过点击或接近坐标作为调用条件。主动机关没有 block，不能产生空编号的光幕复核。
+        到点只证明导航结果，不能将未确认或off写成on。attempted用于本次任务的重复选择
+        抑制，不代替视觉状态；主动机关没有block，不产生空编号的光幕复核。
         """
         record = self.mechanisms.setdefault(mechanism, {'id': mechanism, 'tried_for': {}})
-        record.update(state='on', completed=True)
+        record['attempted'] = True
         if block is not None:
             record['tried_for'][block] = self.tick
             self.pending_reviews[block] = mechanism
@@ -377,7 +378,7 @@ class RunState:
     def _absorb_mechanisms(self, mechanisms):
         """按标注编号或兜底位置合并机关，保留开关状态、邻近敌人证据和到点记录。
 
-        开启在本次任务中不可逆，后续漏检或 off 误检不能恢复为未开启。标注编号由观测层唯一
+        实际观测到的开启在本次任务中不可逆，单纯到点不影响视觉状态。标注编号由观测层唯一
         关联后提供；未标注机关才按位置合并，抖动不能清掉既有的封锁关联记录。
         """
         for item in mechanisms:
@@ -457,7 +458,7 @@ class RunState:
         for record in self.blocks.values():
             name = label(BLOCK_STATUS, record['status'])
             blocks[name] = blocks.get(name, 0) + 1
-        tried = sum(bool(item.get('completed')) for item in self.mechanisms.values())
+        tried = sum(bool(item.get('attempted')) for item in self.mechanisms.values())
         return (f"已决策 {self.tick} 轮；敌人 {counts_text(enemies)}；光幕 {counts_text(blocks)}；"
                 f"已覆盖 {int(self.observed.sum())} 格地图；已到达机关 {tried} 处；"
                 f"待复核光幕 {len(self.pending_reviews)} 处；失败电梯 {len(self.transfers)} 段；"
@@ -476,7 +477,7 @@ class RunState:
         blocks = [dict(id=record['id'], status=record['status'], point=record['point'], segment=record['segment'])
                   for record in self.blocking() if record.get('segment')]
         mechanisms = [dict(id=item['id'], state=item.get('state', 'unknown'),
-                           completed=bool(item.get('completed')))
+                           completed=item.get('state') == 'on', attempted=bool(item.get('attempted')))
                       for item in self.mechanisms.values()]
         return dict(tick=self.tick, enemies=enemies, blocks=blocks, mechanisms=mechanisms,
                     route_goal=dict(self.route_goal) if self.route_goal else None)

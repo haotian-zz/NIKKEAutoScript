@@ -913,6 +913,10 @@ class ExecutorTests(unittest.TestCase):
             self.executor.execute(goal)
         self.assertTrue(self.owner.state.tried_for('switch', 'block'))
         self.assertEqual(self.owner.state.pending_reviews['block'], 'switch')
+        self.assertNotEqual(self.owner.state.mechanisms['switch'].get('state'), 'on')
+        self.assertTrue(self.owner.state.mechanisms['switch']['attempted'])
+        self.owner.state._absorb_mechanisms([dict(id='switch', position=[80, 176], state='off')])
+        self.assertEqual(self.owner.state.mechanisms['switch']['state'], 'off')
 
     def test_failed_mechanism_is_not_marked_tried(self):
         """没有到点不能凭点击过就宣称踩过机关。"""

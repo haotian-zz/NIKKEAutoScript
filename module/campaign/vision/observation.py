@@ -52,20 +52,14 @@ class CampaignObserver:
 
     @staticmethod
     def minimap_closed(image):
-        """判断小地图是否被关闭（左上角只剩水滴形箭头控件）。
+        """用关闭态图钉形状判定面板关闭，不能用相邻场景主色否决真实控件。
 
-        image 是 1776×999 BGR 客户区截图。判据沿用采集器 DriverWindow.reset_minimap 的三态
-        识别：左上角控件外框可见，但控件外框偏暗（展开态该处是亮的紧凑面板顶栏）且紧凑面板
-        区域没有青蓝色地图，即认为处于关闭态；控件不可见或面板可见时返回 False，不确定不算关闭。
+        输入1776×999 BGR客户区。关闭图钉须满足独立外廓及上部小孔规则；蓝色光幕、城市
+        设施等会进入原面板位置，因此不再以该区域青蓝色比例或控件背景亮度判断开合。
+        放大镜等开合控件仍由独立形状排除，未知外观返回False，最终输入前须重新核验。
         """
         control = image[76:120, 20:64]
-        if not minimap_closed_control_visible(control):
-            return False
-        if not map_visible(image[118:273, 27:207]):
-            icon = cv2.cvtColor(control, cv2.COLOR_BGR2HSV)
-            # 关闭态的控件底色比展开／紧凑态暗，与 reset_minimap 的 closed 判据保持一致。
-            return (icon[:, :, 2] < 130).mean() > 0.5
-        return False
+        return minimap_closed_control_visible(control) and not minimap_control_visible(control)
 
     def observe(self, image, identity, captured_at=None, objects=True, expected_squad=None):
         """观测一帧 1776×999 BGR 客户区截图，返回界面与导航共用的章节快照。

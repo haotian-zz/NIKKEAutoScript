@@ -1,6 +1,7 @@
 """以已知镜头变换验证跨帧身份和持久尝试；不连接窗口，不加载检测模型。"""
 
 import tempfile
+import copy
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
@@ -74,6 +75,24 @@ class FacilityMemoryTests(unittest.TestCase):
         with self.assertRaises(FacilityUnconfirmed):
             self.catalog.observe(np.zeros_like(self.field), [observed()])
         self.assertEqual(len(self.catalog.data['facilities']), 1)
+
+    def test_background_bridge_keeps_attempts_across_nonoverlapping_end_views(self):
+        """两端无重叠时不能直接关联，中间关键帧须恢复连续性且不改已有尝试及开关状态。"""
+        rng = np.random.default_rng(901)
+        gray = cv2.resize(rng.integers(0, 256, (500, 2000), dtype=np.uint8), (4000, 999))
+        canvas = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+        first, middle, last = [canvas[:, x:x+1776] for x in (0, 900, 1800)]
+        identifier = self.catalog.observe(first, [observed()])[0]['facility_id']
+        self.catalog.attempt(identifier, 'blocked-A')
+        before = copy.deepcopy(self.catalog.data['facilities'])
+        self.assertFalse(self.catalog.track_background(last, force=True))
+        self.assertTrue(self.catalog.track_background(middle, force=True))
+        self.assertTrue(self.catalog.track_background(last, force=True))
+        self.assertEqual(self.catalog.data['facilities'], before)
+        self.assertIn(identifier, self.catalog.current)
+        restarted = FacilityMemory('isolated', (21, 'normal'), 'sha-A', root=self.temporary.name)
+        self.assertTrue(restarted.track_background(last, force=True))
+        self.assertFalse(restarted.eligible(identifier, 'blocked-A'))
 
     def test_neighboring_facilities_keep_distinct_histories(self):
         """两个近邻设施平移后各自关联，尝试其中一个不封禁另一个。"""
