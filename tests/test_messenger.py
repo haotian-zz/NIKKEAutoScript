@@ -94,6 +94,18 @@ class UnreadTests(unittest.TestCase):
         self.assertEqual(messenger.unread_rows(list_view(badges=(1150,))), [])
 
 
+class WaitingRowTests(unittest.TestCase):
+    """等对方回复的对话按标题截图跳过：同一行认得出来，别的行不会被误跳。"""
+
+    def test_same_title_matches_other_title_does_not(self):
+        image = list_view(badges=(405, 512))
+        image[400:420, 230:300] = (40, 40, 40)
+        image[507:527, 230:330] = (40, 40, 40)
+        first, second = messenger.unread_rows(image)[:2]
+        self.assertTrue(messenger.same_row(messenger.row_title(image, first), messenger.row_title(image.copy(), first)))
+        self.assertFalse(messenger.same_row(messenger.row_title(image, first), messenger.row_title(image, second)))
+
+
 class TypingTests(unittest.TestCase):
     """读完的判断：既没有回复选项也没有「… ▼」气泡。"""
 

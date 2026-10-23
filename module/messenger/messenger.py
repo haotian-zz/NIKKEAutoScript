@@ -9,6 +9,8 @@
 - 回复选项是橙色外框包住白色内框，左缘约 x=277；已发送的气泡是橙底白字，白色占比低。
 - 未读对话行右侧有红色 N 或红点。
 - 对话进行中，底部总有回复选项或「… ▼」等待点击的气泡；两者都没有就是读到 END 了。
+- 有的对话停在玩家刚发出的一句上，要等对方过一段时间才回复（行右侧是红点而不是 N），点开也没什么可读；
+  按行标题截图记下来跳过，不能停下整轮。读完的对话留在原位只是去掉标记，后面的未读行要往下滚动才看得到。
   不用画面差分：面板底纹有持续噪点（静止帧也有约 1500 像素变化），委托卡片和点击特效也一直在动。
 实录 2026-10-23：34 个任务对话未读，章节 18~24 的黄色支线标记全部为 0。
 """
@@ -38,6 +40,8 @@ CHAT_TAP = (360, 1120)
 END_ROUNDS = 3
 MAX_STEPS = 400
 MAX_CHATS = 60
+LIST_SWIPE = ((360, 1000), (360, 520))
+LIST_SCROLL_ROUNDS = 12
 
 
 def orange(image):
@@ -95,6 +99,15 @@ def typing(image):
     x1, y1, x2, y2 = TYPING_REGION
     result = cv2.matchTemplate(image[y1:y2, x1:x2], TYPING, cv2.TM_CCOEFF_NORMED)
     return cv2.minMaxLoc(result)[1] >= TYPING_THRESHOLD
+
+
+def row_title(image, y):
+    """列表行的标题区截图，用来认出已经判定为「等待回复」的对话。"""
+    return image[y - 32:y - 6, 200:560].astype(np.int16)
+
+
+def same_row(a, b):
+    return a.shape == b.shape and float(np.abs(a - b).mean()) < 8
 
 
 def find_icon(image):
@@ -157,29 +170,59 @@ class Messenger(UI):
                 time.sleep(1.0)
         return picks, picks + taps
 
-    def read_all(self):
-        done = stale = 0
-        for _ in range(MAX_CHATS):
-            image = self.bgr()
-            if view(image) == 'chat':
-                self.tap(BACK, 2)
-                image = self.bgr()
-            if view(image) != 'list':
-                raise RuntimeError(f'Messenger list not visible: {view(image)}')
-            rows = unread_rows(image)
-            if not rows:
-                break
-            self.tap((360, rows[0]), 2.5)
-            picks, changes = self.read_chat()
-            logger.info(f'Messenger: chat {done + 1} picks={picks} changes={changes}')
+    def list_image(self):
+        image = self.bgr()
+        if view(image) == 'chat':
             self.tap(BACK, 2)
-            done += 1
-            # 读完仍留红点的对话会一直排在最上面，连续两次没有推进就停，避免空转
-            stale = stale + 1 if changes == 0 else 0
-            if stale >= 2:
-                logger.warning('Messenger: two chats without progress, stop')
+            image = self.bgr()
+        if view(image) != 'list':
+            raise RuntimeError(f'Messenger list not visible: {view(image)}')
+        return image
+
+    def scroll_list(self, image, down):
+        """滚动对话列表；返回新画面，滚不动（到底/到顶）时返回 None。"""
+        start, end = LIST_SWIPE if down else LIST_SWIPE[::-1]
+        self.device.swipe(start, end, method='swipe', handle_control_check=False)
+        time.sleep(1.2)
+        after = self.bgr()
+        moved = cv2.absdiff(after[380:1150, 60:660], image[380:1150, 60:660]).mean() > 3
+        return after if moved else None
+
+    def next_unread(self, waiting):
+        """从列表顶部往下找第一行未读且不在等待名单里的对话，返回 (画面, 行 y)。"""
+        image = self.list_image()
+        for _ in range(LIST_SCROLL_ROUNDS):
+            image = self.scroll_list(image, down=False)
+            if image is None:
                 break
-        return done
+        image = self.bgr()
+        for _ in range(LIST_SCROLL_ROUNDS):
+            for y in unread_rows(image):
+                title = row_title(image, y)
+                if not any(same_row(title, w) for w in waiting):
+                    return image, y
+            image = self.scroll_list(image, down=True)
+            if image is None:
+                break
+        return None, None
+
+    def read_all(self):
+        """读完所有能读的未读对话，返回 (读完数, 等待回复数)。"""
+        done, waiting = 0, []
+        for _ in range(MAX_CHATS):
+            image, y = self.next_unread(waiting)
+            if image is None:
+                break
+            title = row_title(image, y)
+            self.tap((360, y), 2.5)
+            picks, progress = self.read_chat()
+            logger.info(f'Messenger: chat picks={picks} progress={progress}')
+            self.tap(BACK, 2)
+            if progress:
+                done += 1
+            else:
+                waiting.append(title)
+        return done, len(waiting)
 
     def run(self):
         logger.hr('Messenger', 1)
@@ -187,8 +230,8 @@ class Messenger(UI):
             if not self.open():
                 report('skipped', '大厅没有找到即时通讯图标或列表未打开')
             else:
-                count = self.read_all()
-                report('success', f'即时通讯已读完 {count} 个任务对话（解锁章节支线委托）')
+                done, waiting = self.read_all()
+                report('success', f'即时通讯已读完 {done} 个任务对话（解锁章节支线委托），{waiting} 个在等对方回复')
                 self.tap(CLOSE, 2)
         except Exception as e:
             report('failed', '即时通讯对话异常结束', type(e).__name__, retryable=True)
