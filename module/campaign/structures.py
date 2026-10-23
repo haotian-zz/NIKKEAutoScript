@@ -106,6 +106,9 @@ def wait_structure_settle(runner, before=None, recenter=True):
     全程看不到小队时用已核验的离屏头像找回镜头一次，找回后重新计时等一次；仍看不到才停止。
     实录 2026-10-22（22-36）：按目录坐标移镜头点远处开关后，小队走出画面、小地图也没有圆环，
     20秒只得到 squad_unobserved 就中止了整轮。
+    小队在画面里但贴边、背景比对覆盖不到时，把镜头朝小队平移一次，同样重新计时等一次。
+    实录 2026-10-23（23-31）：踩亮左侧开关后小队停在画面左缘（x≈75），背景角点包不住小队、
+    小地图圆环也没读到，20秒只得到 squad_outside_background_support 就中止了整轮。
     """
     before = runner.map_frame() if before is None else before
     progress = ClickProgress(time.monotonic())
@@ -129,6 +132,16 @@ def wait_structure_settle(runner, before=None, recenter=True):
         runner.session.record_evidence('structure_wait_timeout', field, feedback=observation,
                                        outcome=state, arrays=dict(field=field))
         runner.session.preview(field)
+    arrow = None if field is None else squad_arrow(field)
+    if (recenter and state == 'observation_unknown' and arrow is not None
+            and observation.get('reason') == 'squad_outside_background_support'):
+        ground = np.asarray(arrow, float)+[0., goto.ARROW_GROUND_OFFSET]
+        drag = np.asarray(goto.VIEWPORT_PIXEL)-ground
+        length = float(np.linalg.norm(drag))
+        if length >= 120.:
+            logger.info('设施交互后小队贴在画面边缘、背景比对覆盖不到：镜头朝小队平移一次后重新等待停稳。')
+            pan_scene(runner.session, drag*min(1., 480./length), squad_ground=ground)
+            return wait_structure_settle(runner, recenter=False)
     if recenter and state == 'observation_unknown' and observation.get('reason') == 'squad_unobserved':
         logger.info('设施交互后一直看不到小队：找回小队镜头后重新等待停稳一次。')
         recenter_squad(runner)

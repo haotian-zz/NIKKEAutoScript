@@ -252,6 +252,34 @@ class StructureTests(unittest.TestCase):
             recenter.assert_called_once()
         self.runner.session.tap.assert_not_called()
 
+    def test_edge_squad_pans_toward_squad_once_then_waits_again(self):
+        """实录23-31：小队停在画面左缘、背景比对覆盖不到；镜头朝小队平移一次后重新等停稳。"""
+        clock = [0.]
+        self.runner.session.pause.side_effect = lambda seconds: clock.__setitem__(0, clock[0] + seconds)
+        outside = dict(state='unknown', reason='squad_outside_background_support')
+        with patch.object(structure.time, 'monotonic', side_effect=lambda: clock[0]), \
+                patch.object(structure, 'MinimapStability') as mini, \
+                patch.object(structure, 'NativeMotion') as motion, \
+                patch.object(structure, 'pan_scene') as pan, \
+                patch.object(structure, 'squad_arrow', return_value=np.array([75., 480.])), \
+                patch.object(structure.goto, 'battle_popup_score', return_value=0.):
+            mini.return_value.observe.return_value = dict(state='unknown')
+            motion.return_value.observe.return_value = outside
+            pan.side_effect = lambda *args, **kwargs: motion.return_value.observe.configure_mock(
+                return_value=dict(state='stationary'))
+            self.assertIs(structure.wait_structure_settle(self.runner, self.field), self.field)
+            pan.assert_called_once()
+            drag = pan.call_args.args[1]
+            self.assertGreater(drag[0], 0.)
+            self.assertLessEqual(np.linalg.norm(drag), 480.+1e-6)
+            pan.reset_mock()
+            pan.side_effect = None
+            motion.return_value.observe.return_value = outside
+            with self.assertRaisesRegex(structure.StructureUnconfirmed, '未确认'):
+                structure.wait_structure_settle(self.runner, self.field)
+            pan.assert_called_once()
+        self.runner.session.tap.assert_not_called()
+
 
 if __name__ == '__main__':
     unittest.main()
