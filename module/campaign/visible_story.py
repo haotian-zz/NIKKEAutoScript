@@ -335,11 +335,14 @@ class VisibleStoryRunner:
         self.session.preview(self.session.win.client())
         raise StoryVerificationError('等待地图或备战超过三十秒；已保存画面并停止。', 'story_field_timeout')
 
-    def wait_entry(self, before, arrow=None, target=None):
+    def wait_entry(self, before, arrow=None, target=None, recenter=True):
         """观察游戏原生寻路；只有真实移动才续等，停滞与观测失败分开处理。
 
         三次且跨2秒的可靠静止才返回False请求设施诊断。观测不足或持续移动超过总时限
         均保留未确认并停止，不能将二十秒没弹窗写成道路不可达，也不在途中追加目标点击。
+        一直看不到小队但画面上有离屏头像时，点头像找回镜头后重新观察一次；仍看不到才停止。
+        实录 2026-10-23（23-11）：点画面上沿的敌人后小队走出画面，小地图也没有圆环，
+        20秒只得到 squad_unobserved 就中止了整轮，离屏头像其实一直在画面上。
         """
         progress = ClickProgress(time.monotonic(), unknown_limit=ENTRY_WAIT_SECONDS, total_limit=ENTRY_MOVE_SECONDS)
         motion = NativeMotion(before, arrow, None if target is None else target['click'])
@@ -366,6 +369,17 @@ class VisibleStoryRunner:
                 previous_state = observation['state']
             if state == 'stalled':
                 return False
+            if (recenter and state == 'observation_unknown' and observation.get('reason') == 'squad_unobserved'
+                    and squad_offscreen(field) is not None):
+                from module.campaign.structures import StructureUnconfirmed, recenter_squad
+                logger.info('原生寻路途中小队离开画面：点离屏头像找回镜头后重新观察一次。')
+                try:
+                    recenter_squad(self)
+                except StructureUnconfirmed as exc:
+                    raise StoryVerificationError(str(exc), 'native_recenter_failed')
+                fresh = self.map_frame()
+                # 镜头已换，点击前目标的画面坐标不再对应；只按新镜头观察小队。
+                return self.wait_entry(fresh, arrow=squad_arrow(fresh), recenter=False)
             if state != 'waiting':
                 raise StoryVerificationError('原生寻路未确认到达；已保留观测，未发送后续目标。', 'native_'+state)
             self.session.pause(.7)

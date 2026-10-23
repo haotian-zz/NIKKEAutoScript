@@ -659,6 +659,39 @@ class VisibleStoryTests(unittest.TestCase):
         self.runner.memory.identify.assert_not_called()
         self.session.tap.assert_not_called()
 
+    def test_unobserved_click_recenters_on_offscreen_marker_once(self):
+        """实录23-11：小队走出画面但离屏头像可见，找回镜头一次后继续观察，备战出现即接管。"""
+        clock = [0.]
+        self.ns['time'].monotonic.side_effect = lambda: clock[0]
+        self.session.pause.side_effect = lambda seconds: clock.__setitem__(0, clock[0]+seconds)
+        self.ns['NativeMotion'] = Mock()
+        self.ns['NativeMotion'].return_value.observe.return_value = dict(state='unknown', reason='squad_unobserved')
+        self.ns['squad_offscreen'].return_value = dict(center=[996., 223.], direction=270.)
+        recentered = []
+        recenter = Mock(side_effect=lambda runner: recentered.append(clock[0]))
+        self.ns['goto'].battle_popup_score.side_effect = lambda frame: 1. if recentered and clock[0] > recentered[0]+3 else 0.
+        structures = SimpleNamespace(StructureUnconfirmed=RuntimeError, recenter_squad=recenter)
+        with patch.dict(sys.modules, {'module.campaign.structures': structures}):
+            self.assertTrue(self.runner.wait_entry(self.field))
+        recenter.assert_called_once_with(self.runner)
+        self.session.tap.assert_not_called()
+
+    def test_unobserved_after_recenter_still_stops(self):
+        """找回镜头后仍看不到小队：只找回一次，按观测未确认停止。"""
+        clock = [0.]
+        self.ns['time'].monotonic.side_effect = lambda: clock[0]
+        self.session.pause.side_effect = lambda seconds: clock.__setitem__(0, clock[0]+seconds)
+        self.ns['NativeMotion'] = Mock()
+        self.ns['NativeMotion'].return_value.observe.return_value = dict(state='unknown', reason='squad_unobserved')
+        self.ns['squad_offscreen'].return_value = dict(center=[996., 223.], direction=270.)
+        recenter = Mock()
+        structures = SimpleNamespace(StructureUnconfirmed=RuntimeError, recenter_squad=recenter)
+        with patch.dict(sys.modules, {'module.campaign.structures': structures}):
+            with self.assertRaises(self.ns['StoryVerificationError']) as raised:
+                self.runner.wait_entry(self.field)
+        self.assertEqual(raised.exception.reason, 'native_observation_unknown')
+        recenter.assert_called_once_with(self.runner)
+
     def test_structure_scout_keeps_recovery_priority_over_another_enemy_click(self):
         """受阻后的设施换视角仍需继续找设施，不立即插入另一次敌人点击打断恢复。"""
         self.runner.blocked_views = 1
