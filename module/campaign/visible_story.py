@@ -968,8 +968,8 @@ class VisibleStoryRunner:
                         raise
                     # 实录 2026-10-23（24-34）：目标在传送器另一侧，传送器是建筑上旋转的箭头，暂不识别；
                     # 巡检把镜头拖进云层后配准失败。停止原因要让人知道去看地图机关，而不只是配准失败。
-                    raise SweepUnconfirmed(f'{exc}；主线 {stage_text(self.quest)} 当前画面没有敌人和任务标记，'
-                                           '可能需要踩传送器等脚本尚不识别的地图机关，请人工处理后再继续') from exc
+                    raise SweepUnconfirmed(f'{exc}；主线 {stage_text(self.quest)} 当前画面未识别到敌人和任务标记，'
+                                           '可能需要踩传送器、或入口样式脚本尚不认识，请人工查看处理后再继续') from exc
                 if survey['state'] == 'entry':
                     self.fight_entry()
                     continue

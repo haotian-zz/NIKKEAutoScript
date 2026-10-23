@@ -322,7 +322,7 @@ class VisibleStoryTests(unittest.TestCase):
                 self.runner.run(ticks=1)
         self.assertIn('配准', str(caught.exception))
         self.assertIn('20-18', str(caught.exception))
-        self.assertIn('人工处理', str(caught.exception))
+        self.assertIn('人工查看', str(caught.exception))
         self.session.tap.assert_not_called()
 
     def test_destination_quest_on_map_returns_to_lobby_without_clicking(self):
