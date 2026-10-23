@@ -661,19 +661,26 @@ class VisibleStoryRunner:
         if (self.quest is None or self.quest[0] != self.owner.current_chapter
                 or self.quest in self.owner.story_wins or self.quest in self.marker_walks):
             return False
-        first = [item for item in story_markers(field) if item['kind'] == 'scene']
-        if not first:
+        # 菱形发光动画让单帧分数在门槛附近起伏（实录 24-37：6帧里只有2帧过线），与 reveal_marked_area
+        # 一样最多看6帧，两帧同位置才算确认。
+        previous, marker, fresh = [], None, field
+        for index in range(6):
+            if index:
+                self.session.pause(.25)
+                fresh = self.map_frame()
+                if goto.battle_popup_score(fresh) > .8:
+                    self.fight_entry()
+                    return True
+            markers = [item for item in story_markers(fresh) if item['kind'] == 'scene']
+            confirmed = [item for item in markers if any(
+                np.linalg.norm(np.asarray(item['position'])-old['position']) <= 10. for old in previous)]
+            if len(confirmed) == 1:
+                marker = confirmed[0]
+                break
+            if markers:
+                previous = markers
+        if marker is None:
             return False
-        self.session.pause(.25)
-        fresh = self.map_frame()
-        if goto.battle_popup_score(fresh) > .8:
-            self.fight_entry()
-            return True
-        second = [item for item in story_markers(fresh) if item['kind'] == 'scene' and any(
-            np.linalg.norm(np.asarray(item['position'])-old['position']) <= 10. for old in first)]
-        if len(second) != 1:
-            return False
-        marker = second[0]
         target = dict(id=f'quest-marker-{stage_text(self.quest)}', click=list(marker['position']), stage=None)
         self.marker_walks.add(self.quest)
         self.session.begin_target(target['id'])

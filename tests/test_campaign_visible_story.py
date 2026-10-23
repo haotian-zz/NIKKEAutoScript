@@ -341,8 +341,13 @@ class VisibleStoryTests(unittest.TestCase):
         self.runner.quest = (20, 7)
         self.ns['story_markers'].return_value = [dict(marker, kind='edge')]
         self.assertFalse(self.runner.walk_to_marker(self.field))
-        self.ns['story_markers'].side_effect = [[marker], [dict(marker, position=[900., 266.])]]
+        self.ns['story_markers'].side_effect = [[marker], [dict(marker, position=[900., 266.])]] + [[]]*4
         self.assertFalse(self.runner.walk_to_marker(self.field))
+        # 动画让中间几帧漏检时，最多看6帧，两帧同位置即确认。
+        self.ns['story_markers'].side_effect = [[marker], [], [], [dict(marker, position=[636., 268.])]]
+        self.assertTrue(self.runner.walk_to_marker(self.field))
+        self.session.tap.assert_called_once_with([636., 268.])
+        self.session.tap.reset_mock()
         self.session.tap.assert_not_called()
 
     def test_destination_quest_on_map_returns_to_lobby_without_clicking(self):
