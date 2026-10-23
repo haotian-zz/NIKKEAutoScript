@@ -442,6 +442,11 @@ class NikkeAutoScript:
 
         Recycling(config=self.config, device=self.device).run()
 
+    def messenger(self):
+        from module.messenger.messenger import Messenger
+
+        Messenger(config=self.config, device=self.device).run()
+
     def outpost_story(self):
         from module.outpost.outpost_story import OutpostStory
 

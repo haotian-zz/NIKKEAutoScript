@@ -114,6 +114,10 @@
       "name": "Episode Viewing",
       "help": ""
     },
+    "Messenger": {
+      "name": "Messenger Quests",
+      "help": "Read unread Messenger quest chats to unlock chapter side quests"
+    },
     "Commission": {
       "name": "Commission",
       "help": ""

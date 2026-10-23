@@ -7,7 +7,7 @@ class ManualConfig:
     SCHEDULER_PRIORITY = """
        Restart > Reward > DailyRecruit > Destruction > Mailbox >
        StepUpGift > DailyGift > WeeklyGift > MonthlyGift >
-       Commission > EpisodeViewing > Recycling > Synchro > OutpostStory >
+       Commission > EpisodeViewing > Messenger > Recycling > Synchro > OutpostStory >
        Shop > RubbishShop > Conversation >
        Interception > RookieArena > SpecialArena > ChampionArena > SimulationRoom > Overclock > TribeTower >
        Daily > Event > Event2 > SoloRaid > UnionRaid > Coop > MissionPass > Liberation >

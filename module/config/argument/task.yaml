@@ -70,6 +70,8 @@ Daily:
       - RubbishShop
     EpisodeViewing:
       - Scheduler
+    Messenger:
+      - Scheduler
 
 # ==================== Outpost ====================
 
