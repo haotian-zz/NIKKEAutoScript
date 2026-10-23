@@ -286,6 +286,17 @@ class VisibleStoryTests(unittest.TestCase):
         self.runner.memory.identify.assert_called_once_with('ring-1', (20, 7), 'deferred')
         self.executor.battle.assert_not_called()
 
+    def test_destination_quest_on_map_returns_to_lobby_without_clicking(self):
+        """实录23章通关：地图任务为「前往【方舟】的【市内】」时连续两帧确认后交回大厅，不在地图点击。"""
+        texts = iter(['前往【方舟】的【市内】', '前往【方舟】的【市内】'])
+        self.ns['read_quest_text'] = Mock(side_effect=lambda field, reader, minimum=.9: next(texts))
+        self.assertTrue(self.runner.destination_return(self.field))
+        self.assertEqual(self.ns['read_quest_text'].call_args.kwargs['minimum'], self.ns['DESTINATION_SCORE'])
+        self.session.tap.assert_not_called()
+        for pair in (['前往【方舟】的【市内】', '前往【方舟】的【简报室】'], ['通关【24-1】', '通关【24-1】']):
+            texts = iter(pair)
+            self.assertFalse(self.runner.destination_return(self.field))
+
     def test_all_current_chapter_enemies_are_allowed(self):
         """清怪范围独立于任务号：当前章较后编号只要实际可进入，也在清理范围。"""
         self.runner.quest = (20, 9)

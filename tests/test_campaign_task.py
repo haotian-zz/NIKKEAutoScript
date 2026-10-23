@@ -29,6 +29,9 @@ def load(name, **namespace):
     namespace.setdefault('LOBBY_RETURN_WAIT', 30.)
     namespace.setdefault('return_lobby_quest', Mock(return_value=False))
     namespace.setdefault('destination_lobby_quest', Mock(return_value=False))
+    namespace.setdefault('ARK_CHECK', object())
+    namespace.setdefault('DESTINATION_SCORE', .8)
+    namespace.setdefault('destination_place', Mock(return_value=None))
     exec(compile(ast.Module(body=[node], type_ignores=[]), name, 'exec'), namespace)
     return namespace[name]
 
@@ -509,7 +512,9 @@ class CampaignStartTests(unittest.TestCase):
         from module.campaign.visible_story import destination_lobby_quest
         for text, accepted in [('前往【前哨基地】', True), ('前往[前哨基地]', True), ('前往 前哨基地', True),
                                ('前往【前哨基地】领取', False), ('前哨基地', False), (None, False),
-                               ('前往【方舟】', True), ('前往地面【出击】', False)]:
+                               ('前往【方舟】', True), ('前往地面【出击】', False),
+                               ('前往【方舟】的【市内】', True), ('前往【方舟】的[简报室]', True),
+                               ('前往【方舟】的【市内】领取', False), ('前往【方舟】的', False)]:
             self.assertEqual(destination_lobby_quest(text), accepted)
         clock = SimpleNamespace(now=0.)
         main, outpost = object(), SimpleNamespace(check_button=object())
@@ -543,6 +548,52 @@ class CampaignStartTests(unittest.TestCase):
         runner.device.click_xy.reset_mock()
         self.assertFalse(fn(runner))
         runner.device.click_xy.assert_not_called()
+
+    def test_ark_destination_chain_clicks_each_matching_card_once(self):
+        """实录23章通关：方舟页卡片地名与任务一致才点，市内→简报室各点一次，任务变为通关后完成。"""
+        from module.campaign.visible_story import destination_place
+        self.assertEqual(destination_place('前往【方舟】的【市内】'), '市内')
+        self.assertEqual(destination_place('前往【前哨基地】'), '前哨基地')
+        self.assertIsNone(destination_place('通关【24-1】'))
+        clock = SimpleNamespace(now=0.)
+        main, ark = object(), object()
+        fn = load('visit_quest_destination', time=SimpleNamespace(monotonic=lambda: clock.now), MAIN_CHECK=main,
+                  ARK_CHECK=ark, page_outpost=SimpleNamespace(check_button=object()),
+                  quest_jump_point=Mock(return_value=(685.5, 128.)), destination_place=destination_place,
+                  cv2=SimpleNamespace(cvtColor=lambda x, _: x, COLOR_RGB2BGR=0), logger=Mock(),
+                  DESTINATION_QUEST_WAIT=30., LOBBY_JUMP_AREA=(660, 108, 710, 149))
+        frames = iter([main, ark, ark, ark, ark, ark])
+        runner = SimpleNamespace(device=Mock(), lobby_destination_instruction=True,
+                                 lobby_quest_text='前往【方舟】的【市内】')
+        current = SimpleNamespace(frame=None)
+        runner.device.screenshot.side_effect = lambda: setattr(current, 'frame', next(frames))
+        runner.appear = lambda button, **_: button is current.frame
+        texts = iter(['前往【方舟】的【市内】', '前往【方舟】的【市内】', '前往【方舟】的【简报室】',
+                      '前往【方舟】的【简报室】', '通关【24-1】'])
+
+        def read():
+            """点卡片后任务依次推进，加载期间同一任务会重复读到。"""
+            runner.lobby_quest_text = next(texts)
+            runner.lobby_destination_instruction = runner.lobby_quest_text.startswith('前往')
+        runner.quest_stage = read
+        runner.ark_destination_card = Mock(return_value=(347., 628.))
+        runner.device.sleep.side_effect = lambda seconds: setattr(clock, 'now', clock.now+seconds)
+        self.assertTrue(fn(runner))
+        self.assertEqual([c.args for c in runner.device.click_xy.call_args_list],
+                         [(685.5, 128.), (347., 628.), (347., 628.)])
+        self.assertEqual([c.args[0] for c in runner.ark_destination_card.call_args_list], ['市内', '简报室'])
+
+    def test_ark_card_requires_two_frames_with_the_quest_place(self):
+        """卡片地名两帧都等于任务地名才返回中心；读到别的地名或离开方舟页不点。"""
+        ark = object()
+        fn = load('ark_destination_card', ARK_CHECK=ark, ARK_DESTINATION_LABEL=(292, 600, 402, 656), re=re)
+        for texts, expected in [(['市内', '市内'], (347., 628.)), (['市内', '简报室'], None), (['模拟室'], None)]:
+            reader = Mock()
+            reader.ocr.side_effect = [dict(text=text) for text in texts]
+            runner = SimpleNamespace(device=Mock(), config=SimpleNamespace(Optimization_OcrModelType='mobile'),
+                                     appear=lambda button, **_: button is ark)
+            fn.__globals__['Ocr'] = Mock(return_value=reader)
+            self.assertEqual(fn(runner, '市内'), expected)
 
 
 if __name__ == '__main__':

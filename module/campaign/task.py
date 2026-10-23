@@ -16,13 +16,14 @@ from module.campaign.vision import battle
 from module.campaign.vision.chapter import chapter_identity
 from module.campaign.vision.chapter_completion import overlay_anchor
 from module.campaign.window import CampaignWindow
-from module.campaign.visible_story import destination_lobby_quest, quest_jump_point, read_quest_text, return_lobby_quest
+from module.campaign.visible_story import (DESTINATION_SCORE, destination_lobby_quest, destination_place,
+                                           quest_jump_point, read_quest_text, return_lobby_quest)
 from module.exception import GameStuckError, RequestHumanTakeover
 from module.execution.context import report
 from module.logger import logger
 from module.ocr.ocr import Ocr
 from module.simulation_room.assets import END_FIGHTING
-from module.ui.assets import MAIN_CHECK
+from module.ui.assets import ARK_CHECK, MAIN_CHECK
 from module.ui.page import page_main, page_outpost
 from module.ui.ui import UI
 
@@ -34,6 +35,8 @@ LOBBY_RETURN_WAIT = 30.
 DESTINATION_QUEST_WAIT = 30.
 # 大厅任务行右侧的任务箭头区域（720×1280）。
 LOBBY_JUMP_AREA = (660, 108, 710, 149)
+# 方舟页里任务目的地卡片的地名区域（720×1280）：点任务箭头后游戏把目的地卡片高亮放在中间。
+ARK_DESTINATION_LABEL = (292, 600, 402, 656)
 
 
 def chapter_number(value):
@@ -57,6 +60,10 @@ class AutoPush(UI):
         reader = Ocr((390, 65, 710, 185), name='CAMPAIGN_MAIN_QUEST',
                      model_type=self.config.Optimization_OcrModelType)
         text = read_quest_text(self.device.image, reader)
+        if text is None:
+            # 「前往【方舟】的【市内】」这类长行分数偏低；只接受整行前往格式，稳定窗口另要求两帧相同。
+            loose = read_quest_text(self.device.image, reader, minimum=DESTINATION_SCORE)
+            text = loose if destination_lobby_quest(loose) else None
         if text is None:
             text = reader.ocr(self.device.image, threshold=.9)['text']
         self.lobby_sortie_instruction = bool(re.fullmatch(r'(?:前往地面)?(?:【出[击擊]】|\[出[击擊]\])',
@@ -105,8 +112,11 @@ class AutoPush(UI):
         """完成“前往【某处】”任务：只点一次连续两帧一致的任务箭头，由游戏带到目的地触发剧情。
 
         实录 2026-10-21（21 章通关）：大厅任务变为前往前哨基地，点击箭头进入基地即提示完成，
-        约十秒后任务改为出击。只在任务栏位置已知的大厅／前哨基地页读取新任务；三十秒内未确认
+        约十秒后任务改为出击。只在任务栏位置已知的大厅／前哨基地／方舟页读取新任务；三十秒内未确认
         也不再重复点击，返回None交由调用方回大厅重新核对。未发送点击返回False。
+        实录 2026-10-23（23 章通关）：「前往【方舟】的【市内】」点箭头后到方舟页，目的地卡片高亮在中间，
+        点卡片后加载片刻任务变为「前往【方舟】的【简报室】」，再点一次卡片后变为「通关【24-1】」。
+        方舟页上卡片地名与当前任务地名一致才点，每个地名只点一次；每点一次重新计时。
         """
         first = quest_jump_point(cv2.cvtColor(self.device.image, cv2.COLOR_RGB2BGR), LOBBY_JUMP_AREA)
         self.device.sleep(.3)
@@ -118,18 +128,46 @@ class AutoPush(UI):
         destination = self.lobby_quest_text
         logger.info(f'大厅任务为 {destination!r}：点击任务箭头，由游戏带到目的地触发剧情')
         self.device.click_xy(*second)
+        visited = set()
         deadline = time.monotonic() + DESTINATION_QUEST_WAIT
         while time.monotonic() < deadline:
             self.device.sleep(1.)
             self.device.screenshot()
-            if not (self.appear(page_outpost.check_button, offset=30) or self.appear(MAIN_CHECK, offset=30)):
+            ark = self.appear(ARK_CHECK, offset=30)
+            if not (ark or self.appear(page_outpost.check_button, offset=30) or self.appear(MAIN_CHECK, offset=30)):
                 continue
             self.quest_stage()
             if getattr(self, 'lobby_quest_text', None) and not self.lobby_destination_instruction:
                 logger.info(f'{destination!r} 任务已完成，新任务：{self.lobby_quest_text!r}')
                 return True
+            place = destination_place(getattr(self, 'lobby_quest_text', None))
+            if not ark or place is None or place in visited:
+                continue
+            point = self.ark_destination_card(place)
+            if point is None:
+                continue
+            visited.add(place)
+            logger.info(f'方舟页目的地卡片 {place!r} 与任务一致，点击进入')
+            self.device.click_xy(*point)
+            deadline = time.monotonic() + DESTINATION_QUEST_WAIT
         logger.info(f'{destination!r} 点击后{DESTINATION_QUEST_WAIT:.0f}秒内未读到新任务，回大厅重新核对')
         return None
+
+    def ark_destination_card(self, place):
+        """方舟页中间卡片的地名连续两帧都等于任务地名时返回卡片中心，否则None；不按位置盲点。"""
+        x1, y1, x2, y2 = ARK_DESTINATION_LABEL
+        reader = Ocr(ARK_DESTINATION_LABEL, name='ARK_DESTINATION_LABEL',
+                     model_type=self.config.Optimization_OcrModelType)
+        for index in range(2):
+            if index:
+                self.device.sleep(.3)
+                self.device.screenshot()
+                if not self.appear(ARK_CHECK, offset=30):
+                    return None
+            text = re.sub(r'\s+', '', reader.ocr(self.device.image, threshold=.9)['text'] or '')
+            if text != place:
+                return None
+        return (x1+x2)/2, (y1+y2)/2
 
     def confirm_lobby_quest(self):
         """大厅首次显示可能尚在淡入，四秒内等待两帧相同有效任务，不以空OCR立即终止。

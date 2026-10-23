@@ -28,6 +28,8 @@ from module.logger import logger
 MANUAL_ENTRY_RADIUS = 120.
 
 QUEST_AREA = (1565, 88, 1710, 114)
+# 「前往」任务行的识别分门槛：实录 2026-10-23「前往【方舟】的【市内】」在地图上只有 0.868～0.892。
+DESTINATION_SCORE = .8
 LOBBY_QUEST_AREA = (445, 108, 657, 147)
 ENTRY_AREA = (570, 465, 1195, 625)
 ENTRY_TITLE_AREA = (620, 535, 970, 580)
@@ -136,10 +138,12 @@ def read_stage(field, reader, quest=False):
     return parse_stage(text, quest=True) if text is not None else None
 
 
-def read_quest_text(field, reader):
-    """读取固定主线任务行，保留0.9分门槛；兼容1776×999地图和720×1280大厅。
+def read_quest_text(field, reader, minimum=.9):
+    """读取固定主线任务行，默认0.9分门槛；兼容1776×999地图和720×1280大厅。
 
     返回高分原文或None；任务类型由调用方独立解析，不从当前章节或已胜关卡补全。
+    minimum 只供「前往」任务用 DESTINATION_SCORE：长中文行放大后分数偏低，调用方须另行
+    要求整行格式完全匹配且连续两帧文字相同。
     两种已知布局分别裁单行，避开图标和第二条活动任务；其他尺寸直接拒绝。
     """
     if field.shape == (999, 1776, 3):
@@ -161,7 +165,7 @@ def read_quest_text(field, reader):
         return None
     text, score = results[0].get('rec_text', ''), float(results[0].get('rec_score', 0.))
     logger.info(f'主线任务单行识别：{text!r}，分数 {score:.3f}')
-    return text if np.isfinite(score) and score >= .9 else None
+    return text if np.isfinite(score) and score >= minimum else None
 
 
 def return_lobby_quest(text):
@@ -175,9 +179,19 @@ def destination_lobby_quest(text):
 
     实录 2026-10-21：21 章通关后为「前往【前哨基地】」，进入基地即完成。只接受整行“前往＋括号地名”，
     「前往地面【出击】」是出击指令，不在此列。
+    实录 2026-10-23：23 章通关后为「前往【方舟】的【市内】」，之后是「前往【方舟】的【简报室】」，
+    接受“前往【地点】的【地名】”两段式；括号可能被 OCR 读成半角，左右各自兼容。
     """
-    return bool(text is not None and re.fullmatch(r'前往(?:【[^】]{1,12}】|\[[^\]]{1,12}\]|前哨基地)',
-                                                re.sub(r'\s+', '', text)))
+    return bool(text is not None and re.fullmatch(
+        r'前往(?:[【\[][^】\]]{1,12}[】\]](?:的[【\[][^】\]]{1,12}[】\]])?|前哨基地)', re.sub(r'\s+', '', text)))
+
+
+def destination_place(text):
+    """前往任务最终要点进的地名：「前往【方舟】的【市内】」为市内；不是前往任务返回None。"""
+    if not destination_lobby_quest(text):
+        return None
+    names = re.findall(r'[【\[]([^】\]]{1,12})[】\]]', re.sub(r'\s+', '', text))
+    return names[-1] if names else '前哨基地'
 
 
 def read_ex_entry(field, reader):
@@ -589,6 +603,23 @@ class VisibleStoryRunner:
         logger.info('已核验返回大厅任务并点击任务箭头；待大厅实际任务核对，不计作通关或清理完成。')
         return True
 
+    def destination_return(self, field):
+        """地图任务为「前往【某处】」时交回大厅流程，由大厅点任务箭头前往；地图上不点击。
+
+        长中文行分数偏低，按 DESTINATION_SCORE 读取，但须整行格式匹配且相隔一帧文字完全相同。
+        实录 2026-10-23（23 章通关）：任务变为「前往【方舟】的【市内】」，地图读不出关卡号，
+        转去旧章全章巡检，最后在地图边缘因斜向镜头响应停止。
+        """
+        text = read_quest_text(field, self.owner.chapter_ocr, minimum=DESTINATION_SCORE)
+        if not destination_lobby_quest(text):
+            return False
+        self.session.pause(.35)
+        again = read_quest_text(self.map_frame(), self.owner.chapter_ocr, minimum=DESTINATION_SCORE)
+        if again != text:
+            return False
+        logger.info(f'主线任务为 {text!r}：交回大厅点任务箭头前往，旧章可选内容保留待办。')
+        return True
+
     def quest_target(self, before, field, candidates):
         """用稳定主线标记给已有真实脚圈排序，不从标记推算新的落点或授予关卡身份。
 
@@ -888,7 +919,7 @@ class VisibleStoryRunner:
                 self.restore_chapter(identity)
                 continue
             current = read_stage(field, self.owner.chapter_ocr, quest=True)
-            if current is None and self.return_lobby(field):
+            if current is None and (self.return_lobby(field) or self.destination_return(field)):
                 return dict(state='continue', reason='story_return_lobby', chapter=self.owner.current_chapter)
             if current is not None:
                 if current != self.quest:
