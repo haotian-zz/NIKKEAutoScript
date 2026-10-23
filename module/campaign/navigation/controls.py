@@ -44,6 +44,12 @@ if ENTER_BATTLE_TPL is None:
 EX_STAGE_TPL = cv2.imread(str(ASSETS / 'ex_stage_tpl.png'))
 if EX_STAGE_TPL is None:
     raise FileNotFoundError(ASSETS / 'ex_stage_tpl.png')
+# 前置主线未完成的备战弹窗：进入战斗按钮置灰并压着锁，快速战斗仍是橙色，按钮模板实测 0.757。
+# 模板分落在这段且快速战斗按钮为橙色实心时仍算备战弹窗（返回接受分 LOCKED_ENTRY_ACCEPT），
+# 但 entry_locked 为真：快速战斗也只会弹「该作战目前无法进行。请先完成前置主线任务。」，只能关闭。
+# 实录 2026-10-23：任务 23-26 未完成时路上碰到 23-27，没认出弹窗，等地图或备战 30 秒后停了整轮。
+LOCKED_ENTRY_SCORE = .7
+LOCKED_ENTRY_ACCEPT = .85
 
 
 def map_open(win, reset=False):
@@ -88,9 +94,29 @@ def battle_popup_score(image):
 
     image 为 BGR 客户区截图，以进入战斗按钮模板计算归一化相关峰值。
     只返回浮点分数，阈值与后续动作由调用者决定；此函数不发送输入。
+    进入战斗按钮被锁（前置主线未完成）的弹窗返回 LOCKED_ENTRY_ACCEPT，是否被锁另用 entry_locked 判断。
     """
+    value = entry_template_score(image)
+    return LOCKED_ENTRY_ACCEPT if locked_entry(image, value) else value
+
+
+def entry_locked(image):
+    """备战弹窗的进入战斗按钮是否被锁；被锁的关卡前置主线未完成，不能开战也不能快速战斗。"""
+    return locked_entry(image, entry_template_score(image))
+
+
+def entry_template_score(image):
+    """进入战斗按钮模板的归一化相关峰值。"""
     result = cv2.matchTemplate(image, ENTER_BATTLE_TPL, cv2.TM_CCOEFF_NORMED)
     return float(cv2.minMaxLoc(result)[1])
+
+
+def locked_entry(image, value):
+    """模板分落在被锁区间且快速战斗按钮为橙色实心。"""
+    if not LOCKED_ENTRY_SCORE <= value < .8:
+        return False
+    from module.campaign.vision.battle import quick_battle_available
+    return quick_battle_available(image)
 
 
 def normal_enemy_markers(image, matrix):

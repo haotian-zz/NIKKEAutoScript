@@ -14,7 +14,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from module.campaign.navigation.controls import ENTER_BATTLE_TPL
+from module.campaign.navigation.controls import LOCKED_ENTRY_ACCEPT, battle_popup_score
 from module.campaign.vision.minimap import map_visible, minimap_control_visible, minimap_closed_control_visible
 from module.simulation_room.assets import END_FIGHTING
 from module.ui.assets import SKIP
@@ -229,10 +229,12 @@ def battle_state(image):
     skip_score, skip_point = story_skip(image)
     scores = {'auto_tpl': auto_score, 'pause': score(PAUSE_TPL, image),
               'victory': victory_score(image), 'defeat': score(DEFEAT_TPL, image),
-              'entry': score(ENTER_BATTLE_TPL, image), 'continue': continue_score, 'story_skip': skip_score}
+              'entry': battle_popup_score(image), 'continue': continue_score, 'story_skip': skip_score}
     quick_ratio = orange_ratio(image, QUICK_BATTLE_ROI)
-    quick = bool(scores['entry'] >= ENTRY_THRESHOLD and quick_battle_available(image))
-    return dict(classify(scores, field_visible(image), quick, auto), scores=scores,
+    # 进入战斗被锁的弹窗只能关闭：快速战斗同样会被游戏拒绝。
+    locked = scores['entry'] == LOCKED_ENTRY_ACCEPT
+    quick = bool(scores['entry'] >= ENTRY_THRESHOLD and not locked and quick_battle_available(image))
+    return dict(classify(scores, field_visible(image), quick, auto), scores=scores, locked=locked,
                 quick_ratio=quick_ratio, auto_score=auto_score, auto_ratio=auto_ratio,
                 auto_box=list(auto_box), continue_point=continue_point, skip_point=skip_point)
 

@@ -448,6 +448,13 @@ class VisibleStoryRunner:
             self.close_entry()
             logger.info(f'已关闭备战 {stage_text(stage)}：本次已确认胜利，继续扫描其他敌人。')
             return False
+        if goto.entry_locked(self.session.win.client()):
+            # 实录 2026-10-23：任务 23-26 未完成时路上碰到 23-27，进入战斗被锁，快速战斗也被拒绝。
+            # 按 deferred 记下，任务推进到该编号后观察簿自动放回候选。
+            self.memory.identify(identifier, stage, 'deferred')
+            self.close_entry()
+            logger.info(f'已关闭备战 {stage_text(stage)}：进入战斗被锁（前置主线未完成），先打当前任务，继续扫描其他敌人。')
+            return False
         self.memory.identify(identifier, stage, 'encountered_on_route')
         goal = dict(kind='story', id='story-' + stage_text(stage), stage=list(stage))
         self.session.entry_validator = EntryStageGuard(self.session, stage, self.owner.chapter_ocr, confirmed=True)

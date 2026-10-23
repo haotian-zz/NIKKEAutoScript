@@ -24,7 +24,7 @@ def definitions():
     namespace = dict(TargetTriggered=type('TargetTriggered', (Exception,), {}), re=re, cv2=cv2, np=np,
                      time=SimpleNamespace(monotonic=Mock(return_value=0.)), logger=Mock(),
                      chapter_identity=Mock(return_value=(20, 'normal')),
-                     goto=SimpleNamespace(battle_popup_score=Mock(return_value=0.), VIEWPORT_PIXEL=(888., 500.)),
+                     goto=SimpleNamespace(battle_popup_score=Mock(return_value=0.), entry_locked=Mock(return_value=False), VIEWPORT_PIXEL=(888., 500.)),
                      battle=Mock(), ClearanceJournal=Mock(),
                      ChapterOverlayFlow=Mock(return_value=SimpleNamespace(handle=Mock(return_value=False))),
                      SceneEnemyMemory=Mock(),
@@ -273,6 +273,17 @@ class VisibleStoryTests(unittest.TestCase):
         self.runner.close_entry = Mock()
         self.assertFalse(self.runner.fight_entry(self.target))
         self.runner.close_entry.assert_called_once()
+        self.executor.battle.assert_not_called()
+
+    def test_locked_entry_is_deferred_without_start(self):
+        """实录 23-27：前置主线未完成时进入战斗被锁，关闭并按 deferred 记下，不开战也不快速战斗。"""
+        self.runner.quest = (20, 6)
+        self.ns['goto'].entry_locked.return_value = True
+        self.runner.inspect_entry = Mock(return_value=(20, 7))
+        self.runner.close_entry = Mock()
+        self.assertFalse(self.runner.fight_entry(self.target))
+        self.runner.close_entry.assert_called_once()
+        self.runner.memory.identify.assert_called_once_with('ring-1', (20, 7), 'deferred')
         self.executor.battle.assert_not_called()
 
     def test_all_current_chapter_enemies_are_allowed(self):
