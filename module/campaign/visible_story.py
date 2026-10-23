@@ -623,9 +623,9 @@ class VisibleStoryRunner:
         from module.campaign.vision.objects import detect_objects
 
         def barriers(frame):
-            """亮着的光幕；只作受阻证据，不作点击目标。"""
+            """亮着的光幕（模型状态 curtain；关掉后只剩 pillar）；只作受阻证据，不作点击目标。"""
             return [item for item in detect_objects(frame, ('barrier',))
-                    if item['state'] == 'on' and item['confidence'] >= BARRIER_EVIDENCE]
+                    if item['state'] == 'curtain' and item['confidence'] >= BARRIER_EVIDENCE]
 
         first = barriers(field)
         if not first:

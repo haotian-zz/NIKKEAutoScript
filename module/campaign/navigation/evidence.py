@@ -26,7 +26,9 @@ KEEP_EVENTS = frozenset(('goal_view_result', 'switch_search_view', 'switch_searc
                          'facility_survey_view', 'chapter_sweep_motion',
                          # 巡检因离屏头像未确认而中止时要看到当时画面（实录 2026-10-22 22-27）。
                          'offscreen_map_state', 'offscreen_unoccluded', 'offscreen_unoccluded_confirm',
-                         'switch_search_unmeasured', 'switch_search_hint'))
+                         'switch_search_unmeasured', 'switch_search_hint',
+                         # 任务定位后看到了什么（实录 2026-10-23 24-27：定位后零红圈，32槽很快被巡检覆盖）。
+                         'quest_guide', 'goal_view', 'marker_probe', 'quest_barrier_blocked'))
 KEEP_LIMIT = 300
 
 

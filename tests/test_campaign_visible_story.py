@@ -291,7 +291,7 @@ class VisibleStoryTests(unittest.TestCase):
         self.runner.quest = (20, 6)
         self.runner.guided_quests.add((20, 6))
         self.runner.map_frame = Mock(return_value=self.field)
-        barrier = dict(kind='barrier', state='on', confidence=.95, position=[900., 400.])
+        barrier = dict(kind='barrier', state='curtain', confidence=.95, position=[900., 400.])
         objects = SimpleNamespace(detect_objects=Mock(return_value=[barrier]))
         structures = SimpleNamespace(recenter_squad=Mock(), StructureUnconfirmed=RuntimeError)
         with patch.dict(sys.modules, {'module.campaign.vision.objects': objects,
@@ -302,7 +302,7 @@ class VisibleStoryTests(unittest.TestCase):
             self.assertFalse(self.runner.quest_barrier_blocked(self.field))
             self.runner.quest = (20, 7)
             self.runner.guided_quests.add((20, 7))
-            objects.detect_objects.return_value = [dict(barrier, state='off')]
+            objects.detect_objects.return_value = [dict(barrier, state='pillar')]
             self.assertFalse(self.runner.quest_barrier_blocked(self.field))
             self.runner.guided_quests.discard((20, 7))
             objects.detect_objects.return_value = [barrier]
