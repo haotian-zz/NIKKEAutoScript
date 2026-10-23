@@ -392,10 +392,9 @@ class RecoveryOrderTests(unittest.TestCase):
         catalog.attempt.assert_called_once_with('scene-0007', 'quest:(21, 15)')
         self.assertIn(('survey', 'scene-0007'), self.runner.switch_skip)
 
-    def goal_runner(self, focused=True):
-        """带任务定位能力的真实受阻目标替身：每个目标只看一次目标旁。"""
+    def goal_runner(self):
+        """真实受阻目标替身：每个目标只先看一次当前屏。"""
         self.runner.goal_views = set()
-        self.runner.focus_quest = Mock(return_value=focused)
         return self.runner
 
     def test_goal_view_switch_is_tried_before_spiral(self):
@@ -410,7 +409,6 @@ class RecoveryOrderTests(unittest.TestCase):
         finder.return_value.run.assert_not_called()
         self.assertEqual(finder.call_args.kwargs['enemies'], False)
         recenter.assert_not_called()
-        self.runner.focus_quest.assert_called_once()
         self.assertEqual(look.call_args.kwargs, dict(goal=True))
         self.runner.session.tap.assert_called_once_with([1041., 467.])
         watch.assert_called_once()
@@ -575,8 +573,9 @@ class RecoveryOrderTests(unittest.TestCase):
             finder.return_value.run.assert_called_once()
             recenter.assert_called_once()
             self.runner.switch_searches.clear()
-            self.recover(dict(state='exhausted'))
-        self.assertEqual(self.runner.focus_quest.call_count, 1)
+            look.reset_mock()
+            self.recover(dict(state='exhausted'), look)
+        look.assert_not_called()
 
     def test_switch_watch_confirms_on_state_or_ends_when_switch_leaves_view(self):
         """点开关后盯原位：连续两帧开启才确认；原位连续三帧不见开关即结束观察。"""

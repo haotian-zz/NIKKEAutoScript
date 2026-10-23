@@ -188,23 +188,18 @@ def recenter_squad(runner):
 
 
 def goal_view_switch(runner, catalog, blocked_goal):
-    """第零级：点任务定位让游戏把镜头移到受阻目标旁，只在这一屏找关闭机关。
+    """第零级：先只在当前这一屏找关闭机关，再转螺旋。
 
-    实录 2026-10-21（22-21）：开关就在任务菱形右侧，任务定位那一帧已检测到（0.95），但受阻后
-    螺旋以小队为中心，两三屏就停在光幕后的敌人和远处另一个开关上，一直没看目标旁边。
-    每个受阻目标只做一次；返回None（未定位）或dict(state=entry/found/none, ...)。
+    实录 2026-10-21（22-21）：开关就在任务菱形右侧、当前画面里已检测到（0.95），但受阻后
+    螺旋以小队为中心，两三屏就停在光幕后的敌人和远处另一个开关上，一直没看这一屏。
+    以前这里先点任务蓝箭头，实录 2026-10-23 核对该箭头局内不移动镜头，已去掉点击。
+    每个受阻目标只做一次；返回None（已看过）或dict(state=entry/found/none, ...)。
     """
     from module.campaign.switch_search import SwitchSearch
     views = getattr(runner, 'goal_views', None)
-    focus = getattr(runner, 'focus_quest', None)
-    if not isinstance(views, set) or blocked_goal in views or focus is None:
+    if not isinstance(views, set) or blocked_goal in views:
         return None
     views.add(blocked_goal)
-    focused = focus(runner.map_frame(), 'goal_view')
-    if focused == 'entry':
-        return dict(state='entry')
-    if not focused:
-        return None
     search = SwitchSearch(runner, catalog, pans=0, skip=runner.switch_skip, enemies=False)
     state, target, fresh = search.look('goal', goal=True)
     if state == 'entry':

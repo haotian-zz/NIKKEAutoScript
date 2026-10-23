@@ -309,6 +309,22 @@ class VisibleStoryTests(unittest.TestCase):
             self.assertFalse(self.runner.quest_barrier_blocked(self.field))
         self.session.tap.assert_not_called()
 
+    def test_unconfirmed_sweep_after_empty_quest_view_asks_for_manual_mechanism(self):
+        """实录24-34：任务画面无敌人、巡检配准失败时，停止原因提示可能需要人工踩传送器等机关。"""
+        self.ns['read_stage'] = Mock(return_value=(20, 18))
+        self.runner.scan = Mock(return_value=(self.field, []))
+        self.runner.quest_target = Mock(return_value=(None, False))
+        self.runner.reveal_marked_area = Mock(return_value=False)
+        self.runner.quest_barrier_blocked = Mock(return_value=False)
+        error = self.ns['SweepUnconfirmed']('镜头背景配准未通过，未确认巡检覆盖：场景帧间配准不可靠。')
+        with patch.dict(self.ns, ChapterSweep=Mock(return_value=Mock(run=Mock(side_effect=error)))):
+            with self.assertRaises(self.ns['SweepUnconfirmed']) as caught:
+                self.runner.run(ticks=1)
+        self.assertIn('配准', str(caught.exception))
+        self.assertIn('20-18', str(caught.exception))
+        self.assertIn('人工处理', str(caught.exception))
+        self.session.tap.assert_not_called()
+
     def test_destination_quest_on_map_returns_to_lobby_without_clicking(self):
         """实录23章通关：地图任务为「前往【方舟】的【市内】」时连续两帧确认后交回大厅，不在地图点击。"""
         texts = iter(['前往【方舟】的【市内】', '前往【方舟】的【市内】'])
@@ -410,50 +426,15 @@ class VisibleStoryTests(unittest.TestCase):
             self.runner.return_lobby(self.field)
         self.session.tap_verified_ui.assert_not_called()
 
-    def test_empty_view_can_request_current_quest_once_without_fighting(self):
-        """定位任务只提供找方向辅助；同一任务不重复点击，也不能直接开战或换章。"""
+    def test_quest_guide_never_clicks_in_level(self):
+        """实录 2026-10-23：任务蓝箭头局内不移动镜头；只登记已核对，不发送输入，扫描照常进行。"""
         self.runner.quest = (20, 18)
         self.ns['quest_jump_point'] = Mock(return_value=(1749., 100.))
         self.ns['read_stage'] = Mock(return_value=(20, 18))
-        self.assertTrue(self.runner.guide_quest(self.field))
         self.assertFalse(self.runner.guide_quest(self.field))
-        self.session.tap_verified_ui.assert_called_once()
-        point, guard = self.session.tap_verified_ui.call_args.args
-        self.assertEqual(point, (1749., 100.))
-        self.assertTrue(guard(self.field))
-        self.ns['read_stage'].return_value = (20, 21)
-        self.assertFalse(guard(self.field))
-        self.executor.battle.assert_not_called()
-        self.assertIsNone(self.runner.memory.previous)
-
-    def test_locator_revalidation_miss_does_not_end_the_run(self):
-        """实录22-21：任务OCR贴着门槛，输入前复核漏读只放弃这次定位，不抛出终止整轮推图。"""
-        self.runner.quest = (20, 18)
-        self.ns['quest_jump_point'] = Mock(return_value=(1749., 100.))
-        self.ns['read_stage'] = Mock(return_value=(20, 18))
-        self.session.tap_verified_ui.side_effect = self.ns['UiControlChanged']('ocr miss')
-        self.assertFalse(self.runner.guide_quest(self.field))
-        self.assertFalse(self.runner.guide_quest(self.field))
-        self.session.tap_verified_ui.assert_called_once()
-
-    def test_quest_change_between_frames_rejects_locator(self):
-        """任务或控件在两帧间变化时不发送旧定位指令。"""
-        self.runner.quest = (20, 18)
-        self.ns['quest_jump_point'] = Mock(return_value=(1749., 100.))
-        self.ns['read_stage'] = Mock(return_value=(20, 21))
-        self.assertFalse(self.runner.guide_quest(self.field))
-        self.session.tap.assert_not_called()
+        self.assertIn((20, 18), self.runner.guided_quests)
         self.session.tap_verified_ui.assert_not_called()
-
-    def test_current_quest_locator_precedes_nearest_visible_enemy_selection(self):
-        """已有可见敌人也先用一次游戏任务定位，避免距离近但隔着光幕的目标抢先。"""
-        self.ns['read_stage'] = Mock(return_value=(20, 18))
-        self.ns['quest_jump_point'] = Mock(return_value=(1749., 100.))
-        self.runner.scan = Mock()
-        self.assertEqual(self.runner.run(ticks=1)['reason'], 'tick_budget')
-        self.runner.scan.assert_not_called()
-        self.session.tap_verified_ui.assert_called_once()
-        self.executor.battle.assert_not_called()
+        self.session.tap.assert_not_called()
 
     def test_stable_main_marker_prioritizes_existing_ring_and_keeps_hidden_target_as_hint(self):
         """任务只关联已有脚圈；脚圈被底栏排除或标记漂移时，不能用图标虚构点击。"""

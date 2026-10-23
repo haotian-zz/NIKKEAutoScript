@@ -696,66 +696,17 @@ class VisibleStoryRunner:
         return target, bool(markers)
 
     def guide_quest(self, field):
-        """每个当前主线最多一次请求游戏定位任务，再从新帧扫描而不猜测敌人坐标。
+        """登记当前主线已在本图核对过，不发送任何输入；始终返回False交回扫描。
 
-        同一完整任务号只尝试一次；两帧任务身份和右箭头都须一致。定位之后旧相机关联作废，
-        若途中遭遇其他怪，主循环仍核对实际备战编号；此操作不替代本章末尾的清怪巡检。
+        任务栏右侧的蓝色箭头只用于跳转到其他功能模块，局内点了镜头不动、也不引路。
+        实录 2026-10-23：历史34次局内点击前后帧比对，镜头一次都没有移动（差异只是场景动画）；
+        24-34 时还因此误以为任务目标已在画面里，转去清怪巡检。用户确认该箭头局内无用。
+        guided_quests 仍作为「本任务已核对过当前画面」的标记供光幕受阻判断使用。
         """
-        if (self.quest is None or self.quest[0] != self.owner.current_chapter
-                or self.quest in self.guided_quests or self.quest in self.owner.story_wins):
-            return False
-        focused = self.focus_quest(field, 'quest_guide', on_confirm=lambda: self.guided_quests.add(self.quest))
-        if not focused:
-            return False
-        if focused == 'entry':
-            return True
-        logger.info(f'已请求游戏定位主线任务 {stage_text(self.quest)}，下一步重新扫描全部普通／分支红圈。')
-        return True
-
-    def focus_quest(self, field, purpose, on_confirm=None):
-        """点击两帧一致的主线任务箭头，让游戏把镜头移到当前任务目标；返回'entry'、True或False。
-
-        任务号、箭头位置及章节身份在真正输入前再核一次；复核漏读只放弃本次，不终止推图。
-        on_confirm在两帧确认后、发送点击前调用（任务定位据此只尝试一次）。镜头移动不计进展。
-        """
-        point = quest_jump_point(field)
-        if point is None or self.quest is None:
-            return False
-        self.session.pause(.25)
-        fresh = self.map_frame()
-        if goto.battle_popup_score(fresh) > .8:
-            return 'entry'
-        current = read_stage(fresh, self.owner.chapter_ocr, quest=True)
-        confirmed = quest_jump_point(fresh)
-        if current != self.quest or confirmed is None or np.linalg.norm(np.asarray(point) - confirmed) > 5.:
-            return False
-        self.session.begin_target(purpose)
-        self.session.record_evidence(purpose, fresh, quest=self.quest, control=confirmed)
-        self.memory.previous = None
-        expected_quest = self.quest
-
-        def validate(latest):
-            """游戏任务定位在真正输入前仍须匹配同章任务和实际蓝箭头，不能沿用旧提示。"""
-            current = read_stage(latest, self.owner.chapter_ocr, quest=True)
-            control = quest_jump_point(latest)
-            return (current == expected_quest and control is not None
-                    and np.linalg.norm(np.asarray(confirmed)-control) <= 5.
-                    and chapter_identity(latest, self.owner.chapter_ocr) == (self.owner.current_chapter, 'normal'))
-
-        if on_confirm is not None:
-            on_confirm()
-        try:
-            if not self.session.tap_verified_ui(confirmed, validate):
-                return False
-        except TargetTriggered:
-            return 'entry'
-        except UiControlChanged:
-            # 实录 2026-10-21（22-21）：任务文字OCR分数贴着0.9门槛（0.899/0.901），输入前复核漏读；
-            # 定位只是辅助，不点击并交回主循环，不能因此终止整轮推图。
-            logger.info('主线任务控件在输入前复核未通过，未点击；交回主循环继续扫描。')
-            return False
-        self.session.pause(1.5)
-        return True
+        if (self.quest is not None and self.quest[0] == self.owner.current_chapter
+                and self.quest not in self.owner.story_wins):
+            self.guided_quests.add(self.quest)
+        return False
 
     def reveal_marked_area(self, field, has_targets=False):
         """用稳定的场内／离屏菱形露出目标区域，不把屏幕标记当作地面落点或敌人身份。
@@ -1010,7 +961,15 @@ class VisibleStoryRunner:
                     continue
                 if self.quest_barrier_blocked(fresh):
                     continue
-                survey = ChapterSweep(self).run()
+                try:
+                    survey = ChapterSweep(self).run()
+                except SweepUnconfirmed as exc:
+                    if self.quest is None or self.quest[0] != self.owner.current_chapter:
+                        raise
+                    # 实录 2026-10-23（24-34）：目标在传送器另一侧，传送器是建筑上旋转的箭头，暂不识别；
+                    # 巡检把镜头拖进云层后配准失败。停止原因要让人知道去看地图机关，而不只是配准失败。
+                    raise SweepUnconfirmed(f'{exc}；主线 {stage_text(self.quest)} 当前画面没有敌人和任务标记，'
+                                           '可能需要踩传送器等脚本尚不识别的地图机关，请人工处理后再继续') from exc
                 if survey['state'] == 'entry':
                     self.fight_entry()
                     continue
