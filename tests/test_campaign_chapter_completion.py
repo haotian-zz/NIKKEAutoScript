@@ -71,6 +71,17 @@ class ChapterCompletionTests(unittest.TestCase):
         self.assertIsNone(found['point'])
         self.reader.paddleocr.recognize.assert_not_called()
 
+    def test_dim_blue_ground_does_not_merge_into_the_control(self):
+        """实录23→24：控件紧贴压暗的偏蓝楼顶，地面不能和控件连成一块而丢掉唯一候选。"""
+        self.field[560:750, 470:1305] = 0
+        self.field[580:690, 730:1010] = (60, 40, 30)
+        cv2.rectangle(self.field, (780, 623), (998, 664), (180, 90, 5), -1)
+        self.results()
+        found = completion_overlay(self.field, self.reader)
+        self.assertTrue(found['accepted'])
+        left, top, right, bottom = found['box']
+        self.assertLess(abs(left-780)+abs(right-999), 8)
+
     def test_normal_map_never_calls_the_text_model(self):
         """普通地图没有完成白栏时立即返回，避免每次场景观测额外运行OCR。"""
         self.assertIsNone(completion_overlay(np.zeros_like(self.field), self.reader))
