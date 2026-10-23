@@ -395,6 +395,15 @@ class SessionTests(unittest.TestCase):
         self.session.check()
         self.owner.device.stuck_record_clear.assert_not_called()
 
+    def test_segment_deadline_waits_for_battle_takeover(self):
+        """实录24-15A-2：单段时限不打断战斗接管，回到野外后的下一次检查才结束本段。"""
+        self.session.deadline = 0
+        self.session.battle_mode = True
+        self.session.check()
+        self.session.battle_mode = False
+        with self.assertRaises(InputBudgetExceeded):
+            self.session.check()
+
     def test_input_budget_and_driver_failure_stop(self):
         """超过执行时限或单目标预算都不发送；驱动第一次失败即停止，不等待累计第三次。"""
         self.session.deadline = 0

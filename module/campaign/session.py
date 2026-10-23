@@ -358,11 +358,14 @@ class CampaignSession(NavigationSession):
         """检查停止、时限与窗口状态；坐标或焦点变化属于安全失败，不允许换目标继续。
 
         时限放在这里而不只在发输入前：等待停稳、复核换帧等阶段也会走到这里，超时就地停下。
+        战斗接管期间（battle_mode）不按单段时限打断：战斗有自己的 BATTLE_TIME_LIMIT，打到结算回野外后
+        下一次检查再结束本段。实录 2026-10-23（24-15A-2）：刚点进入战斗就到了 20 分钟，本段中断，
+        下一段从地图续跑时游戏还在战斗画面，读不到章节角标，整轮停止。
         这里同时给设备的卡死判据续期（见 STUCK_CLEAR_SECONDS）：这一章的每一步观测都要经过
         device.screenshot，而那个判据的前提「一直在等按钮匹配」在本会话里从头到尾都不成立。
         """
         self.check_stop()
-        if self.deadline is not None and time.monotonic() >= self.deadline:
+        if not self.battle_mode and self.deadline is not None and time.monotonic() >= self.deadline:
             raise InputBudgetExceeded(f'主线单段执行超过 {CHAPTER_TIME_LIMIT // 60} 分钟时限。',
                                       reason='segment_timeout')
         stuck = getattr(self.owner.device, 'stuck_timer', None)
