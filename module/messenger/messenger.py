@@ -8,6 +8,8 @@
 - 对话页顶栏左侧有白色返回箭头，面板左缘是灰底（已发送的橙色气泡靠右）。
 - 回复选项是橙色外框包住白色内框，左缘约 x=277；已发送的气泡是橙底白字，白色占比低。
 - 未读对话行右侧有红色 N 或红点。
+- 对话进行中，底部总有回复选项或「… ▼」等待点击的气泡；两者都没有就是读到 END 了。
+  不用画面差分：面板底纹有持续噪点（静止帧也有约 1500 像素变化），委托卡片和点击特效也一直在动。
 实录 2026-10-23：34 个任务对话未读，章节 18~24 的黄色支线标记全部为 0。
 """
 import time
@@ -21,17 +23,19 @@ from module.logger import logger
 from module.ui.page import page_main
 from module.ui.ui import UI
 
-ICON = cv2.imread(str(Path(__file__).resolve().parents[2] / 'assets/zh-CN/messenger/MESSENGER_ICON.png'))
+ASSETS = Path(__file__).resolve().parents[2] / 'assets/zh-CN/messenger'
+ICON = cv2.imread(str(ASSETS / 'MESSENGER_ICON.png'))
+# 「… ▼」气泡；三个点在闪，实测 0.77~1.0，没有气泡时约 0.44
+TYPING = cv2.imread(str(ASSETS / 'CHAT_TYPING.png'))
+TYPING_REGION = (140, 270, 300, 1165)
+TYPING_THRESHOLD = .7
 # 大厅左侧图标列；活动多时图标顺序会变，所以按模板在整列里找
 ICON_REGION = (0, 100, 120, 720)
 ICON_THRESHOLD = .85
 BACK = (80, 205)
 CLOSE = (645, 140)
 CHAT_TAP = (360, 1120)
-# 只比较 480~1000：点击处的触摸特效、对话发放委托后钉在顶部的 NEW QUEST 卡片闪光都会一直动；
-# 新消息到来时整段对话上移，这段一定会变
-DIFF_ROWS = (480, 1000)
-STILL_ROUNDS = 4
+END_ROUNDS = 3
 MAX_STEPS = 400
 MAX_CHATS = 60
 
@@ -86,6 +90,13 @@ def unread_rows(image):
     return ys
 
 
+def typing(image):
+    """对话还没读完：画面里有「… ▼」等待点击的气泡。"""
+    x1, y1, x2, y2 = TYPING_REGION
+    result = cv2.matchTemplate(image[y1:y2, x1:x2], TYPING, cv2.TM_CCOEFF_NORMED)
+    return cv2.minMaxLoc(result)[1] >= TYPING_THRESHOLD
+
+
 def find_icon(image):
     """大厅即时通讯图标中心，找不到返回 None。"""
     x1, y1, x2, y2 = ICON_REGION
@@ -125,8 +136,7 @@ class Messenger(UI):
 
     def read_chat(self):
         """读完当前打开的对话，返回 (选项次数, 推进次数)。"""
-        picks = changes = still = 0
-        previous = cv2.cvtColor(self.bgr(), cv2.COLOR_BGR2GRAY)[DIFF_ROWS[0]:DIFF_ROWS[1]]
+        picks = taps = idle = 0
         for _ in range(MAX_STEPS):
             image = self.bgr()
             if view(image) != 'chat':
@@ -135,18 +145,17 @@ class Messenger(UI):
             options = reply_options(image)
             if options:
                 self.tap(options[-1], 1.2)
-                picks += 1
-            else:
+                picks, idle = picks + 1, 0
+            elif typing(image):
                 self.tap(CHAT_TAP, 1.0)
-            current = cv2.cvtColor(self.bgr(), cv2.COLOR_BGR2GRAY)[DIFF_ROWS[0]:DIFF_ROWS[1]]
-            if (cv2.absdiff(current, previous) > 30).sum() < 300:
-                still += 1
-                if still >= STILL_ROUNDS:
-                    break
+                taps, idle = taps + 1, 0
             else:
-                still, changes = 0, changes + 1
-            previous = current
-        return picks, changes
+                # 选项刚点下、下一句还没出来时也会短暂两者都没有，连续几轮都没有才算读完
+                idle += 1
+                if idle >= END_ROUNDS:
+                    break
+                time.sleep(1.0)
+        return picks, picks + taps
 
     def read_all(self):
         done = stale = 0

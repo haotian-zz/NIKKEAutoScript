@@ -94,6 +94,26 @@ class UnreadTests(unittest.TestCase):
         self.assertEqual(messenger.unread_rows(list_view(badges=(1150,))), [])
 
 
+class TypingTests(unittest.TestCase):
+    """读完的判断：既没有回复选项也没有「… ▼」气泡。"""
+
+    def test_typing_bubble_found(self):
+        image = chat_view()
+        h, w = messenger.TYPING.shape[:2]
+        image[1098:1098 + h, 180:180 + w] = messenger.TYPING
+        self.assertTrue(messenger.typing(image))
+
+    def test_typing_bubble_near_top_found(self):
+        """对话刚打开时气泡在上方 y≈415。"""
+        image = chat_view()
+        h, w = messenger.TYPING.shape[:2]
+        image[400:400 + h, 180:180 + w] = messenger.TYPING
+        self.assertTrue(messenger.typing(image))
+
+    def test_finished_chat_has_no_typing(self):
+        self.assertFalse(messenger.typing(add_sent(chat_view(), 900)))
+
+
 class IconTests(unittest.TestCase):
     def test_icon_found_anywhere_in_left_column(self):
         image = np.random.RandomState(0).randint(0, 80, (1280, 720, 3)).astype(np.uint8)
