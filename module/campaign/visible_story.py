@@ -28,6 +28,8 @@ from module.logger import logger
 MANUAL_ENTRY_RADIUS = 120.
 
 QUEST_AREA = (1565, 88, 1710, 114)
+# 光幕作受阻证据的检测分门槛（只用于转入找机关流程，不作点击）。
+BARRIER_EVIDENCE = .8
 # 「前往」任务行的识别分门槛：实录 2026-10-23「前往【方舟】的【市内】」在地图上只有 0.868～0.892。
 DESTINATION_SCORE = .8
 LOBBY_QUEST_AREA = (445, 108, 657, 147)
@@ -305,6 +307,8 @@ class VisibleStoryRunner:
         self.switch_searches, self.switch_skip = {}, set()
         # 已用任务定位看过目标旁的受阻目标（每个只看一次）。
         self.goal_views = set()
+        # 已因「任务定位处有光幕却没有可点敌人」进入找机关流程的主线任务（每个任务一次）。
+        self.barrier_quests = set()
         # 刚受阻、设施恢复尚未开始：先把画面内其余可见敌人逐个试一遍（可能就是挡路的支线怪）。
         self.try_visible = False
         self.gate_enemy_tries = {}
@@ -601,6 +605,49 @@ class VisibleStoryRunner:
             raise StoryVerificationError('返回大厅任务点击未发送，保留当前状态。',
                                          reason='story_return_unconfirmed')
         logger.info('已核验返回大厅任务并点击任务箭头；待大厅实际任务核对，不计作通关或清理完成。')
+        return True
+
+    def quest_barrier_blocked(self, field):
+        """主线已定位、画面没有可点敌人但连续两帧有亮着的光幕时，按受阻进入找机关流程。
+
+        清怪巡检只找敌人红圈，不看机关；目标被光幕挡住时扫多少屏也打不通。这里不点任何东西：
+        只把小队找回画面并登记受阻，下一轮由 recover_visible_structure 先看目标旁、再螺旋和全章巡检找机关。
+        每个主线任务只转一次，之后仍无进展按原流程巡检或停止。
+        实录 2026-10-23（24-27）：目标在光幕后，任务定位后一个红圈都没有，转去清怪巡检扫了 32 屏，
+        机关不在敌人巡检的识别范围内，最后镜头被拖出地图停止。
+        """
+        if (self.quest is None or self.quest[0] != self.owner.current_chapter
+                or self.quest not in self.guided_quests or self.quest in self.owner.story_wins
+                or self.quest in self.barrier_quests):
+            return False
+        from module.campaign.vision.objects import detect_objects
+
+        def barriers(frame):
+            """亮着的光幕；只作受阻证据，不作点击目标。"""
+            return [item for item in detect_objects(frame, ('barrier',))
+                    if item['state'] == 'on' and item['confidence'] >= BARRIER_EVIDENCE]
+
+        first = barriers(field)
+        if not first:
+            return False
+        self.session.pause(.35)
+        fresh = self.map_frame()
+        if goto.battle_popup_score(fresh) > .8:
+            self.fight_entry()
+            return True
+        second = barriers(fresh)
+        if not second:
+            return False
+        self.barrier_quests.add(self.quest)
+        self.session.record_evidence('quest_barrier_blocked', fresh, quest=self.quest, barriers=second,
+                                     arrays=dict(field=fresh))
+        logger.info(f'主线 {stage_text(self.quest)} 定位处有光幕且没有可点敌人：按受阻进入找机关流程，'
+                    '不做只找敌人的清怪巡检。')
+        from module.campaign.structures import recenter_squad
+        recenter_squad(self)
+        self.blocked_click = None
+        self.blocked_views += 1
+        self.try_visible = False
         return True
 
     def destination_return(self, field):
@@ -960,6 +1007,8 @@ class VisibleStoryRunner:
                 if self.guide_quest(fresh):
                     continue
                 if not marked and self.reveal_marked_area(fresh):
+                    continue
+                if self.quest_barrier_blocked(fresh):
                     continue
                 survey = ChapterSweep(self).run()
                 if survey['state'] == 'entry':

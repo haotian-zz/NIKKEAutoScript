@@ -286,6 +286,29 @@ class VisibleStoryTests(unittest.TestCase):
         self.runner.memory.identify.assert_called_once_with('ring-1', (20, 7), 'deferred')
         self.executor.battle.assert_not_called()
 
+    def test_guided_quest_behind_barrier_enters_switch_recovery_once(self):
+        """实录24-27：任务已定位、没有可点敌人但两帧都有亮光幕，转入找机关流程而不是清怪巡检。"""
+        self.runner.quest = (20, 6)
+        self.runner.guided_quests.add((20, 6))
+        self.runner.map_frame = Mock(return_value=self.field)
+        barrier = dict(kind='barrier', state='on', confidence=.95, position=[900., 400.])
+        objects = SimpleNamespace(detect_objects=Mock(return_value=[barrier]))
+        structures = SimpleNamespace(recenter_squad=Mock(), StructureUnconfirmed=RuntimeError)
+        with patch.dict(sys.modules, {'module.campaign.vision.objects': objects,
+                                      'module.campaign.structures': structures}):
+            self.assertTrue(self.runner.quest_barrier_blocked(self.field))
+            self.assertEqual(self.runner.blocked_views, 1)
+            structures.recenter_squad.assert_called_once()
+            self.assertFalse(self.runner.quest_barrier_blocked(self.field))
+            self.runner.quest = (20, 7)
+            self.runner.guided_quests.add((20, 7))
+            objects.detect_objects.return_value = [dict(barrier, state='off')]
+            self.assertFalse(self.runner.quest_barrier_blocked(self.field))
+            self.runner.guided_quests.discard((20, 7))
+            objects.detect_objects.return_value = [barrier]
+            self.assertFalse(self.runner.quest_barrier_blocked(self.field))
+        self.session.tap.assert_not_called()
+
     def test_destination_quest_on_map_returns_to_lobby_without_clicking(self):
         """实录23章通关：地图任务为「前往【方舟】的【市内】」时连续两帧确认后交回大厅，不在地图点击。"""
         texts = iter(['前往【方舟】的【市内】', '前往【方舟】的【市内】'])
