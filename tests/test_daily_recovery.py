@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, Mock, patch
 
 
 def methods(path, names, namespace):
-    tree = ast.parse((Path(__file__).resolve().parents[1] / path).read_text())
+    tree = ast.parse((Path(__file__).resolve().parents[1] / path).read_text(encoding='utf-8'))
     nodes = [node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef) and node.name in names]
     exec(compile(ast.Module(body=nodes, type_ignores=[]), path, 'exec'), namespace)
     return namespace
@@ -62,6 +62,26 @@ class RookieOutcomeTests(unittest.TestCase):
                               RookieArenaTimesReached=type('Reached', (Exception,), {})))
             script = SimpleNamespace(config=SimpleNamespace(RookieArena_Times=5, task_delay=Mock()),
                                      device=Mock(), ui_ensure=Mock(), ensure_into_rookie_arena=Mock(),
+                                     appear=Mock(return_value=board), free_opportunity_remain=free, battle_times=quota)
+            with self.subTest(board=board, free=free, quota=quota):
+                ns['run'](script)
+                self.assertEqual(outcomes[-1][0][0], expected)
+                script.config.task_delay.assert_called_once()
+
+
+class SpecialOutcomeTests(unittest.TestCase):
+    def test_normal_return_requires_observed_exhaustion_or_completed_quota(self):
+        for board, free, quota, expected in ((True, False, 2, 'success'),
+                                             (True, True, 0, 'success'),
+                                             (False, False, 2, 'unknown')):
+            outcomes = []
+            ns = methods('module/special_arena/special_arena.py', {'run'},
+                         dict(report=lambda *args, **kw: outcomes.append((args, kw)), logger=Mock(),
+                              page_arena='arena', SPECIAL_ARENA_CHECK='board',
+                              SpecialArenaIsUnavailable=type('Unavailable', (Exception,), {}),
+                              SpecialArenaTimesReached=type('Reached', (Exception,), {})))
+            script = SimpleNamespace(config=SimpleNamespace(SpecialArena_Times=2, task_delay=Mock()),
+                                     device=Mock(), ui_ensure=Mock(), ensure_into_special_arena=Mock(),
                                      appear=Mock(return_value=board), free_opportunity_remain=free, battle_times=quota)
             with self.subTest(board=board, free=free, quota=quota):
                 ns['run'](script)

@@ -250,6 +250,14 @@ class SpecialArena(UI, ArenaBase):
                 self.check_battle_times()
 
             self.ensure_into_special_arena()
+            # 实录 2026-10-22：正常打完两场后没有结果，简报只能记为未确认；按竞技场页剩余次数收尾。
+            self.device.screenshot()
+            if self.appear(SPECIAL_ARENA_CHECK, offset=30) and not self.free_opportunity_remain:
+                report('success', '特殊竞技场已检查，当前无可用免费挑战')
+            elif self.battle_times <= 0:
+                report('success', '特殊竞技场已达到配置挑战次数')
+            else:
+                report('unknown', '特殊竞技场剩余次数未确认', retryable=True)
         except SpecialArenaIsUnavailable:
             report('skipped', '特殊竞技场正在等待新赛季')
             logger.warning('Waiting for the next season')
