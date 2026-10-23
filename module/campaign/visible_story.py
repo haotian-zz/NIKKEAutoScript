@@ -309,6 +309,7 @@ class VisibleStoryRunner:
         self.goal_views = set()
         # 已因「任务定位处有光幕却没有可点敌人」进入找机关流程的主线任务（每个任务一次）。
         self.barrier_quests = set()
+        self.marker_walks = set()
         # 刚受阻、设施恢复尚未开始：先把画面内其余可见敌人逐个试一遍（可能就是挡路的支线怪）。
         self.try_visible = False
         self.gate_enemy_tries = {}
@@ -650,6 +651,48 @@ class VisibleStoryRunner:
         self.try_visible = False
         return True
 
+    def walk_to_marker(self, field):
+        """画面内两帧同位置的主线菱形下认不出红圈时，点菱形让游戏原生寻路走到下一关。
+
+        用户确认（2026-10-23）：画面正前方的「!」菱形就是下一个敌人。实录 24-37：Boss 入口是带骷髅的
+        红色金字塔，光圈被遮住一半，入口和 Boss 识别都没过，转去清怪巡检空转后停止。点场内菱形会
+        触发原生寻路（见 21-32 实录）。每个主线任务只走一次；开战前仍由备战弹窗核对实际关卡。
+        """
+        if (self.quest is None or self.quest[0] != self.owner.current_chapter
+                or self.quest in self.owner.story_wins or self.quest in self.marker_walks):
+            return False
+        first = [item for item in story_markers(field) if item['kind'] == 'scene']
+        if not first:
+            return False
+        self.session.pause(.25)
+        fresh = self.map_frame()
+        if goto.battle_popup_score(fresh) > .8:
+            self.fight_entry()
+            return True
+        second = [item for item in story_markers(fresh) if item['kind'] == 'scene' and any(
+            np.linalg.norm(np.asarray(item['position'])-old['position']) <= 10. for old in first)]
+        if len(second) != 1:
+            return False
+        marker = second[0]
+        target = dict(id=f'quest-marker-{stage_text(self.quest)}', click=list(marker['position']), stage=None)
+        self.marker_walks.add(self.quest)
+        self.session.begin_target(target['id'])
+        self.session.record_evidence('marker_walk', fresh, quest=self.quest, marker=marker, arrays=dict(field=fresh))
+        logger.info(f"主线 {stage_text(self.quest)} 菱形 {target['click']}（{marker['confidence']:.2f}）下未认出红圈："
+                    '点菱形交由原生寻路前往，开战前核对实际备战关卡。')
+        try:
+            self.session.tap(target['click'])
+        except TargetTriggered:
+            if goto.battle_popup_score(self.map_frame()) > .8:
+                self.fight_entry()
+            return True
+        if self.wait_entry(fresh, arrow=squad_arrow(fresh), target=target):
+            self.fight_entry()
+        else:
+            logger.info('点主线菱形后原生寻路停滞，交回主循环按受阻流程处理。')
+        self.memory.previous = None
+        return True
+
     def destination_return(self, field):
         """地图任务为「前往【某处】」时交回大厅流程，由大厅点任务箭头前往；地图上不点击。
 
@@ -960,6 +1003,8 @@ class VisibleStoryRunner:
                 if not marked and self.reveal_marked_area(fresh):
                     continue
                 if self.quest_barrier_blocked(fresh):
+                    continue
+                if self.walk_to_marker(fresh):
                     continue
                 try:
                     survey = ChapterSweep(self).run()

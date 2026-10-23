@@ -28,7 +28,7 @@ KEEP_EVENTS = frozenset(('goal_view_result', 'switch_search_view', 'switch_searc
                          'offscreen_map_state', 'offscreen_unoccluded', 'offscreen_unoccluded_confirm',
                          'switch_search_unmeasured', 'switch_search_hint',
                          # 任务定位后看到了什么（实录 2026-10-23 24-27：定位后零红圈，32槽很快被巡检覆盖）。
-                         'quest_guide', 'goal_view', 'marker_probe', 'quest_barrier_blocked'))
+                         'quest_guide', 'goal_view', 'marker_probe', 'quest_barrier_blocked', 'marker_walk'))
 KEEP_LIMIT = 300
 
 

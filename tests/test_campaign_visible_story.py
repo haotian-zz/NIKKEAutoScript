@@ -325,6 +325,26 @@ class VisibleStoryTests(unittest.TestCase):
         self.assertIn('人工查看', str(caught.exception))
         self.session.tap.assert_not_called()
 
+    def test_scene_marker_without_ring_walks_to_it_once(self):
+        """实录24-37：菱形下的 Boss 入口没认出来时点菱形交给原生寻路，到备战再核对；同一任务只走一次。"""
+        self.runner.quest = (20, 6)
+        marker = dict(kind='scene', position=[634., 266.], box=[608, 242, 658, 290], confidence=.93)
+        self.ns['story_markers'] = Mock(return_value=[marker])
+        self.runner.wait_entry = Mock(return_value=True)
+        self.runner.fight_entry = Mock(return_value=True)
+        self.assertTrue(self.runner.walk_to_marker(self.field))
+        self.session.tap.assert_called_once_with([634., 266.])
+        self.runner.fight_entry.assert_called_once_with()
+        self.assertFalse(self.runner.walk_to_marker(self.field))
+        self.session.tap.reset_mock()
+        # 离屏/提示形态、位置跳开都不点。
+        self.runner.quest = (20, 7)
+        self.ns['story_markers'].return_value = [dict(marker, kind='edge')]
+        self.assertFalse(self.runner.walk_to_marker(self.field))
+        self.ns['story_markers'].side_effect = [[marker], [dict(marker, position=[900., 266.])]]
+        self.assertFalse(self.runner.walk_to_marker(self.field))
+        self.session.tap.assert_not_called()
+
     def test_destination_quest_on_map_returns_to_lobby_without_clicking(self):
         """实录23章通关：地图任务为「前往【方舟】的【市内】」时连续两帧确认后交回大厅，不在地图点击。"""
         texts = iter(['前往【方舟】的【市内】', '前往【方舟】的【市内】'])

@@ -90,9 +90,12 @@ def story_markers(image):
         white[top:bottom, left:right] = 0
     blue_contours, _ = cv2.findContours(blue, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
     white_contours, _ = cv2.findContours(white, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
-    contours = [(contour, (.95, 1., 1.05, 1.1), MATCH_THRESHOLD, False) for contour in blue_contours]
+    # 实录 2026-10-23（24-37）：画面内大号菱形的蓝框发光一侧变淡，轮廓只有 50px、中心偏几像素，
+    # 按轮廓中心裁图最高 0.73；放大到 1.15～1.25 倍并在 ±4px 内找最佳位置后 0.935。门槛不变。
+    contours = [(contour, (.95, 1., 1.05, 1.1, 1.15, 1.2, 1.25), MATCH_THRESHOLD, False) for contour in blue_contours]
     contours += [(contour, (1.2, 1.3, 1.4, 1.5), .9, True) for contour in white_contours]
     template, mask = marker_template()
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     result = []
     for contour, scales, threshold, cue in contours:
         x, y, width, height = cv2.boundingRect(contour)
@@ -107,16 +110,18 @@ def story_markers(image):
             if np.mean(context > 0) < .03:
                 continue
         best = None
+        shifts = [(0, 0)] if cue else [(dx, dy) for dx in (-4, -2, 0, 2, 4) for dy in (-4, -2, 0, 2, 4)]
         for scale in scales:
             half = np.array([width, height]) * scale / 2
-            left, top = np.rint(center - half).astype(int)
-            right, bottom = np.rint(center + half).astype(int)
-            if not (0 <= left < right <= 1776 and 0 <= top < bottom <= 999):
-                continue
-            patch = cv2.resize(cv2.cvtColor(image[top:bottom, left:right], cv2.COLOR_BGR2GRAY), (64, 64))
-            score = float(cv2.matchTemplate(patch, template, cv2.TM_CCOEFF_NORMED, mask=mask)[0, 0])
-            if np.isfinite(score) and (best is None or score > best):
-                best = score
+            for dx, dy in shifts:
+                left, top = np.rint(center + (dx, dy) - half).astype(int)
+                right, bottom = np.rint(center + (dx, dy) + half).astype(int)
+                if not (0 <= left < right <= 1776 and 0 <= top < bottom <= 999):
+                    continue
+                patch = cv2.resize(gray[top:bottom, left:right], (64, 64))
+                score = float(cv2.matchTemplate(patch, template, cv2.TM_CCOEFF_NORMED, mask=mask)[0, 0])
+                if np.isfinite(score) and (best is None or score > best):
+                    best = score
         if best is None or best < threshold:
             continue
         box = [int(x), int(y), int(x + width), int(y + height)]
