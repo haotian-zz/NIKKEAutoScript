@@ -26,13 +26,14 @@ from module.ui.assets import (
 
 class EventStory(EventBase):
     def STORY_PART_CHECK(self, story):
+        # 只读取当前章节的模板，避免要求活动提供其他类型才会用到的资源。
         stages = {
-            'story_1_normal': self.event_assets.STORY_1_NORMAL,
-            'story_1_hard': self.event_assets.STORY_1_HARD,
-            'story_2_normal': self.event_assets.STORY_2_NORMAL,
-            'story_2_hard': self.event_assets.STORY_2_HARD,
+            'story_1_normal': 'STORY_1_NORMAL',
+            'story_1_hard': 'STORY_1_HARD',
+            'story_2_normal': 'STORY_2_NORMAL',
+            'story_2_hard': 'STORY_2_HARD',
         }
-        return stages[story]
+        return getattr(self.event_assets, stages[story])
 
     def STORY_STAGE_11(self, story):
         clear = story.endswith('_clear')
