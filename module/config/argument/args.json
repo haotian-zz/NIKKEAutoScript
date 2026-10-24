@@ -1524,6 +1524,76 @@
       }
     }
   },
+  "SideQuest": {
+    "Scheduler": {
+      "Enable": {
+        "type": "checkbox",
+        "value": false,
+        "option": [
+          true,
+          false
+        ]
+      },
+      "NextRun": {
+        "type": "datetime",
+        "value": "1989-12-27 00:00:00",
+        "validate": "datetime"
+      },
+      "Command": {
+        "type": "input",
+        "value": "SideQuest",
+        "display": "hide"
+      },
+      "Cadence": {
+        "type": "select",
+        "value": "daily",
+        "option": [
+          "daily",
+          "weekly",
+          "monthly"
+        ],
+        "display": "hide_keep"
+      },
+      "ServerUpdate": {
+        "type": "input",
+        "value": "04:00",
+        "display": "hide_keep",
+        "validate": "^([01]\\d|2[0-3]):[0-5]\\d(\\s*,\\s*([01]\\d|2[0-3]):[0-5]\\d)*$"
+      },
+      "WeeklyDay": {
+        "type": "input",
+        "value": "2",
+        "display": "hide_keep",
+        "validate": "^[1-7](\\s*,\\s*[1-7])*$"
+      },
+      "WeeklyTime": {
+        "type": "input",
+        "value": "04:00",
+        "display": "hide_keep",
+        "validate": "^([01]\\d|2[0-3]):[0-5]\\d$"
+      },
+      "MonthlyDay": {
+        "type": "input",
+        "value": "1",
+        "display": "hide_keep",
+        "validate": "^([1-9]|1\\d|2[0-8])$"
+      },
+      "MonthlyTime": {
+        "type": "input",
+        "value": "04:00",
+        "display": "hide_keep",
+        "validate": "^([01]\\d|2[0-3]):[0-5]\\d$"
+      }
+    },
+    "Storage": {
+      "Storage": {
+        "type": "storage",
+        "value": {},
+        "valuetype": "ignore",
+        "display": "disabled"
+      }
+    }
+  },
   "Commission": {
     "Scheduler": {
       "Enable": {

@@ -72,6 +72,8 @@ Daily:
       - Scheduler
     Messenger:
       - Scheduler
+    SideQuest:
+      - Scheduler
 
 # ==================== Outpost ====================
 

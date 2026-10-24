@@ -447,6 +447,11 @@ class NikkeAutoScript:
 
         Messenger(config=self.config, device=self.device).run()
 
+    def side_quest(self):
+        from module.side_quest.side_quest import SideQuest
+
+        SideQuest(config=self.config, device=self.device).run()
+
     def outpost_story(self):
         from module.outpost.outpost_story import OutpostStory
 

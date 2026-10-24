@@ -140,8 +140,19 @@ class Messenger(UI):
         return None
 
     def open(self):
+        # 上次中断时可能还停在即时通讯里，这不是 NKAS 认得的页面，直接回到列表接着用
+        if view(self.bgr()) in ('list', 'chat'):
+            return self.list_image() is not None
         self.ui_ensure(page_main)
-        icon = find_icon(self.bgr())
+        # 实录 2026-10-23：从章节地图回大厅后左侧图标列还在随横幅加载移动，第一帧的位置点到了
+        # 下面的 TRACING THE STARS。连续两帧位置一致才点。
+        icon = previous = None
+        for _ in range(10):
+            icon = find_icon(self.bgr())
+            if icon is not None and previous is not None and abs(icon[1] - previous[1]) <= 3:
+                break
+            previous, icon = icon, None
+            time.sleep(1)
         if icon is None:
             return False
         self.tap(icon, 2)

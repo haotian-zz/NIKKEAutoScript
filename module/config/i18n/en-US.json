@@ -118,6 +118,10 @@
       "name": "Messenger Quests",
       "help": "Read unread Messenger quest chats to unlock chapter side quests"
     },
+    "SideQuest": {
+      "name": "Chapter Side Quests",
+      "help": "Open each Messenger quest card via Go, then fight the SUB stages marked with ! on the chapter map (50 gems per first clear)"
+    },
     "Commission": {
       "name": "Commission",
       "help": ""
