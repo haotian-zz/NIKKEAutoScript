@@ -31,12 +31,14 @@ class NavigationPopupTests(unittest.TestCase):
 
 
     def test_known_dispatch_or_outpost_page_does_not_click_gray_login_claim(self):
-        for current in ('commission', 'outpost', 'login-reward'):
+        """实录 2026-10-24：防御前哨奖励页的「获得奖励」也不是登录奖励弹窗。"""
+        for current in ('commission', 'outpost', 'reward', 'login-reward'):
             with self.subTest(current=current):
                 ns = dict(FACILITY_BACK='back', FACILITY_ENTER='enter', LOGIN_PAGE_CHECK='login',
                           LOGO_PAGE_CHECK='logo', CONFIRM_A='a', CONFIRM_B='b', CONFIRM_C='c',
                           page_commission=SimpleNamespace(check_button='commission'),
-                          page_outpost=SimpleNamespace(check_button='outpost'))
+                          page_outpost=SimpleNamespace(check_button='outpost'),
+                          page_reward=SimpleNamespace(check_button='reward'))
                 exec(compile(ast.Module(body=[method], type_ignores=[]), 'ui_additional', 'exec'), ns)
                 handler = Mock()
                 for name in ('handle_level_up', 'handle_reward', 'handle_paid_gift', 'handle_announcement',

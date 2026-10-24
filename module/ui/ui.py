@@ -315,8 +315,11 @@ class UI(InfoHandler):
 
         # A navigation cooldown may leave an already-recognized board on screen briefly.
         # Its gray claim label is not a login-reward popup.
+        # 实录 2026-10-24：防御前哨奖励页底部也是「获得奖励」，没奖励时点它弹「无可获得的奖励」，
+        # 返回大厅途中反复点它会和关闭来回循环直到卡死重启。
         if not (self.appear(page_commission.check_button, offset=30)
-                or self.appear(page_outpost.check_button, offset=30)) and self.handle_login_reward():
+                or self.appear(page_outpost.check_button, offset=30)
+                or self.appear(page_reward.check_button, offset=30)) and self.handle_login_reward():
             return True
 
         if self.handle_server():
