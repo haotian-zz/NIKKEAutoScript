@@ -40,6 +40,18 @@ class BossRingTests(unittest.TestCase):
         moved = cv2.warpAffine(field, np.float32([[1, 0, -750], [0, 1, -250]]), (1776, 999))
         self.assertEqual(boss_ring_candidates(moved), [])
 
+    def test_tilted_hard_boss_skull(self):
+        """实录 2026-10-23（困难 5-20 BOSS）：骷髅印在斜转的粉色面片上、外接框竖长，仍须认出并落在地面脚圈。"""
+        crop = cv2.imread(str(Path(__file__).resolve().parent / 'fixtures/hard_boss_5_20.png'))
+        field = np.full((999, 1776, 3), 40, np.uint8)
+        field[260:500, 1110:1350] = crop
+        found = boss_ring_candidates(field)
+        self.assertEqual(len(found), 1)
+        x, y, width, height = found[0]['glyph']
+        self.assertLess(width / height, 1.)
+        box = np.asarray(found[0]['box'])
+        self.assertLess(np.linalg.norm((box[:2]+box[2:])/2 - [1235, 420]), 40.)
+
 
 
 class QuestPortalTests(unittest.TestCase):

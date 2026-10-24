@@ -596,5 +596,32 @@ class CampaignStartTests(unittest.TestCase):
             self.assertEqual(fn(runner, '市内'), expected)
 
 
+class EnterHardTests(unittest.TestCase):
+
+    def test_list_fade_after_card_click_does_not_reclick_tab(self):
+        """实录 2026-10-23（困难 5→6）：点卡片后列表淡出帧的页签认不出，不能回头点页签，地图读到 HARD 即返回。"""
+        frames = iter(['list', 'fade', 'map'])
+        state = {}
+
+        def screenshot():
+            state['frame'] = next(frames)
+        hard_list = SimpleNamespace(
+            list_visible=lambda image: state['frame'] in ('list', 'fade'),
+            hard_tab_active=lambda image: state['frame'] == 'list',
+            unlocked_cards=lambda image: [(557, 294), (163, 414)],
+            HARD_TAB=(583, 1123), DIFFICULTY_TAG=(540, 1158), LIST_CLOSE=(630, 153))
+        timer = SimpleNamespace(start=lambda: timer, reset=lambda: None, reached=lambda: False)
+        fn = load('enter_hard', cv2=SimpleNamespace(cvtColor=lambda image, code: image, COLOR_RGB2BGR=0),
+                  hard_list=hard_list, WaitGuard=Mock(), Timer=lambda seconds: timer, logger=Mock(),
+                  save_wait_image=Mock(), report=Mock())
+        device = Mock(screenshot=Mock(side_effect=screenshot))
+        runner = SimpleNamespace(device=device, config=SimpleNamespace(
+            PCClient_ScreenNumber=0, PCClient_GameWindowPosition='center'),
+            map_difficulty_text=lambda: 'HARD' if state['frame'] == 'map' else '')
+        self.assertTrue(fn(runner))
+        clicks = [call.args for call in device.click_xy.mock_calls]
+        self.assertEqual(clicks, [(163, 414)])
+
+
 if __name__ == '__main__':
     unittest.main()

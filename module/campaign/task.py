@@ -375,18 +375,22 @@ class AutoPush(UI):
                                       position=self.config.PCClient_GameWindowPosition, interval=.15, stable_time=1.)
         self.device.check_resolution(720, 1280)
         guard = WaitGuard(self.device, '切换困难难度', timeout=150, warn_after=30)
-        step, timer = 'tag', Timer(10).start()
+        step, timer, settle = 'tag', Timer(10).start(), None
         while True:
             self.device.screenshot()
             guard.check()
             image = cv2.cvtColor(self.device.image, cv2.COLOR_RGB2BGR)
             if hard_list.list_visible(image):
-                if not hard_list.hard_tab_active(image):
+                if step == 'card' and not settle.reached():
+                    # 实录 2026-10-23（困难 5→6）：点卡片后列表淡出的过渡帧里页签红色认不出，
+                    # 回头再点页签会把 step 改掉，地图出来读到 HARD 也不返回，直到超时。
+                    pass
+                elif not hard_list.hard_tab_active(image):
                     if step != 'tab' or timer.reached():
                         self.device.click_xy(*hard_list.HARD_TAB)
                         step = 'tab'
                         timer.reset()
-                elif step != 'card' or timer.reached():
+                elif step != 'card' or settle.reached():
                     self.device.sleep(1)
                     self.device.screenshot()
                     cards = hard_list.unlocked_cards(cv2.cvtColor(self.device.image, cv2.COLOR_RGB2BGR))
@@ -398,7 +402,7 @@ class AutoPush(UI):
                     logger.info(f'困难章节列表：已解锁卡片 {cards}，进入最下面一张')
                     self.device.click_xy(*cards[-1])
                     step = 'card'
-                    timer = Timer(90).start()
+                    timer, settle = Timer(90).start(), Timer(10).start()
             else:
                 text = self.map_difficulty_text()
                 if 'HARD' in text and (step == 'card' or target is not None):

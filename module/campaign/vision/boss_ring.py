@@ -23,7 +23,9 @@ def normalized_glyph(mask):
 def skull_templates():
     """缓存固定骷髅UI的有限仿射变体，覆盖透视剪切及左右镜头外观，不学习地貌纹理。
 
-    模板仅含41×31二值图标；剪切±0.6、旋转±10度及镜像共78种，进程内只生成一次。
+    模板仅含41×31二值图标；剪切±0.6、旋转±40度及镜像共234种，进程内只生成一次。
+    实录 2026-10-23（困难 5-20 BOSS）：困难 Boss 的骷髅印在粉色三角面片上，面片随镜头斜转约30度，
+    骷髅外接框变成竖长（29×39）；旧的±10度变体最高只到0.42，加到±40度后为0.67～0.74。
     """
     source = cv2.imread(str(Path(__file__).parent / 'assets/boss_skull_mask.png'), cv2.IMREAD_GRAYSCALE)
     if source is None or not np.any(source):
@@ -31,7 +33,7 @@ def skull_templates():
     result = []
     for flip in (False, True):
         for shear in np.linspace(-.6, .6, 13):
-            for angle in (-10, 0, 10):
+            for angle in range(-40, 41, 10):
                 padded = np.pad(source, ((40, 40), (40, 40)))
                 if flip:
                     padded = padded[:, ::-1]
@@ -52,10 +54,13 @@ def skull_candidates(field):
     white = cv2.inRange(hsv, (0, 0, 200), (179, 100, 255))
     for left, top, right, bottom in HUD_RECTS:
         white[top:bottom, left:right] = 0
+    # 困难 Boss 的红色漩涡粒子会把骷髅切成几块，3×3 闭运算只补细缝。
+    white = cv2.morphologyEx(white, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8))
     _, _, stats, _ = cv2.connectedComponentsWithStats(white)
     bank, result = skull_templates(), []
     for x, y, width, height, area in stats[1:]:
-        if not (20 <= width <= 110 and 12 <= height <= 85 and 1.1 <= width/height <= 2.5 and area >= 80):
+        # 宽高比下限 0.6：斜转后的困难 Boss 骷髅是竖长的。
+        if not (20 <= width <= 110 and 12 <= height <= 85 and .6 <= width/height <= 2.5 and area >= 80):
             continue
         glyph = normalized_glyph(white[y:y+height, x:x+width])
         scores = (glyph & bank).sum((1, 2)) / np.maximum(1, (glyph | bank).sum((1, 2)))
@@ -152,7 +157,10 @@ def boss_ring_candidates(field):
     red = red_mask(field)
     result = []
     for glyph in glyphs:
-        ring = portal_below(red, glyph['glyph'])
+        # 脚圈尺度按外接框长边算：普通横向骷髅即原宽度，竖长的困难骷髅不会因宽度偏小找错圈。
+        x, y, width, height = glyph['glyph']
+        side = max(width, height)
+        ring = portal_below(red, (x+width/2-side/2, y+height/2-side/2, side, side))
         if ring is not None:
             result.append(dict(glyph, **ring))
     return result
