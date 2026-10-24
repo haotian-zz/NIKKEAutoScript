@@ -33,7 +33,7 @@ class ChapterOverlayFlow:
         if evidence is None or not evidence.get('accepted'):
             return False
         expected = self.session.expected_identity
-        if expected[1] != 'normal' or chapter_identity(field, self.reader) != expected:
+        if expected[1] not in ('normal', 'hard') or chapter_identity(field, self.reader) != expected:
             return False
         return evidence['kind'] != 'chapter_completion' or evidence.get('current') == expected[0]
 

@@ -4277,6 +4277,14 @@
           "continuous"
         ]
       },
+      "Difficulty": {
+        "type": "select",
+        "value": "normal",
+        "option": [
+          "normal",
+          "hard"
+        ]
+      },
       "Chapter": {
         "type": "select",
         "value": "current",

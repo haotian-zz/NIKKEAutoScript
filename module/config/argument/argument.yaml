@@ -559,6 +559,9 @@ CampaignMap:
   RunMode:
     value: single
     option: [ single, continuous ]
+  Difficulty:
+    value: normal
+    option: [ normal, hard ]
   Chapter:
     value: current
     option: [

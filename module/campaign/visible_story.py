@@ -91,11 +91,12 @@ def parse_entry_title(text):
 
     B0SS只容忍标签中字母O的常见OCR混淆，不修改编号中的数字。不接受EX、缺失后缀、
     残缺分支或额外文字；避免将宽区域OCR拼接的BOSS误当分支B，也不从期望任务补编号。
+    困难难度标题在编号和后缀之间多一个 HARD（实录 2026-10-23：「4-1 HARD STAGE」）。
     """
     number = r'[1-9]\d?'
     separator = r'[-－–]'
     identity = rf'{number}\s*{separator}\s*{number}(?:\s*[A-Z]\s*{separator}\s*{number})?'
-    match = re.fullmatch(rf'\s*({identity})\s*(?:STAGE|B[O0]SS)\s*', text, re.I)
+    match = re.fullmatch(rf'\s*({identity})\s*(?:HARD\s*)?(?:STAGE|B[O0]SS)\s*', text, re.I)
     return parse_stage(match.group(1)) if match else None
 
 
@@ -206,7 +207,8 @@ def read_ex_entry(field, reader):
     x1, y1, x2, y2 = ENTRY_AREA
     crop = cv2.resize(field[y1:y2, x1:x2], None, fx=2, fy=2)
     text = reader.ocr(crop, direct_ocr=True, threshold=.9)['text']
-    return bool(re.search(r'(?<![A-Z])EX\s*STAGE(?![A-Z])', text, re.I))
+    # 困难难度为「EX HARD STAGE」（实录 2026-10-23 困难 4 章，300 钻、等级固定 190、无法自主战斗）
+    return bool(re.search(r'(?<![A-Z])EX\s*(?:HARD\s*)?STAGE(?![A-Z])', text, re.I))
 
 
 def quest_jump_point(field, area=QUEST_JUMP_AREA):
@@ -319,7 +321,10 @@ class VisibleStoryRunner:
         self.spiral_done = set()
         self.blocked_since, self.blocked_click = {}, None
         self.entry_outcome = None
-        self.journal = ClearanceJournal(owner.config.config_name)
+        # 困难难度与普通共用底图但敌人和通关进度独立，清怪记录分开存，不能互相顶替。
+        self.difficulty = getattr(owner, 'current_difficulty', None) or 'normal'
+        self.hard = self.difficulty == 'hard'
+        self.journal = ClearanceJournal(f'{owner.config.config_name}-hard' if self.hard else owner.config.config_name)
         self.journal.begin(owner.current_chapter)
 
     def map_frame(self, timeout=30., track=True):
@@ -856,7 +861,7 @@ class VisibleStoryRunner:
         """
         deadline = time.monotonic() + 30.
         while current[0] > self.owner.current_chapter and time.monotonic() < deadline:
-            if current[1] != 'normal':
+            if current[1] != self.difficulty:
                 raise SweepUnconfirmed('换章后难度变化，不能复用旧章清怪状态。')
             self.session.tap((1551, 940), interval=2.)
             self.session.pause(1.)
@@ -864,14 +869,16 @@ class VisibleStoryRunner:
             observed = chapter_identity(field, self.owner.chapter_ocr)
             if observed is not None:
                 current = observed
-        if current != (self.owner.current_chapter, 'normal'):
+        if current != (self.owner.current_chapter, self.difficulty):
             raise SweepUnconfirmed('未能返回尚未完成巡检的章节，清怪状态保持未完成。')
         self.memory.previous = None
         self.deferred.clear()
 
     def advance_chapter(self, proof):
         """本章完整巡检无剩余敌人且任务已进入下一章后，才点击下一章节并核对新身份。"""
-        if proof.get('state') != 'verified_empty' or self.quest is None or self.quest[0] <= self.owner.current_chapter:
+        # 困难难度没有自己的主线任务（任务栏显示的是普通主线），只凭本章完整巡检判断。
+        if proof.get('state') != 'verified_empty' or not self.hard and (
+                self.quest is None or self.quest[0] <= self.owner.current_chapter):
             raise SweepUnconfirmed('本章清怪或主线剧情未同时完成，保持在当前章。')
         self.journal.complete(self.owner.current_chapter, proof)
         if not getattr(self.owner, 'continuous', False):
@@ -882,7 +889,8 @@ class VisibleStoryRunner:
         while time.monotonic() < deadline:
             field = self.map_frame()
             current = chapter_identity(field, self.owner.chapter_ocr)
-            if current is not None and current == previous and current == (self.owner.current_chapter + 1, 'normal'):
+            if (current is not None and current == previous
+                    and current == (self.owner.current_chapter + 1, self.difficulty)):
                 logger.info(f'本章清怪巡检通过后已确认进入第 {current[0]} 章。')
                 return dict(state='continue', reason='chapter_changed', clearance=proof)
             previous = current
@@ -959,15 +967,16 @@ class VisibleStoryRunner:
                 if getattr(self.owner, 'continuous', False):
                     self.session.pause(.35)
                     fresh = self.map_frame()
-                    if (identity[1] == 'normal'
+                    if (identity[1] == self.difficulty
                             and chapter_identity(fresh, self.owner.chapter_ocr) == identity):
                         return dict(state='continue', reason='chapter_changed', old_chapter_pending=True)
                     raise StoryVerificationError('自动换章后身份无法连续确认，旧章待办保留。',
                                                  'story_chapter_unconfirmed')
                 self.restore_chapter(identity)
                 continue
-            current = read_stage(field, self.owner.chapter_ocr, quest=True)
-            if current is None and (self.return_lobby(field) or self.destination_return(field)):
+            # 困难地图的任务栏仍是普通主线任务：不跟随、不返回大厅，只清本章可见敌人并巡检。
+            current = None if self.hard else read_stage(field, self.owner.chapter_ocr, quest=True)
+            if current is None and not self.hard and (self.return_lobby(field) or self.destination_return(field)):
                 return dict(state='continue', reason='story_return_lobby', chapter=self.owner.current_chapter)
             if current is not None:
                 if current != self.quest:

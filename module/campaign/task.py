@@ -15,6 +15,7 @@ from module.campaign.report import GOAL_REASONS
 from module.campaign.vision import battle
 from module.campaign.vision.chapter import chapter_identity
 from module.campaign.vision.chapter_completion import overlay_anchor
+from module.campaign.vision import hard_list
 from module.campaign.window import CampaignWindow
 from module.campaign.visible_story import (DESTINATION_SCORE, destination_lobby_quest, destination_place,
                                            quest_jump_point, read_quest_text, return_lobby_quest)
@@ -328,8 +329,8 @@ class AutoPush(UI):
         first = chapter_identity(field, owner.chapter_ocr)
         fresh = win.client()
         second = chapter_identity(fresh, owner.chapter_ocr)
-        if first is None or first != second or first[1] != 'normal':
-            raise RequestHumanTakeover('遗留章节浮层下的普通地图身份未连续确认，未发送处理点击。')
+        if first is None or first != second:
+            raise RequestHumanTakeover('遗留章节浮层下的地图身份未连续确认，未发送处理点击。')
         owner.current_chapter, owner.current_difficulty = first
         session = CampaignSession(owner, navigation=False)
         guard = WaitGuard(self.device, '恢复遗留章节通知', timeout=45, warn_after=15)
@@ -354,13 +355,74 @@ class AutoPush(UI):
         finally:
             session.close()
 
-    def select_chapter(self, campaign, target):
-        """通过横屏右下角相邻章节按钮逐章切换，每次均重新识别章节与普通难度。
+    def map_difficulty_text(self):
+        """竖屏地图右下角难度标签的文字（NORMAL / HARD），读不到返回空串。"""
+        return Ocr((490, 1125, 700, 1265), name='CAMPAIGN_MAP_ENTRY',
+                   model_type=self.config.Optimization_OcrModelType).ocr(self.device.image)['text'].upper()
+
+    def enter_hard(self, target=None):
+        """竖屏地图上切到困难难度：点难度标签开章节列表 → 困难页签 → 最下面的已解锁卡片。
+
+        困难页自动滚到当前进度，最下面的已解锁卡片就是困难最新章节；具体章节号随后在横屏由
+        select_chapter 按 HARD 身份核对并用左右箭头切换。每步都等画面确认，不靠点击次数。
+        已在困难地图且指定了章节时直接交给 select_chapter；「当前进度」总是经列表选最新章，
+        因为停在旧困难章（例如刚通关、点了下一章控件后还在旧章）时地图本身不代表最新进度。
+        实录 2026-10-23：普通 23 章地图 → 困难页（第 3 章 COMPLETE、第 4 章 0/18）→ 点第 4 章进入 HARD 04；
+        困难 4 章通关浮层点「CHAPTER 05」后弹出的是暗红底章节列表，旧锚点认不出。
+        """
+        self.device.target_resolution = (720, 1280)
+        self.device.ensure_resolution(self.config.PCClient_ScreenNumber, 720, 1280,
+                                      position=self.config.PCClient_GameWindowPosition, interval=.15, stable_time=1.)
+        self.device.check_resolution(720, 1280)
+        guard = WaitGuard(self.device, '切换困难难度', timeout=150, warn_after=30)
+        step, timer = 'tag', Timer(10).start()
+        while True:
+            self.device.screenshot()
+            guard.check()
+            image = cv2.cvtColor(self.device.image, cv2.COLOR_RGB2BGR)
+            if hard_list.list_visible(image):
+                if not hard_list.hard_tab_active(image):
+                    if step != 'tab' or timer.reached():
+                        self.device.click_xy(*hard_list.HARD_TAB)
+                        step = 'tab'
+                        timer.reset()
+                elif step != 'card' or timer.reached():
+                    self.device.sleep(1)
+                    self.device.screenshot()
+                    cards = hard_list.unlocked_cards(cv2.cvtColor(self.device.image, cv2.COLOR_RGB2BGR))
+                    if not cards:
+                        save_wait_image(self.device, 'AutoPush_hard_no_chapter')
+                        self.device.click_xy(*hard_list.LIST_CLOSE)
+                        report('blocked', '困难难度没有已解锁的章节', '先通关对应普通章节解锁困难难度')
+                        return False
+                    logger.info(f'困难章节列表：已解锁卡片 {cards}，进入最下面一张')
+                    self.device.click_xy(*cards[-1])
+                    step = 'card'
+                    timer = Timer(90).start()
+            else:
+                text = self.map_difficulty_text()
+                if 'HARD' in text and (step == 'card' or target is not None):
+                    logger.info('已进入困难难度地图')
+                    return True
+                if step == 'card' and timer.reached():
+                    save_wait_image(self.device, 'AutoPush_hard_switch')
+                    report('blocked', '未能切换到困难难度', '点了困难章节卡片后困难地图未确认，已保存当前画面')
+                    return False
+                # 点标签后列表没出来就再点一次，总时长由 WaitGuard 兜底
+                if ('NORMAL' in text or 'HARD' in text) and (step == 'tag' or step == 'list' and timer.reached()):
+                    self.device.click_xy(*hard_list.DIFFICULTY_TAG)
+                    step = 'list'
+                    timer.reset()
+            self.device.sleep(.5)
+
+    def select_chapter(self, campaign, target, difficulty='normal'):
+        """通过横屏右下角相邻章节按钮逐章切换，每次均重新识别章节与难度。
 
         仅在 1776×999 画面发送输入，每步最多等待 30 秒，总计最多六分钟。
         不把点击次数当作选中成功；入口锁定或加载未确认时结束并报告当前章节。
+        困难难度 target 为 None 时只核对当前地图确实是 HARD。
         """
-        if target is None:
+        if target is None and difficulty == 'normal':
             return True
         guard = WaitGuard(self.device, '选择主线章节', timeout=360, warn_after=30)
         pending, timer = None, Timer(30)
@@ -371,12 +433,12 @@ class AutoPush(UI):
                 raise GameStuckError('选择主线章节时画面尺寸发生变化')
             identity = chapter_identity(cv2.cvtColor(self.device.image, cv2.COLOR_RGB2BGR), campaign.chapter_ocr)
             if identity is not None:
-                current, difficulty = identity
-                if difficulty != 'normal':
-                    report('blocked', '未确认普通主线地图', '请检查地图难度后重试')
+                current, observed = identity
+                if observed != difficulty:
+                    report('blocked', f'未确认{"困难" if difficulty == "hard" else "普通"}主线地图', '请检查地图难度后重试')
                     return False
-                if current == target:
-                    logger.info(f'已确认进入普通主线第 {target} 章')
+                if target is None or current == target:
+                    logger.info(f'已确认进入{"困难" if difficulty == "hard" else "普通"}主线第 {current} 章')
                     return True
                 if pending is not None and current != pending:
                     pending = None
@@ -454,6 +516,9 @@ class AutoPush(UI):
                 raise ValueError('请选择单轮推图或持续推图')
             continuous = mode == 'continuous'
             target = None if continuous else chapter_number(self.config.CampaignMap_Chapter)
+            difficulty = getattr(self.config, 'CampaignMap_Difficulty', 'normal')
+            if difficulty not in ('normal', 'hard'):
+                raise ValueError('请选择普通或困难难度')
         except ValueError as exc:
             report('blocked', '推图设置无效', str(exc))
             self.config.task_delay(schedule=True)
@@ -468,6 +533,9 @@ class AutoPush(UI):
                 if not resume_map and not self.ensure_main_map():
                     if total_cleared:
                         report('partial', f'本轮已确认清除 {total_cleared} 个敌人，当前入口需要处理')
+                    return
+                # 大厅任务箭头只通往普通地图，困难难度在竖屏地图上经章节列表切换
+                if not resume_map and difficulty == 'hard' and not self.enter_hard(target):
                     return
                 entry = getattr(self, 'entry_stage', None)
                 if require_story_return is not None:
@@ -501,7 +569,7 @@ class AutoPush(UI):
                 campaign = Campaign(self.config, device=self.device)
                 campaign.continuous = continuous
                 campaign.story_first = True
-                if not self.select_chapter(campaign, target):
+                if not self.select_chapter(campaign, target, difficulty):
                     if total_cleared:
                         report('partial', f'本轮已确认清除 {total_cleared} 个敌人，章节入口需要处理')
                     return
@@ -552,7 +620,8 @@ class AutoPush(UI):
                     self.renew_progress_guard()
                     resume_map = True
                     continue
-                if continuous and code == 'no_reachable_target' and entry is not None:
+                # 困难没有自己的主线任务，大厅任务不会因困难进度前进，不走「等任务前进再续跑」
+                if continuous and code == 'no_reachable_target' and entry is not None and difficulty == 'normal':
                     require_advance = entry
                     resume_map = False
                     logger.info(f'{reason}，重新核对主线任务后决定是否继续')

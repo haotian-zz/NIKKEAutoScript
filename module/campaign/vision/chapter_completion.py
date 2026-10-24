@@ -108,8 +108,9 @@ def chapter_number(text, caption=False):
 
     当前章徽标须只有CHAPTER及编号；下一章控件允许冒号分隔或中文名称，不从正文猜数字。
     不支持的标题排版保持未确认，不能以期望章节补齐。
+    个位数章号补零显示（实录 2026-10-23 困难 4→5：「CHAPTER 04」「CHAPTER 05」），只接受一个前导零。
     """
-    match = re.fullmatch(r'\s*CHAPTER\s*([1-9]\d?)(.*)', text, re.I)
+    match = re.fullmatch(r'\s*CHAPTER\s*(0[1-9]|[1-9]\d?)(.*)', text, re.I)
     if match is None:
         return None
     tail = match.group(2).strip()
@@ -162,7 +163,7 @@ def read_line(field, roi, reader, ink=None, scale=2):
 
 
 def next_control_boxes(field):
-    """只在浮层下一章控件区域寻找完整蓝色矩形，返回实际客户区框，不提供固定点击兜底。
+    """只在浮层下一章控件区域寻找完整蓝色（困难为红色）矩形，返回实际客户区框，不提供固定点击兜底。
 
     控件本体实测饱和度 210～245、亮度 146～174；浮层压暗的地面饱和度或亮度低得多，按此分开。
     实录 2026-10-23（23→24“驱逐”）：控件下方是偏蓝的楼顶（压暗后约 S81/V41），旧阈值 S≥70、V≥50
@@ -171,6 +172,8 @@ def next_control_boxes(field):
     left, top, right, bottom = NEXT_CONTROL
     hsv = cv2.cvtColor(field[top:bottom, left:right], cv2.COLOR_BGR2HSV)
     mask = cv2.inRange(hsv, (85, 120, 90), (120, 255, 255))
+    # 困难难度的下一章控件是红色（实录 2026-10-23 困难 4→5「幻象」：H≈6、S≈218、V≈163，216×45）
+    mask |= cv2.inRange(hsv, (0, 120, 90), (12, 255, 255)) | cv2.inRange(hsv, (168, 120, 90), (179, 255, 255))
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8))
     count, _, stats, _ = cv2.connectedComponentsWithStats(mask)
     boxes = []

@@ -158,10 +158,11 @@ class VisibleStoryTests(unittest.TestCase):
         """Boss标签不当分支B，普通分支仍保留全号，EX/残缺/多编号均拒绝。"""
         parse = self.ns['parse_entry_title']
         for text, expected in [('20-31BOSS', (20, 31)), ('20-31 B0SS', (20, 31)),
-                               ('20-23STAGE', (20, 23)), ('20-6B-1STAGE', (20, 6, 'B', 1))]:
+                               ('20-23STAGE', (20, 23)), ('20-6B-1STAGE', (20, 6, 'B', 1)),
+                               ('4-1 HARD STAGE', (4, 1)), ('4-9HARDBOSS', (4, 9))]:
             self.assertEqual(parse(text), expected)
         for text in ('20-31', '20-6BSTAGE', '20-6B-STAGE', 'EX STAGE', 'EX 20-6 STAGE',
-                     '20-6STAGE20-7', '20-31BOSS extra', '0-31BOSS'):
+                     '20-6STAGE20-7', '20-31BOSS extra', '0-31BOSS', '4-1 HARD'):
             self.assertIsNone(parse(text), text)
 
     def test_entry_title_fast_path_keeps_score_gate_and_legacy_fallback(self):

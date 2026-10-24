@@ -38,7 +38,9 @@ class ChapterCompletionTests(unittest.TestCase):
         """CHAPTER前缀与完整数字必须存在，不能把21的尾随l当名称或截成2。"""
         self.assertEqual(chapter_number('CHAPTER20'), 20)
         self.assertEqual(chapter_number('CHAPTER21::巨鲸', caption=True), 21)
-        for text in ('20', 'CHAPTER021', 'CHAPTER2l', 'CHAPTER20 CHAPTER21'):
+        self.assertEqual(chapter_number('CHAPTER 04'), 4)
+        self.assertEqual(chapter_number('CHAPTER 05 :: 幻象', caption=True), 5)
+        for text in ('20', 'CHAPTER021', 'CHAPTER2l', 'CHAPTER20 CHAPTER21', 'CHAPTER00', 'CHAPTER004'):
             self.assertIsNone(chapter_number(text), text)
 
     def test_complete_overlay_returns_the_observed_control(self):
@@ -76,6 +78,16 @@ class ChapterCompletionTests(unittest.TestCase):
         self.field[560:750, 470:1305] = 0
         self.field[580:690, 730:1010] = (60, 40, 30)
         cv2.rectangle(self.field, (780, 623), (998, 664), (180, 90, 5), -1)
+        self.results()
+        found = completion_overlay(self.field, self.reader)
+        self.assertTrue(found['accepted'])
+        left, top, right, bottom = found['box']
+        self.assertLess(abs(left-780)+abs(right-999), 8)
+
+    def test_hard_red_control_is_found(self):
+        """实录困难4→5：下一章控件是红色（BGR 约 20,40,170），与普通的蓝色控件同一位置同一流程。"""
+        self.field[560:750, 470:1305] = 0
+        cv2.rectangle(self.field, (780, 623), (998, 664), (20, 40, 170), -1)
         self.results()
         found = completion_overlay(self.field, self.reader)
         self.assertTrue(found['accepted'])

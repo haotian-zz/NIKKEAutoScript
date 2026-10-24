@@ -9,6 +9,9 @@ import numpy as np
 CLIENT_SIZE = (1776, 999)
 CHAPTER_AREA = (1608, 917, 1663, 953)
 DIFFICULTY_AREA = (1613, 898, 1670, 912)
+# HARD 标签比 NORMAL 窄，左侧列表图标落进 DIFFICULTY_AREA，变暗时会被读成「≡HARD」且分数不到门槛；
+# 去掉图标的裁切只用来补读 HARD。实录 2026-10-23：困难 4 章通关浮层下读成 '≡HARD' 0.869。
+HARD_AREA = (1627, 898, 1675, 912)
 
 
 def chapter_identity(image, reader):
@@ -31,7 +34,11 @@ def chapter_identity(image, reader):
     if not re.fullmatch(r'[0-9]{1,2}', number) or int(number) < 1:
         return None
     if difficulty.upper() not in ('NORMAL', 'HARD'):
-        return None
+        x1, y1, x2, y2 = HARD_AREA
+        crop = cv2.resize(image[y1:y2, x1:x2], None, fx=4, fy=4)
+        difficulty = reader.ocr(crop, direct_ocr=True, threshold=.9)['text'].strip()
+        if difficulty.upper() != 'HARD':
+            return None
     return int(number), difficulty.lower()
 
 

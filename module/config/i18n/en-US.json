@@ -1599,6 +1599,12 @@
       "single": "Single run",
       "continuous": "Continuous (current progress)"
     },
+    "Difficulty": {
+      "name": "Difficulty",
+      "help": "Normal follows the main story; Hard clears the hard map of the chosen chapter (hard has no story quest, so completion is judged by a full chapter sweep); continuous mode moves on to the next hard chapter after each clear.",
+      "normal": "Normal",
+      "hard": "Hard"
+    },
     "Chapter": {
       "name": "Starting chapter",
       "help": "Current progress follows the main quest. A selected chapter must be confirmed before combat; locked chapters stop with an explanation.",
