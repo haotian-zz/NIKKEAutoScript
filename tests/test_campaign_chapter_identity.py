@@ -37,13 +37,18 @@ class ChapterIdentityTests(unittest.TestCase):
             self.assertIsNone(chapter_identity(self.field, self.reader))
 
     def test_dimmed_hard_tag_rereads_without_list_icon(self):
-        """实录：通关浮层下 HARD 标签变暗，左侧图标被读成多一个字；去掉图标补读，只接受 HARD。"""
-        self.results('04', '目HARD', difficulty_score=.869)
-        texts = iter(['04', '目HARD', 'HARD'])
-        self.reader.ocr.side_effect = lambda *args, **kwargs: dict(text=next(texts))
-        self.assertEqual(chapter_identity(self.field, self.reader), (4, 'hard'))
-        texts = iter(['04', '目HARD', 'NORMAL'])
-        self.assertIsNone(chapter_identity(self.field, self.reader))
+        """实录：通关浮层下 HARD 标签变暗，左侧图标被读成多一个字；去掉图标直接识别补读，只接受高分 HARD。
+
+        实录 2026-10-23 困难 6：检测器在小而暗的裁图上找不到字，补读必须不经检测。
+        """
+        fast = [dict(rec_text='04', rec_score=.989), dict(rec_text='目HARD', rec_score=.869)]
+        texts = ['04', '目HARD']
+        for reread, score, expected in [('HARD', .989, (4, 'hard')), ('NORMAL', .99, None),
+                                        ('HARD', .89, None), ('HARD', float('nan'), None)]:
+            remaining = iter(texts)
+            self.reader.ocr.side_effect = lambda *args, **kwargs: dict(text=next(remaining))
+            self.reader.paddleocr.recognize.side_effect = [fast, [dict(rec_text=reread, rec_score=score)]]
+            self.assertEqual(chapter_identity(self.field, self.reader), expected, (reread, score))
 
     def test_low_or_nonfinite_score_uses_unchanged_legacy_thresholds(self):
         """低分或非有限分数回退原流程，章号0.95及难度0.9均不放宽。"""

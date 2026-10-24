@@ -34,11 +34,15 @@ def chapter_identity(image, reader):
     if not re.fullmatch(r'[0-9]{1,2}', number) or int(number) < 1:
         return None
     if difficulty.upper() not in ('NORMAL', 'HARD'):
+        # 实录 2026-10-23 困难 6 通关浮层：变暗的 HARD 裁图太小，检测器找不到字而读空；
+        # 不经检测直接识别读出 HARD 0.989，门槛仍为 0.9，且只接受 HARD
         x1, y1, x2, y2 = HARD_AREA
         crop = cv2.resize(image[y1:y2, x1:x2], None, fx=4, fy=4)
-        difficulty = reader.ocr(crop, direct_ocr=True, threshold=.9)['text'].strip()
-        if difficulty.upper() != 'HARD':
+        found = reader.paddleocr.recognize([crop])
+        if (len(found) != 1 or str(found[0].get('rec_text', '')).strip().upper() != 'HARD'
+                or not float(found[0].get('rec_score', 0.)) >= .9):
             return None
+        difficulty = 'HARD'
     return int(number), difficulty.lower()
 
 
