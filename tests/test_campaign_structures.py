@@ -4,10 +4,12 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
+import cv2  # noqa: F401  先载入 cv2：patch.dict 退出时会移除块内新载入的模块，cv2 重复加载会报错
 import numpy as np
 
 with patch.dict('sys.modules', {'module.logger': SimpleNamespace(logger=Mock())}):
     from module.campaign import structures as structure
+    from module.campaign.world import WorldModel
 
 
 def fixture(kind='elevator', state='start', position=(1000., 650.), confidence=.95):
@@ -23,7 +25,9 @@ class StructureTests(unittest.TestCase):
     def setUp(self):
         """每项场景使用隔离假会话，显式注入识别结果和单调时钟。"""
         self.field = np.zeros((999, 1776, 3), np.uint8)
-        self.runner = Mock(structure_inputs=0, structure_pans=0)
+        self.runner = Mock(quest=(21, 15), switch_skip=set(), world=WorldModel())
+        # 找机关探索的顺序单独验证（test_campaign_explorer）；这里只看画面内设施的交互与预算。
+        self.runner.world.put('switch_hunt', 'quest:(21, 15)', True)
         self.runner.map_frame.return_value = self.field
         self.runner.session = Mock()
         patcher = patch.object(structure, 'facility_catalog', return_value=None)
@@ -69,22 +73,25 @@ class StructureTests(unittest.TestCase):
                 patch.object(structure, 'wait_structure_settle', return_value=self.field):
             self.assertEqual(structure.recover_visible_structure(self.runner, self.field), 'attempted')
         self.runner.session.tap.assert_called_once_with(target['position'])
-        self.assertEqual(self.runner.structure_inputs, 1)
+        self.assertEqual(self.runner.world.count('structure_input', reset_on=('win', 'switch')), 1)
+        self.assertEqual(self.runner.world.history, ['facility'])
         self.assertIsNone(self.runner.memory.previous)
         self.runner.memory.victory.assert_not_called()
         observed = [call for call in self.runner.session.record_evidence.call_args_list
                     if call.args[0] == 'structure_observed']
         self.assertEqual(observed[0].kwargs['state'], 'unconfirmed')
 
-    def test_missing_squad_stops_without_pan_or_click(self):
-        """设施可信但小队未定位时，不把镜头手势冒险发成走位。"""
-        with patch.object(structure, 'detect_objects', return_value=[fixture()]), \
+    def test_missing_squad_ranks_from_view_center_instead_of_stopping(self):
+        """停止策略分级：小队箭头和小地图圆环都读不到时按画面中心排序，照常尝试唯一可信设施。"""
+        target = fixture()
+        with patch.object(structure, 'detect_objects', return_value=[target]), \
                 patch.object(structure, 'squad_arrow', return_value=None), \
+                patch.object(structure, 'minimap_squad_ground', return_value=None), \
                 patch.object(structure.goto, 'battle_popup_score', return_value=0.), \
+                patch.object(structure, 'wait_structure_settle', return_value=self.field), \
                 patch.object(structure, 'pan_scene') as pan:
-            with self.assertRaisesRegex(structure.StructureUnconfirmed, '小队位置'):
-                structure.recover_visible_structure(self.runner, self.field)
-        self.runner.session.tap.assert_not_called()
+            self.assertEqual(structure.recover_visible_structure(self.runner, self.field), 'attempted')
+        self.runner.session.tap.assert_called_once_with(target['position'])
         pan.assert_not_called()
 
     def test_used_persistent_facility_is_not_clicked_with_a_fresh_input_budget(self):
@@ -93,8 +100,6 @@ class StructureTests(unittest.TestCase):
         catalog = Mock()
         catalog.observe.return_value = [dict(target, facility_id='persisted-platform')]
         catalog.eligible.return_value = False
-        self.runner.facility_survey_attempted = True
-        self.runner.structure_pans = 4
         with patch.object(structure, 'facility_catalog', return_value=catalog), \
                 patch.object(structure, 'detect_objects', return_value=[target]), \
                 patch.object(structure, 'squad_arrow', return_value=np.array([600., 400.])), \
@@ -105,16 +110,15 @@ class StructureTests(unittest.TestCase):
         catalog.attempt.assert_not_called()
 
     def test_localization_does_not_preserve_a_stale_facility_click(self):
-        """地图复核后设施移动或消失时拒绝旧落点，不能把定位成功当作交互许可。"""
+        """地图复核后设施移动或消失时拒绝旧落点，不能把定位成功当作交互许可；下一轮重新观察。"""
         target = fixture()
         with patch.object(structure, 'detect_objects', side_effect=[
                 [target], [target], [fixture(position=(1050., 650.))]]), \
                 patch.object(structure, 'squad_arrow', return_value=np.array([600., 400.])), \
                 patch.object(structure.goto, 'battle_popup_score', return_value=0.):
-            with self.assertRaisesRegex(structure.StructureUnconfirmed, '旧落点'):
-                structure.recover_visible_structure(self.runner, self.field)
+            self.assertEqual(structure.recover_visible_structure(self.runner, self.field), 'scouted')
         self.runner.session.tap.assert_not_called()
-        self.assertEqual(self.runner.structure_inputs, 0)
+        self.assertEqual(self.runner.world.count('structure_input', reset_on=('win', 'switch')), 0)
 
     def test_nearby_platform_is_not_rejected_as_already_used(self):
         """真实失败中近端距小队约90px的平台优先于峡谷另一侧高分平台，仍只点一次。"""
@@ -127,8 +131,7 @@ class StructureTests(unittest.TestCase):
                 patch.object(structure, 'wait_structure_settle', return_value=self.field):
             self.assertEqual(structure.recover_visible_structure(self.runner, self.field), 'attempted')
         self.runner.session.tap.assert_called_once_with(near['position'])
-        self.runner.guided_quests.discard.assert_called_once()
-        self.assertEqual(self.runner.marker_pans, 0)
+        self.assertEqual(self.runner.world.history, ['facility'])
 
     def test_explicit_unanchored_recovery_clicks_one_confirmed_platform_without_pan(self):
         """稳定任务标记可请求原生点击唯一平台，缺小队锚点仍不发送镜头或认领传送。"""
@@ -143,50 +146,36 @@ class StructureTests(unittest.TestCase):
         self.runner.session.tap.assert_called_once_with(target['position'])
         pan.assert_not_called()
         self.runner.memory.victory.assert_not_called()
-        attempts = [call for call in self.runner.session.record_evidence.call_args_list
-                    if call.args[0] == 'structure_attempt']
-        self.assertEqual(attempts[0].kwargs['squad_anchor'], 'unobserved')
 
-    def test_unanchored_ambiguity_or_spent_budget_never_sends_input(self):
-        """无锚点时多设施和已耗尽的两次输入均不得退化为猜距离或拖镜头。"""
-        for objects, spent in (([fixture(), fixture(position=(650., 500.))], 0), ([fixture()], 2)):
-            self.runner.structure_inputs = spent
-            with patch.object(structure, 'detect_objects', return_value=objects), \
-                    patch.object(structure, 'squad_arrow', return_value=None), \
-                    patch.object(structure.goto, 'battle_popup_score', return_value=0.), \
-                    patch.object(structure, 'pan_scene') as pan:
-                with self.assertRaises(structure.StructureUnconfirmed):
-                    structure.recover_visible_structure(self.runner, self.field, allow_unanchored=True)
-            self.runner.session.tap.assert_not_called()
-            pan.assert_not_called()
-
-    def test_unanchored_transient_miss_still_requires_two_adjacent_confirmations(self):
-        """首帧平台短暂漏检时最多补两帧；两次连续高分后才发唯一输入。"""
-        target = fixture()
-        with patch.object(structure, 'detect_objects', side_effect=[[], [target], [target], [target]]) as detect, \
+    def test_spent_budget_never_sends_input(self):
+        """每次真实进展前两次设施交互用完后，无论有没有小队锚点都不再点击或拖镜头。"""
+        for _ in range(2):
+            self.runner.world.bump('structure_input', reset_on=('win', 'switch'))
+        with patch.object(structure, 'detect_objects', return_value=[fixture()]), \
                 patch.object(structure, 'squad_arrow', return_value=None), \
                 patch.object(structure.goto, 'battle_popup_score', return_value=0.), \
-                patch.object(structure, 'wait_structure_settle', return_value=self.field):
-            self.assertEqual(structure.recover_visible_structure(
-                self.runner, self.field, allow_unanchored=True), 'attempted')
-        self.assertEqual(detect.call_count, 4)
-        self.runner.session.tap.assert_called_once_with(target['position'])
+                patch.object(structure, 'pan_scene') as pan:
+            with self.assertRaises(structure.StructureUnconfirmed):
+                structure.recover_visible_structure(self.runner, self.field, allow_unanchored=True)
+        self.runner.session.tap.assert_not_called()
+        pan.assert_not_called()
 
-    def test_unanchored_permanent_miss_stops_after_four_observations(self):
-        """持续漏检不能把短时多帧观测变成无限等待，更不能据此猜点击点。"""
+    def test_missing_facility_stops_after_hunt_without_guessing(self):
+        """画面内没有可信设施、本道路状态已探索过：停止，不靠猜点击点。"""
         with patch.object(structure, 'detect_objects', return_value=[]) as detect, \
                 patch.object(structure, 'squad_arrow', return_value=None), \
                 patch.object(structure.goto, 'battle_popup_score', return_value=0.), \
                 patch.object(structure, 'pan_scene') as pan:
             with self.assertRaises(structure.StructureUnconfirmed):
                 structure.recover_visible_structure(self.runner, self.field, allow_unanchored=True)
-        self.assertEqual(detect.call_count, 4)
+        self.assertEqual(detect.call_count, 2)
         self.runner.session.tap.assert_not_called()
         pan.assert_not_called()
 
     def test_exhausted_budget_stops_and_does_not_click_again(self):
         """两次设施和四次视角均已用完时，明确停止而不继续同一设施。"""
-        self.runner.structure_inputs, self.runner.structure_pans = 2, 4
+        for _ in range(2):
+            self.runner.world.bump('structure_input', reset_on=('win', 'switch'))
         with patch.object(structure, 'detect_objects', return_value=[fixture()]), \
                 patch.object(structure, 'squad_arrow', return_value=np.array([600., 400.])), \
                 patch.object(structure.goto, 'battle_popup_score', return_value=0.), \
@@ -212,7 +201,7 @@ class StructureTests(unittest.TestCase):
         self.runner.session.tap.assert_not_called()
 
     def test_missing_minimap_times_out_with_raw_evidence(self):
-        """小地图一直缺小队时按单调时钟退出，保存原图，禁止继续发目标。"""
+        """小地图一直缺小队时按单调时钟退出并保存原图；停止策略分级后交回下一轮重新扫描，不整轮停止。"""
         clock = [0.]
         self.runner.session.pause.side_effect = lambda seconds: clock.__setitem__(0, clock[0] + seconds)
         with patch.object(structure.time, 'monotonic', side_effect=lambda: clock[0]), \
@@ -222,15 +211,14 @@ class StructureTests(unittest.TestCase):
                 patch.object(structure.goto, 'battle_popup_score', return_value=0.):
             mini.return_value.observe.return_value = dict(state='unknown')
             motion.return_value.observe.return_value = dict(state='unknown')
-            with self.assertRaisesRegex(structure.StructureUnconfirmed, '未确认'):
-                structure.wait_structure_settle(self.runner, self.field)
+            self.assertIs(structure.wait_structure_settle(self.runner, self.field), self.field)
         self.assertLessEqual(self.runner.map_frame.call_count, 40)
         self.runner.session.tap.assert_not_called()
         self.assertEqual(self.runner.session.record_evidence.call_args.args[0], 'structure_wait_timeout')
 
 
     def test_unobserved_squad_recenters_once_then_waits_again(self):
-        """实录22-36：点远处开关后一直看不到小队；找回镜头一次后重新等停稳，仍看不到才停止。"""
+        """实录22-36：点远处开关后一直看不到小队；找回镜头一次后重新等停稳，仍看不到就交回下一轮。"""
         clock = [0.]
         self.runner.session.pause.side_effect = lambda seconds: clock.__setitem__(0, clock[0] + seconds)
         unobserved = dict(state='unknown', reason='squad_unobserved')
@@ -242,8 +230,7 @@ class StructureTests(unittest.TestCase):
                 patch.object(structure.goto, 'battle_popup_score', return_value=0.):
             mini.return_value.observe.return_value = dict(state='unknown')
             motion.return_value.observe.return_value = unobserved
-            with self.assertRaisesRegex(structure.StructureUnconfirmed, '未确认'):
-                structure.wait_structure_settle(self.runner, self.field)
+            self.assertIs(structure.wait_structure_settle(self.runner, self.field), self.field)
             recenter.assert_called_once()
             recenter.side_effect = lambda runner: arrow.configure_mock(return_value=np.array([888., 400.]))
             recenter.reset_mock()
@@ -276,8 +263,7 @@ class StructureTests(unittest.TestCase):
             pan.reset_mock()
             pan.side_effect = None
             motion.return_value.observe.return_value = outside
-            with self.assertRaisesRegex(structure.StructureUnconfirmed, '未确认'):
-                structure.wait_structure_settle(self.runner, self.field)
+            self.assertIs(structure.wait_structure_settle(self.runner, self.field), self.field)
             pan.assert_called_once()
         self.runner.session.tap.assert_not_called()
 

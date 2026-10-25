@@ -21,12 +21,12 @@ def write_image(path, image, *args):
 
 # 受阻决策关键帧另存一份不回绕的副本：实录 2026-10-21（22-27）目标旁观察帧几分钟后即被32槽覆盖，
 # 无法回放“为什么没找到机关”。每会话最多 KEEP_LIMIT 份。
-KEEP_EVENTS = frozenset(('goal_view_result', 'switch_search_view', 'switch_search_result', 'structure_attempt',
+KEEP_EVENTS = frozenset(('goal_view_result', 'switch_search_result', 'structure_attempt',
                          'switch_activated', 'structure_wait_timeout', 'gate_enemy_attempt', 'structure_probe',
-                         'facility_survey_view', 'chapter_sweep_motion',
-                         # 巡检因离屏头像未确认而中止时要看到当时画面（实录 2026-10-22 22-27）。
+                         # 统一探索器每屏、测不到位移的前后帧、探索结果（2026-10-25 合并三套巡检）。
+                         'explore_view', 'explore_unmeasured', 'explore_result',
+                         # 离屏头像未确认时要看到当时画面（实录 2026-10-22 22-27）。
                          'offscreen_map_state', 'offscreen_unoccluded', 'offscreen_unoccluded_confirm',
-                         'switch_search_unmeasured', 'switch_search_hint',
                          # 任务定位后看到了什么（实录 2026-10-23 24-27：定位后零红圈，32槽很快被巡检覆盖）。
                          'quest_guide', 'goal_view', 'marker_probe', 'quest_barrier_blocked', 'marker_walk',
                          # 点了哪个敌人、寻路反馈和停滞后补看（实录 2026-10-24 25章：机关上的怪被判停滞，

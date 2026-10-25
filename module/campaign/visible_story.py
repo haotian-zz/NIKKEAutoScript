@@ -14,8 +14,9 @@ from module.campaign.vision.entry_title import read_title, title_crop
 from module.campaign.scene_memory import SceneEnemyMemory, stable_candidates
 from module.campaign.clearance import ClearanceJournal
 from module.campaign.chapter_flow import ChapterOverlayFlow
-from module.campaign.sweep import ChapterSweep, SweepUnconfirmed
+from module.campaign.explorer import SweepUnconfirmed
 from module.campaign.rejected_targets import RejectedTargets, static_view
+from module.campaign.world import NEVER, WorldModel
 from module.campaign.vision.perception import squad_arrow, squad_ground
 from module.campaign.vision.offscreen import squad_offscreen
 from module.campaign.vision.story_marker import story_markers
@@ -288,54 +289,50 @@ class VisibleStoryRunner:
         self.chapter_flow = ChapterOverlayFlow(session, owner.chapter_ocr)
         self.session.accept_ex_entry = True
         self.memory = SceneEnemyMemory(session.evidence.folder / 'scene-enemies.json', owner.chapter_ocr)
+        # 道路版本号与按版本失效的尝试记录（打赢、踩亮开关、走过设施时自动失效），见 world.py。
+        self.world = WorldModel()
+        self.world.listeners.append(self.road_changed)
+        # 本道路状态下暂缓的目标编号（走不到、需手动、已胜利）；道路事件后清空。
         self.deferred = set()
         # 点过却走不到／点了没反应的位置，按场景配准跟踪；脚圈换了编号也不再点同一处。
         self.rejected = RejectedTargets()
+        # 已尝试且未解决的机关搜索键；开关确认开启后清空。
+        self.switch_skip = set()
         self.quest = None
         self.ex_sequence = 0
         self.manual_ex_seen = False
+        # 已在本图核对过的主线任务（供光幕受阻判断）；走过设施后当前任务重新核对。
         self.guided_quests = set()
-        self.marker_pans = 0
-        self.marker_jumps = 0
+        # 受阻状态：受阻次数、刚受阻时先试画面内其余敌人、停滞时点的落点。
         self.blocked_views = 0
-        self.structure_inputs = 0
-        self.structure_pans = 0
+        self.try_visible = False
+        self.blocked_click = None
         self.facilities = None
-        self.facility_survey_attempted = False
-        # 本章开局设施巡检是否已处理（每个运行器一次，是否真的巡检由目录记录决定）。
-        self.chapter_surveyed = False
-        # 受阻目标 → 已按底图坐标去看过的目录机关编号；踩亮开关后清空。
-        self.known_switch_tries = {}
-        # 没有可点敌人时已为哪些 (受阻目标, 道路状态) 转过找已知机关，每组只转一次。
-        self.switch_fallbacks = set()
-        # 已核对过是否为需手动关卡（EX）位置的目标编号。
-        self.manual_checked = set()
         # 任务已在下一章但切章核对未通过的轮数。
         self.next_chapter_misses = 0
         # 最近一次点击画面内目标时的那帧；需手动关卡按它记位置。
         self.tap_frame = None
         self.map_localizer = None
-        # 受阻目标 → 已做螺旋机关搜索次数；已点过但未解决的搜索键（同状态下不重复点击）。
-        self.switch_searches, self.switch_skip = {}, set()
-        # 已用任务定位看过目标旁的受阻目标（每个只看一次）。
-        self.goal_views = set()
-        # 已因「任务定位处有光幕却没有可点敌人」进入找机关流程的主线任务（每个任务一次）。
-        self.barrier_quests = set()
-        self.marker_walks = set()
-        # 刚受阻、设施恢复尚未开始：先把画面内其余可见敌人逐个试一遍（可能就是挡路的支线怪）。
-        self.try_visible = False
-        self.gate_enemy_tries = {}
-        # 受阻目标 → 螺旋下次续看的屏号（被守关敌人打断后不从第0屏重来）；踩亮开关后清空。
-        self.spiral_resume = {}
-        # 已连续看完全部螺旋屏幕找过机关的受阻目标；踩亮开关后清空。
-        self.spiral_done = set()
-        self.blocked_since, self.blocked_click = {}, None
         self.entry_outcome = None
         # 困难难度与普通共用底图但敌人和通关进度独立，清怪记录分开存，不能互相顶替。
         self.difficulty = getattr(owner, 'current_difficulty', None) or 'normal'
         self.hard = self.difficulty == 'hard'
         self.journal = ClearanceJournal(f'{owner.config.config_name}-hard' if self.hard else owner.config.config_name)
         self.journal.begin(owner.current_chapter)
+
+    def road_changed(self, reason):
+        """道路事件后的缓存清理：暂缓目标重新排队；开关或设施改变道路时之前走不到的位置也重新允许。
+
+        胜利只清暂缓目标：敌人站在路上会在途中触发遇敌，打赢一场通常不改变「走不到」的位置；
+        受阻期间的胜利由主循环另行清空（打掉挡路的怪后道路可能已通）。
+        """
+        self.deferred.clear()
+        self.blocked_views, self.try_visible = 0, False
+        if reason in ('switch', 'facility'):
+            self.rejected.clear()
+            self.guided_quests.discard(self.quest)
+        if reason == 'switch':
+            self.switch_skip.clear()
 
     def map_frame(self, timeout=30., track=True):
         """等待地图或备战弹窗，剧情出现即跳过；不在加载或未知画面发送地图落点。
@@ -423,7 +420,10 @@ class VisibleStoryRunner:
                 self.entry_outcome = dict(self.entry_outcome, no_effect=True)
                 return False
             if state != 'waiting':
-                raise StoryVerificationError('原生寻路未确认到达；已保留观测，未发送后续目标。', 'native_'+state)
+                # 停止策略分级（2026-10-25）：到达确认不了不是风险，按停滞处理（记下位置、换别的目标或进入受阻流程）。
+                # 小队若其实还在走，下一次点击只会改变去向；真到了会弹备战，由下一轮的弹窗检查接管。
+                logger.info(f'原生寻路未确认到达（{state}）：按停滞记下这个目标，换别的目标或进入受阻流程。')
+                return False
             self.session.pause(.7)
 
     def close_entry(self):
@@ -511,14 +511,17 @@ class VisibleStoryRunner:
         if guard is not None:
             guard.progress()
         logger.info(f'地图战斗已确认胜利：{stage_text(stage)}；留在地图继续扫描，不要求每次胜利都改变任务栏。')
-        self.deferred.clear()
-        self.marker_pans = self.marker_jumps = 0
-        self.blocked_views = self.structure_inputs = self.structure_pans = 0
+        self.world.advance('win')
         return True
 
     def scan(self, field):
         """记录两张新帧的全部红圈，仅返回稳定目标；任务读不到时仍保留独立备战身份校验。"""
         first = self.memory.observe(field)
+        if not first:
+            # 单帧一个脚圈都没有就不取第二帧（每轮省一次识别）；有脚圈时仍要两帧唯一对应才点。
+            self.session.record_evidence('scene_scan', field, quest=self.quest, enemies=[], arrays=dict(field=field),
+                                         previous_enemies=[], stable=0)
+            return field, []
         self.session.pause(.25)
         fresh = self.map_frame()
         if goto.battle_popup_score(fresh) > .8:
@@ -687,7 +690,7 @@ class VisibleStoryRunner:
         """
         if (self.quest is None or self.quest[0] != self.owner.current_chapter
                 or self.quest not in self.guided_quests or self.quest in self.owner.story_wins
-                or self.quest in self.barrier_quests):
+                or self.world.get('barrier_quest', self.quest, reset_on=NEVER)):
             return False
         from module.campaign.vision.objects import detect_objects
 
@@ -707,7 +710,7 @@ class VisibleStoryRunner:
         second = barriers(fresh)
         if not second:
             return False
-        self.barrier_quests.add(self.quest)
+        self.world.put('barrier_quest', self.quest, True)
         self.session.record_evidence('quest_barrier_blocked', fresh, quest=self.quest, barriers=second,
                                      arrays=dict(field=fresh))
         logger.info(f'主线 {stage_text(self.quest)} 定位处有光幕且没有可点敌人：按受阻进入找机关流程，'
@@ -735,11 +738,11 @@ class VisibleStoryRunner:
             catalog = facility_catalog(self)
         except (FacilityUnconfirmed, OSError):
             return False
-        key = (goal, catalog.data.get('state_epoch', 0))
-        pending = known_switches(catalog, goal, self.known_switch_tries.get(goal, set()))
-        if not pending or key in self.switch_fallbacks:
+        pending = known_switches(catalog, goal, self.world.members('known_switch_tried', goal, reset_on=('switch',)))
+        # 目录状态版本变化（机关被确认开启、设施重新登记）后同一目标可以再转一次。
+        state = (goal, catalog.data.get('state_epoch', 0))
+        if not pending or not self.world.once('switch_fallback', state, reset_on=('switch',)):
             return False
-        self.switch_fallbacks.add(key)
         names = ', '.join(identifier for identifier, _ in pending)
         self.session.record_evidence('known_switch_blocked', field, quest=self.quest, switches=names,
                                      arrays=dict(field=field))
@@ -759,7 +762,8 @@ class VisibleStoryRunner:
         触发原生寻路（见 21-32 实录）。每个主线任务只走一次；开战前仍由备战弹窗核对实际关卡。
         """
         if (self.quest is None or self.quest[0] != self.owner.current_chapter
-                or self.quest in self.owner.story_wins or self.quest in self.marker_walks):
+                or self.quest in self.owner.story_wins
+                or self.world.get('marker_walk', self.quest, reset_on=NEVER)):
             return False
         # 菱形发光动画让单帧分数在门槛附近起伏（实录 24-37：6帧里只有2帧过线），与 reveal_marked_area
         # 一样最多看6帧，两帧同位置才算确认。
@@ -782,7 +786,7 @@ class VisibleStoryRunner:
         if marker is None:
             return False
         target = dict(id=f'quest-marker-{stage_text(self.quest)}', click=list(marker['position']), stage=None)
-        self.marker_walks.add(self.quest)
+        self.world.put('marker_walk', self.quest, True)
         self.session.begin_target(target['id'])
         self.session.record_evidence('marker_walk', fresh, quest=self.quest, marker=marker, arrays=dict(field=fresh))
         logger.info(f"主线 {stage_text(self.quest)} 菱形 {target['click']}（{marker['confidence']:.2f}）下未认出红圈："
@@ -867,7 +871,7 @@ class VisibleStoryRunner:
         实际相机手势继续经过现有按下点避让；操作后必须重新扫描脚圈并核对真实备战。
         has_targets 表示当前画面另有可直接点击的普通脚圈：小队位置读不到时交回主循环先打它们。
         """
-        if self.marker_pans >= 4:
+        if self.world.count('marker_pan') >= 4:
             return False
         previous, observations, marker = [], [], None
         fresh = field
@@ -887,7 +891,8 @@ class VisibleStoryRunner:
                 break
             if markers:
                 previous = markers
-        self.session.record_evidence('marker_probe', fresh, observations=observations, attempts=self.marker_pans,
+        self.session.record_evidence('marker_probe', fresh, observations=observations,
+                                     attempts=self.world.count('marker_pan'),
                                      arrays=dict(field=fresh))
         logger.info(f'任务标记观测：{observations}。')
         if marker is None:
@@ -900,12 +905,13 @@ class VisibleStoryRunner:
         # 顶栏夹住的菱形实测都在 y≈225；场内菱形（如 21-32 的 y≈133～159）点了会触发原生寻路，不能当作边缘。
         clamped = 200. <= target[1] <= 250. or target[0] <= 100. or target[0] >= 1676.
         # 顶栏里的菱形只给方向：点那里会点到顶栏按钮，只平移镜头。
-        if self.marker_jumps < 2 and length > 250. and clamped and marker['kind'] != 'hud':
+        if (self.world.count('marker_jump', reset_on=('win',)) < 2 and length > 250. and clamped
+                and marker['kind'] != 'hud'):
             # 实录 2026-10-21（21-15）：目标在多屏之外时菱形贴在顶栏下沿（y≈225）或左右边缘，480px
             # 小步平移追不上；
             # 点一下边缘菱形，游戏会把镜头移到任务目标（同头像回中）。只移动镜头，之后重新扫描脚圈；
             # 场内菱形仍按原规则只平移镜头。
-            self.marker_jumps += 1
+            self.world.bump('marker_jump', reset_on=('win',))
             point = target.tolist()
 
             def validate(latest):
@@ -945,7 +951,7 @@ class VisibleStoryRunner:
         drag *= min(1., 480. / length)
         self.session.begin_target('marker_reveal')
         self.session.record_evidence('marker_reveal', fresh, marker=marker, drag=drag.tolist())
-        self.marker_pans += 1
+        self.world.bump('marker_pan')
         pan_scene(self.session, drag, squad_ground=ground)
         logger.info('已向稳定任务菱形调整镜头，重新扫描真实脚圈，不将菱形作为战斗落点。')
         return True
@@ -971,28 +977,50 @@ class VisibleStoryRunner:
         self.deferred.clear()
         self.rejected.clear()
 
-    def advance_chapter(self, proof):
-        """本章完整巡检无剩余敌人且任务已进入下一章后，才点击下一章节并核对新身份。"""
-        # 困难难度没有自己的主线任务（任务栏显示的是普通主线），只凭本章完整巡检判断。
-        if proof.get('state') != 'verified_empty' or not self.hard and (
-                self.quest is None or self.quest[0] <= self.owner.current_chapter):
-            raise SweepUnconfirmed('本章清怪或主线剧情未同时完成，保持在当前章。')
-        self.journal.complete(self.owner.current_chapter, proof)
-        if not getattr(self.owner, 'continuous', False):
-            return dict(state='complete', reason='chapter_cleared', clearance=proof)
-        self.session.tap((1715, 940), interval=2.)
-        deadline = time.monotonic() + 30.
-        previous = None
-        while time.monotonic() < deadline:
-            field = self.map_frame()
-            current = chapter_identity(field, self.owner.chapter_ocr)
-            if (current is not None and current == previous
-                    and current == (self.owner.current_chapter + 1, self.difficulty)):
-                logger.info(f'本章清怪巡检通过后已确认进入第 {current[0]} 章。')
-                return dict(state='continue', reason='chapter_changed', clearance=proof)
-            previous = current
-            self.session.pause(.35)
-        raise SweepUnconfirmed('本章清怪已确认，但下一章入口未能核对；已停止。')
+    def explore(self):
+        """画面里没有可点敌人：从小队出发由近及远探索，同时找敌人和关闭机关并登记设施。
+
+        替代原来的全章清怪蛇形巡检和开局设施巡检。几何不确定只降级（见 explorer.py），
+        看完全部航点都没有可用目标才返回 exhausted。
+        """
+        from module.campaign.explorer import Explorer
+        from module.campaign.facility_memory import FacilityUnconfirmed
+        from module.campaign.structures import facility_catalog, recenter_squad
+        try:
+            catalog = facility_catalog(self)
+        except (FacilityUnconfirmed, OSError) as exc:
+            logger.info(f'设施目录不可用，探索只看新鲜检测：{exc}')
+            catalog = None
+        recenter_squad(self)
+        found = Explorer(self, want=('enemy', 'switch'), catalog=catalog, skip=self.switch_skip).run()
+        self.session.record_evidence('explore_result', found.get('field', self.session.win.client()),
+                                     **{key: value for key, value in found.items() if key not in ('field', 'targets')})
+        return found
+
+    def step_on_switch(self, found):
+        """探索只找到关闭机关（没有可选敌人）：去踩它，结果由下一轮重新扫描确认。
+
+        实录 2026-10-25（HARD 9）：小队右上的关闭机关已登记，画面里没有敌人时只做找敌人的巡检，
+        机关一次没踩。每次真实进展前设施交互预算仍是两次，用完就交给受阻流程判断是否停止。
+        """
+        from module.campaign.structures import STRUCTURE_INPUTS, attempt_structure, facility_catalog
+        if self.world.count('structure_input', reset_on=('win', 'switch')) >= STRUCTURE_INPUTS:
+            raise StoryVerificationError('画面里没有可选敌人，探索只找到关闭机关，但本次进展前的设施交互预算已用完；'
+                                         '停止并保留现场。', 'story_structure_budget')
+        goal = 'quest:'+str(self.quest)
+        return attempt_structure(self, found['target'], found['field'], self.facilities or facility_catalog(self), goal)
+
+    def exhausted(self, found):
+        """探索看完全部航点没有可用目标：停止并说明还差什么；困难难度交回任务读章节列表的进度计数。"""
+        detail = (f"探索 {found.get('views', 0)} 屏、{found.get('pans', 0)} 次镜头移动"
+                  f"（{found.get('duration', 0)} 秒）没有找到可选敌人或可用的关闭机关")
+        if self.hard:
+            # 困难没有自己的主线任务；本章是否打完由章节列表的 n/N 计数判断（task.enter_hard 读取）。
+            raise StoryVerificationError(f'{detail}；剩余关卡可能在传送器或机关后，或需要手动（EX）。',
+                                         'story_exploration_exhausted')
+        quest = '' if self.quest is None else f'；主线 {stage_text(self.quest)} '
+        raise StoryVerificationError(f'{detail}{quest}当前画面未识别到敌人和任务标记，可能需要踩传送器、'
+                                     '或入口样式脚本尚不认识，请人工查看处理后再继续', 'story_exploration_exhausted')
 
     def follow_mainline(self, field, quest):
         """持续模式确认两帧下一章主线任务后切章；旧章待办保留，不生成清空证明。
@@ -1051,14 +1079,6 @@ class VisibleStoryRunner:
             if goto.battle_popup_score(field) > .8:
                 self.fight_entry()
                 continue
-            if not self.chapter_surveyed:
-                self.chapter_surveyed = True
-                from module.campaign.structures import chapter_start_survey
-                surveyed = chapter_start_survey(self)
-                if surveyed == 'entry':
-                    self.fight_entry()
-                if surveyed is not None:
-                    continue
             identity = chapter_identity(field, self.owner.chapter_ocr)
             if identity is not None and identity[0] > self.owner.current_chapter:
                 if getattr(self.owner, 'continuous', False):
@@ -1121,24 +1141,16 @@ class VisibleStoryRunner:
                     continue
                 if self.known_switch_blocked(fresh):
                     continue
-                try:
-                    survey = ChapterSweep(self).run()
-                except SweepUnconfirmed as exc:
-                    if self.quest is None or self.quest[0] != self.owner.current_chapter:
-                        raise
-                    # 实录 2026-10-23（24-34）：目标在传送器另一侧，传送器是建筑上旋转的箭头，暂不识别；
-                    # 巡检把镜头拖进云层后配准失败。停止原因要让人知道去看地图机关，而不只是配准失败。
-                    raise SweepUnconfirmed(f'{exc}；主线 {stage_text(self.quest)} 当前画面未识别到敌人和任务标记，'
-                                           '可能需要踩传送器、或入口样式脚本尚不认识，请人工查看处理后再继续') from exc
-                if survey['state'] == 'entry':
+                found = self.explore()
+                if found['state'] == 'entry':
                     self.fight_entry()
                     continue
-                if survey['state'] == 'verified_empty':
-                    return self.advance_chapter(survey['proof'])
-                fresh, candidates = survey['field'], self.drop_rejected(survey['field'], survey['targets'])
-                if not candidates:
-                    raise StoryVerificationError('巡检找到的目标都在之前走不到或点了没反应的位置上，未再点击；'
-                                                 '请人工查看是否需要机关或手动处理。', 'story_rejected_only')
+                if found['state'] == 'switch':
+                    self.step_on_switch(found)
+                    continue
+                if found['state'] == 'exhausted':
+                    return self.exhausted(found)
+                fresh, candidates = found['field'], found['targets']
             observed_arrow = squad_arrow(fresh)
             anchor = np.asarray(goto.VIEWPORT_PIXEL if observed_arrow is None else observed_arrow)
             # 受阻后先打守在关闭机关上／旁边的怪：打掉它小队就站在机关旁，路可能随之打开。
@@ -1155,8 +1167,8 @@ class VisibleStoryRunner:
             if target is not preferred and switch_distance(target) <= SWITCH_GUARD_RADIUS:
                 logger.info(f"受阻期间优先打守机关的敌人：{target['id']} 离关闭机关 {switch_distance(target):.0f}px。")
             # 每个目标编号只核对一次，避免同一目标每轮都重新配准目录。
-            checked = None if target['id'] in self.manual_checked else self.manual_entry_check(target, fresh)
-            self.manual_checked.add(target['id'])
+            checked = (self.manual_entry_check(target, fresh)
+                       if self.world.once('manual_checked', target['id'], reset_on=NEVER) else None)
             if checked == 'skip':
                 self.deferred.add(target['id'])
                 continue
@@ -1178,11 +1190,12 @@ class VisibleStoryRunner:
             if not entered:
                 entered = self.stall_followup(target)
             if entered:
-                won = self.fight_entry(target)
-                if not won:
+                # 胜利的道路事件会清零受阻计数，先记下开战前是否受阻。
+                blocked = self.blocked_views
+                if not self.fight_entry(target):
                     self.deferred.add(target['id'])
-                elif self.blocked_views:
-                    # 打掉挡路的怪后道路可能已通：重新尝试暂缓的目标，而不是继续设施恢复。
+                elif blocked:
+                    # 打掉挡路的怪后道路可能已通：重新尝试暂缓和走不到的目标，而不是继续设施恢复。
                     logger.info('受阻期间打赢一个可见敌人，重新尝试之前受阻的目标。')
                     self.blocked_views, self.try_visible = 0, False
                     self.deferred.clear()

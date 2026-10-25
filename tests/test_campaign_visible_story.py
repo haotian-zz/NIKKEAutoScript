@@ -28,14 +28,16 @@ def definitions():
                      battle=Mock(), ClearanceJournal=Mock(),
                      ChapterOverlayFlow=Mock(return_value=SimpleNamespace(handle=Mock(return_value=False))),
                      SceneEnemyMemory=Mock(),
-                     stable_candidates=Mock(), ChapterSweep=Mock(),
+                     stable_candidates=Mock(),
                      SweepUnconfirmed=type('SweepUnconfirmed', (RuntimeError,),
                                            {'reason': 'chapter_clearance_unconfirmed'}),
                      squad_arrow=Mock(return_value=None), squad_offscreen=Mock(return_value=None),
                      story_markers=story_markers, pan_scene=Mock(),
                      UiControlChanged=type('UiControlChanged', (RuntimeError,), {}))
     from module.campaign.rejected_targets import RejectedTargets
-    namespace.update(RejectedTargets=RejectedTargets, static_view=Mock(return_value=False))
+    from module.campaign.world import NEVER, WorldModel
+    namespace.update(RejectedTargets=RejectedTargets, static_view=Mock(return_value=False),
+                     WorldModel=WorldModel, NEVER=NEVER)
     namespace.update(read_title=Mock(return_value=None), title_crop=Mock(return_value=None))
     from module.campaign.vision.native_motion import ClickProgress, NativeMotion, combine_motion
     namespace.update(ClickProgress=ClickProgress, NativeMotion=NativeMotion, combine_motion=combine_motion,
@@ -68,8 +70,8 @@ class VisibleStoryTests(unittest.TestCase):
         self.executor = Mock()
         self.runner = self.ns['VisibleStoryRunner'](self.owner, self.session, self.executor)
         self.runner.map_frame = Mock(return_value=self.field)
-        # 开局设施巡检单独验证（test_chapter_start_survey_runs_before_first_target）。
-        self.runner.chapter_surveyed = True
+        # 没有可点敌人时的探索单独验证（test_campaign_explorer）；这里默认探索看完什么都没找到。
+        self.runner.explore = Mock(return_value=dict(state='exhausted', views=3, pans=2, duration=20.))
         # 需手动关卡的底图记忆单独验证（test_campaign_facility_map）。
         self.runner.remember_manual_entry = Mock()
         self.runner.manual_entry_check = Mock(return_value=None)
@@ -84,17 +86,6 @@ class VisibleStoryTests(unittest.TestCase):
                                          SimpleNamespace(reveal_story_marker=self.reveal)})
         patcher.start()
         self.addCleanup(patcher.stop)
-
-    def test_chapter_start_survey_runs_before_first_target(self):
-        """进入本章地图的第一轮先做设施巡检，巡检后重新取帧，不沿用巡检前的画面选目标。"""
-        self.runner.chapter_surveyed = False
-        start = Mock(return_value='surveyed')
-        self.runner.scan = Mock()
-        with patch.dict(sys.modules, {'module.campaign.structures': SimpleNamespace(chapter_start_survey=start)}):
-            self.assertEqual(self.runner.run(ticks=1)['reason'], 'tick_budget')
-            start.assert_called_once_with(self.runner)
-            self.runner.scan.assert_not_called()
-            self.assertTrue(self.runner.chapter_surveyed)
 
     def test_manual_entry_check_runs_once_per_target_and_skips_known_ex(self):
         """已记下的需手动关卡旁的目标跳过；其他目标每个编号只核对一次。"""
@@ -344,37 +335,57 @@ class VisibleStoryTests(unittest.TestCase):
         self.assertEqual(structures.known_switches.call_args[0][1], 'quest:None')
         self.session.tap.assert_not_called()
 
-    def test_no_targets_tries_known_switch_before_sweep(self):
-        """没有可点敌人时先问已知机关；转入找机关就不启动清怪巡检。"""
+    def test_no_targets_tries_known_switch_before_explore(self):
+        """没有可点敌人时先问已知机关；转入找机关就不启动探索。"""
         self.runner.scan = Mock(return_value=(self.field, []))
         self.runner.quest_target = Mock(return_value=(None, False))
         self.runner.reveal_marked_area = Mock(return_value=False)
         self.runner.quest_barrier_blocked = Mock(return_value=False)
         self.runner.known_switch_blocked = Mock(return_value=True)
-        sweep = Mock()
-        with patch.dict(self.ns, ChapterSweep=sweep):
-            try:
-                self.runner.run(ticks=1)
-            except Exception:
-                pass
+        self.runner.run(ticks=1)
         self.runner.known_switch_blocked.assert_called()
-        sweep.assert_not_called()
+        self.runner.explore.assert_not_called()
 
-    def test_unconfirmed_sweep_after_empty_quest_view_asks_for_manual_mechanism(self):
-        """实录24-34：任务画面无敌人、巡检配准失败时，停止原因提示可能需要人工踩传送器等机关。"""
+    def test_exhausted_explore_after_empty_quest_view_asks_for_manual_mechanism(self):
+        """实录24-34：任务画面无敌人、探索看完也没有目标时，停止原因提示可能需要人工踩传送器等机关。"""
         self.ns['read_stage'] = Mock(return_value=(20, 18))
         self.runner.scan = Mock(return_value=(self.field, []))
         self.runner.quest_target = Mock(return_value=(None, False))
         self.runner.reveal_marked_area = Mock(return_value=False)
         self.runner.quest_barrier_blocked = Mock(return_value=False)
-        error = self.ns['SweepUnconfirmed']('镜头背景配准未通过，未确认巡检覆盖：场景帧间配准不可靠。')
-        with patch.dict(self.ns, ChapterSweep=Mock(return_value=Mock(run=Mock(side_effect=error)))):
-            with self.assertRaises(self.ns['SweepUnconfirmed']) as caught:
-                self.runner.run(ticks=1)
-        self.assertIn('配准', str(caught.exception))
+        with self.assertRaises(self.ns['StoryVerificationError']) as caught:
+            self.runner.run(ticks=1)
+        self.assertEqual(caught.exception.reason, 'story_exploration_exhausted')
+        self.assertIn('探索 3 屏', str(caught.exception))
         self.assertIn('20-18', str(caught.exception))
         self.assertIn('人工查看', str(caught.exception))
         self.session.tap.assert_not_called()
+
+    def test_explore_switch_only_steps_on_it(self):
+        """实录 HARD 9：没有敌人、探索只找到关闭机关时去踩它，不再停在只找敌人的巡检。"""
+        self.runner.scan = Mock(return_value=(self.field, []))
+        self.runner.quest_target = Mock(return_value=(None, False))
+        self.runner.reveal_marked_area = Mock(return_value=False)
+        self.runner.quest_barrier_blocked = Mock(return_value=False)
+        found = dict(state='switch', target=dict(kind='ground_mechanism', state='off', position=[900., 600.]),
+                     field=self.field)
+        self.runner.explore = Mock(return_value=found)
+        self.runner.step_on_switch = Mock(return_value='attempted')
+        self.assertEqual(self.runner.run(ticks=1)['reason'], 'tick_budget')
+        self.runner.step_on_switch.assert_called_once_with(found)
+
+    def test_step_on_switch_respects_interaction_budget(self):
+        """每次真实进展前设施交互最多两次；用完后探索只找到机关就停止，不反复踩。"""
+        structures = SimpleNamespace(STRUCTURE_INPUTS=2, attempt_structure=Mock(return_value='attempted'),
+                                     facility_catalog=Mock(return_value=None))
+        found = dict(state='switch', target=dict(kind='ground_mechanism'), field=self.field)
+        with patch.dict(sys.modules, {'module.campaign.structures': structures}):
+            self.assertEqual(self.runner.step_on_switch(found), 'attempted')
+            for _ in range(2):
+                self.runner.world.bump('structure_input', reset_on=('win', 'switch'))
+            with self.assertRaises(self.ns['StoryVerificationError']):
+                self.runner.step_on_switch(found)
+        structures.attempt_structure.assert_called_once()
 
     def test_scene_marker_without_ring_walks_to_it_once(self):
         """实录24-37：菱形下的 Boss 入口没认出来时点菱形交给原生寻路，到备战再核对；同一任务只走一次。"""
@@ -442,16 +453,15 @@ class VisibleStoryTests(unittest.TestCase):
         self.runner.close_entry.assert_called_once()
         self.executor.battle.assert_not_called()
 
-    def test_empty_view_requires_full_sweep_before_advancing(self):
-        """视野没有怪时启动全章巡检；零可见敌人不能直接作为换章理由。"""
+    def test_empty_view_explores_then_targets_found_enemy(self):
+        """视野没有怪时探索；探索找到的敌人用探索那一帧作为点击依据，零可见敌人不作为换章理由。"""
         self.ns['read_stage'] = Mock(return_value=(20, 6))
         self.runner.scan = Mock(return_value=(self.field, []))
-        proof = dict(state='verified_empty')
-        self.ns['ChapterSweep'].return_value.run.return_value = dict(state='verified_empty', proof=proof)
-        self.runner.advance_chapter = Mock(return_value=dict(state='continue', reason='chapter_changed'))
-        self.assertEqual(self.runner.run(ticks=1)['reason'], 'chapter_changed')
-        self.runner.advance_chapter.assert_called_once_with(proof)
-        self.session.tap.assert_not_called()
+        self.runner.explore = Mock(return_value=dict(state='enemy', targets=[self.target], field=self.field))
+        self.runner.wait_entry = Mock(return_value=True)
+        self.runner.inspect_entry = Mock(return_value=(20, 7))
+        self.assertEqual(self.runner.run(ticks=1)['reason'], 'tick_budget')
+        self.session.tap.assert_called_once_with([600., 700.])
 
     def test_quest_locator_requires_blue_control_and_right_arrow(self):
         """右箭头提供真实控件坐标，左箭头或缺少蓝底均不能触发任务定位。"""
@@ -554,8 +564,11 @@ class VisibleStoryTests(unittest.TestCase):
         np.testing.assert_allclose(kwargs['squad_ground'], [1100., 490.])
         self.session.tap.assert_not_called()
         self.executor.battle.assert_not_called()
-        self.runner.marker_pans = 4
+        for _ in range(3):
+            self.runner.world.bump('marker_pan')
         self.assertFalse(self.runner.reveal_marked_area(self.field))
+        self.runner.world.advance('win')
+        self.assertTrue(self.runner.reveal_marked_area(self.field))
 
     def test_top_bar_marker_only_pans_camera(self):
         """实录 25-18：菱形贴在顶栏右侧，只按它的方向平移镜头，不在顶栏点击。"""
@@ -585,7 +598,7 @@ class VisibleStoryTests(unittest.TestCase):
         self.assertTrue(validate(self.field))
         self.ns['pan_scene'].assert_not_called()
         self.session.tap.assert_not_called()
-        self.runner.marker_jumps = 2
+        self.runner.world.bump('marker_jump', reset_on=('win',))
         self.assertTrue(self.runner.reveal_marked_area(self.field))
         self.ns['pan_scene'].assert_called_once()
         self.assertEqual(self.session.tap_verified_ui.call_count, 1)
@@ -607,7 +620,7 @@ class VisibleStoryTests(unittest.TestCase):
         self.ns['squad_arrow'].return_value = [1100., 400.]
         self.session.tap_verified_ui.side_effect = self.ns['UiControlChanged']('blink')
         self.assertTrue(self.runner.reveal_marked_area(self.field))
-        self.assertEqual(self.runner.marker_jumps, 1)
+        self.assertEqual(self.runner.world.count('marker_jump', reset_on=('win',)), 1)
         self.ns['pan_scene'].assert_not_called()
 
     def test_unanchored_marker_with_visible_enemies_returns_to_main_loop(self):
@@ -637,7 +650,7 @@ class VisibleStoryTests(unittest.TestCase):
         self.assertEqual(self.runner.map_frame.call_count, 3)
         self.ns['pan_scene'].assert_called_once()
         self.session.tap.assert_not_called()
-        self.runner.marker_pans = 0
+        self.runner.world.advance('win')
         self.runner.map_frame.reset_mock()
         self.ns['pan_scene'].reset_mock()
         self.ns['story_markers'] = Mock(side_effect=[[], [marker], [], [], [], []])
@@ -656,22 +669,6 @@ class VisibleStoryTests(unittest.TestCase):
         self.reveal.assert_not_called()
         self.session.tap.assert_not_called()
         self.ns['pan_scene'].assert_called_once()
-
-    def test_unverified_chapter_cannot_advance(self):
-        """任务已经进入下一章也必须等待当前章清怪证明。"""
-        self.runner.quest = (21, 1)
-        with self.assertRaises(self.ns['SweepUnconfirmed']):
-            self.runner.advance_chapter(dict(state='incomplete', pending=[dict(kind='enemy')]))
-        self.session.tap.assert_not_called()
-
-    def test_verified_empty_requires_completed_story_and_new_identity(self):
-        """本章清空、主线已推进和下一章连续两帧身份缺一不可。"""
-        self.runner.quest = (21, 1)
-        self.ns['chapter_identity'].return_value = (21, 'normal')
-        result = self.runner.advance_chapter(dict(state='verified_empty'))
-        self.assertEqual(result['reason'], 'chapter_changed')
-        self.session.tap.assert_called_once_with((1715, 940), interval=2.)
-        self.assertEqual(self.ns['chapter_identity'].call_count, 2)
 
     def test_automatic_transition_returns_to_uncleared_chapter(self):
         """指定单章清理时游戏自动前进仍返回旧章，不将换章当清空证明。"""
@@ -763,16 +760,15 @@ class VisibleStoryTests(unittest.TestCase):
         self.assertGreaterEqual(clock[0], 25.)
         self.session.tap.assert_not_called()
 
-    def test_unobserved_click_stops_without_facility_input(self):
-        """一直缺失位移观测时保留unknown，不能请求设施交互或记录unreachable。"""
+    def test_unobserved_click_is_treated_as_stall_without_facility_input(self):
+        """一直缺失位移观测：停止策略分级后按停滞交回主循环（换目标或受阻流程），不发送追加点击。"""
         clock = [0.]
         self.ns['time'].monotonic.side_effect = lambda: clock[0]
         self.session.pause.side_effect = lambda seconds: clock.__setitem__(0, clock[0]+seconds)
         self.ns['NativeMotion'] = Mock()
         self.ns['NativeMotion'].return_value.observe.return_value = dict(state='unknown', reason='squad_unobserved')
-        with self.assertRaises(self.ns['StoryVerificationError']) as raised:
-            self.runner.wait_entry(self.field)
-        self.assertEqual(raised.exception.reason, 'native_observation_unknown')
+        self.assertFalse(self.runner.wait_entry(self.field))
+        self.assertEqual(self.runner.entry_outcome['outcome'], 'observation_unknown')
         self.runner.memory.identify.assert_not_called()
         self.session.tap.assert_not_called()
 
@@ -793,8 +789,8 @@ class VisibleStoryTests(unittest.TestCase):
         recenter.assert_called_once_with(self.runner)
         self.session.tap.assert_not_called()
 
-    def test_unobserved_after_recenter_still_stops(self):
-        """找回镜头后仍看不到小队：只找回一次，按观测未确认停止。"""
+    def test_unobserved_after_recenter_is_stall(self):
+        """找回镜头后仍看不到小队：只找回一次，按停滞交回主循环。"""
         clock = [0.]
         self.ns['time'].monotonic.side_effect = lambda: clock[0]
         self.session.pause.side_effect = lambda seconds: clock.__setitem__(0, clock[0]+seconds)
@@ -804,9 +800,7 @@ class VisibleStoryTests(unittest.TestCase):
         recenter = Mock()
         structures = SimpleNamespace(StructureUnconfirmed=RuntimeError, recenter_squad=recenter)
         with patch.dict(sys.modules, {'module.campaign.structures': structures}):
-            with self.assertRaises(self.ns['StoryVerificationError']) as raised:
-                self.runner.wait_entry(self.field)
-        self.assertEqual(raised.exception.reason, 'native_observation_unknown')
+            self.assertFalse(self.runner.wait_entry(self.field))
         recenter.assert_called_once_with(self.runner)
 
     def test_unobserved_static_click_is_no_effect(self):
@@ -822,16 +816,15 @@ class VisibleStoryTests(unittest.TestCase):
         self.assertEqual(self.runner.entry_outcome['outcome'], 'observation_unknown')
         self.session.tap.assert_not_called()
 
-    def test_unobserved_moving_view_still_stops(self):
-        """镜头动过（或配准不上）就不能说点了没反应，仍按观测未确认停止。"""
+    def test_unobserved_moving_view_is_stall_not_no_effect(self):
+        """镜头动过（或配准不上）就不能说点了没反应：按停滞处理（会进入受阻流程），不标 no_effect。"""
         clock = [0.]
         self.ns['time'].monotonic.side_effect = lambda: clock[0]
         self.session.pause.side_effect = lambda seconds: clock.__setitem__(0, clock[0]+seconds)
         self.ns['NativeMotion'] = Mock()
         self.ns['NativeMotion'].return_value.observe.return_value = dict(state='unknown', reason='squad_unobserved')
-        with self.assertRaises(self.ns['StoryVerificationError']) as raised:
-            self.runner.wait_entry(self.field, target=self.target)
-        self.assertEqual(raised.exception.reason, 'native_observation_unknown')
+        self.assertFalse(self.runner.wait_entry(self.field, target=self.target))
+        self.assertNotIn('no_effect', self.runner.entry_outcome)
 
     def test_no_effect_click_is_rejected_without_facility_recovery(self):
         """点了没反应：记下位置、本目标暂缓，但不算道路受阻，不进入设施诊断。"""
