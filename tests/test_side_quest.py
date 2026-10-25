@@ -81,6 +81,18 @@ class ListTests(unittest.TestCase):
 
 
 class TemplateTests(unittest.TestCase):
+    def test_chat_identity_prefers_title_text(self):
+        """实录 2026-10-25：对话移到顶部带红点后截图变了，按标题文字仍认得出；读不出文字才比截图。"""
+        image = np.zeros((30, 360), np.int16)
+        moved = image + 40
+        self.assertEqual(side_quest.title_key('◆ 中央政府：协议部队'), '中央政府协议部队')
+        self.assertTrue(side_quest.same_chat(dict(text='中央政府协议部队', image=image),
+                                             dict(text='中央政府协议部队', image=moved)))
+        self.assertFalse(side_quest.same_chat(dict(text='金币之战', image=image),
+                                              dict(text='中央政府协议部队', image=image)))
+        self.assertTrue(side_quest.same_chat(dict(text='', image=image), dict(text='金币之战', image=image)))
+        self.assertFalse(side_quest.same_chat(dict(text='', image=image), dict(text='', image=moved)))
+
     def test_quest_go_button(self):
         image = np.full((1280, 720, 3), 245, np.uint8)
         h, w = side_quest.QUEST_GO.shape[:2]

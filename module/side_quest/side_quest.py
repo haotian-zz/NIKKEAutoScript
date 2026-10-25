@@ -35,6 +35,10 @@ QUEST_GO_THRESHOLD = .85
 # 委托完成后同一位置变成橙底「可完成」按钮，点了领奖励
 QUEST_DONE = cv2.imread(str(ASSETS / 'QUEST_DONE.png'))
 REWARD_CLOSE = (360, 1000)
+# 对话顶部委托卡片上的任务文字（如「【第24章】清理……地点」），只用于日志和复盘
+CARD_TEXT = (160, 400, 455, 462)
+# 委托没打出 SUB 或中途停止时的画面存这里
+EVIDENCE = Path('log/side_quest')
 # 「寻找某人」类支线：点菱形后弹的不是备战而是带蓝色「对话」按钮的 SUB QUEST 弹窗，点了播一段剧情就算完成
 QUEST_TALK = cv2.imread(str(ASSETS / 'QUEST_TALK.png'))
 QUEST_TALK_REGION = (200, 1100, 520, 1260)
@@ -152,10 +156,48 @@ def same_row(a, b):
     return a.shape == b.shape and float(np.abs(a - b).mean()) < 8
 
 
+def title_key(text):
+    """对话标题文字去掉菱形图标、标点和空白，只留文字和数字用于比对。"""
+    return re.sub(r'[^\w\u4e00-\u9fff]', '', text or '')
+
+
+def same_chat(a, b):
+    """两个列表行是不是同一个对话：两边都读出标题文字就比文字，否则退回截图比对。
+
+    实录 2026-10-25：打完 24 章 SUB 回列表领奖，对话已移到顶部且带红点，标题截图差异超过门限，
+    没找回对话，「可完成」的 50 钻一直没领；探针按截图去重也把同一个对话反复打开了四次。
+    """
+    if a['text'] and b['text']:
+        return a['text'] == b['text']
+    return same_row(a['image'], b['image'])
+
+
 class SideQuest(Messenger):
     @property
     def entry_ocr(self):
         return Ocr(ENTRY_TITLE, name='SIDE_QUEST_ENTRY', model_type=self.config.Optimization_OcrModelType)
+
+    def row_identity(self, image, y):
+        """列表行标题：OCR 文字为主，读不出时用截图（对话更新后行会移到顶部、带红点，像素会变）。"""
+        rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        ocr = Ocr((200, y - 35, 560, y - 5), name='SIDE_QUEST_ROW', model_type=self.config.Optimization_OcrModelType)
+        return dict(text=title_key(ocr.ocr(rgb, threshold=.6)['text']), image=row_title(image, y))
+
+    def card_text(self):
+        """当前对话顶部委托卡片的任务文字；读不出返回空串。"""
+        self.device.screenshot()
+        ocr = Ocr(CARD_TEXT, name='SIDE_QUEST_CARD', model_type=self.config.Optimization_OcrModelType)
+        return ocr.ocr(self.device.image, threshold=.6)['text'] or ''
+
+    def save_evidence(self, label):
+        """存一张当前画面供复盘；写不了文件不影响流程。"""
+        try:
+            EVIDENCE.mkdir(parents=True, exist_ok=True)
+            path = EVIDENCE / f"{time.strftime('%Y%m%d_%H%M%S')}_{label}.png"
+            cv2.imwrite(str(path), self.bgr())
+            return path
+        except (OSError, cv2.error):
+            return None
 
     def wait_map(self, seconds=MAP_WAIT):
         """等到章节地图或备战弹窗：返回 ('map'|'entry', 画面)，超时返回 (None, None)。
@@ -333,7 +375,7 @@ class SideQuest(Messenger):
         image = self.bgr()
         for _ in range(LIST_SCROLL_ROUNDS):
             for y in chat_rows(image):
-                if wanted(row_title(image, y)):
+                if wanted(self.row_identity(image, y)):
                     return image, y
             image = self.scroll_list(image, down=True)
             if image is None:
@@ -374,10 +416,10 @@ class SideQuest(Messenger):
         """逐个对话领取已完成委托、前往未完成委托打 SUB；返回 (前往委托数, SUB 胜场, 领取数, 问题列表)。"""
         seen, quests, wins, claimed, problems = [], 0, 0, 0, []
         for _ in range(MAX_CHATS):
-            image, y = self.find_chat(lambda title: not any(same_row(title, old) for old in seen))
+            image, y = self.find_chat(lambda title: not any(same_chat(title, old) for old in seen))
             if image is None:
                 break
-            title = row_title(image, y)
+            title = self.row_identity(image, y)
             seen.append(title)
             self.tap((360, y), 2.5)
             go, count = self.handle_chat()
@@ -386,10 +428,16 @@ class SideQuest(Messenger):
                 self.tap(BACK, 2)
                 continue
             quests += 1
+            card = self.card_text()
             self.tap(go, 3)
             won, problem = self.clear_map()
             wins += won
-            logger.info(f'SideQuest: 委托 {quests} 打完 {won} 个 SUB 关卡' + (f'，停止原因：{problem}' if problem else ''))
+            logger.info(f'SideQuest: 委托 {quests}「{card}」（{title["text"]}）打完 {won} 个 SUB 关卡'
+                        + (f'，停止原因：{problem}' if problem else ''))
+            if problem or not won:
+                path = self.save_evidence(f'quest{quests}')
+                if path is not None:
+                    logger.info(f'SideQuest: 已存画面 {path}')
             self.back_to_lobby()
             if problem:
                 problems.append(problem)
@@ -399,12 +447,15 @@ class SideQuest(Messenger):
                 problems.append('回大厅后未能重新打开即时通讯')
                 break
             # 回到同一个对话领取刚打完的委托（列表按最新对话排序，位置会变，按标题找）
-            image, y = self.find_chat(lambda current: same_row(current, title))
+            image, y = self.find_chat(lambda current: same_chat(current, title))
             if image is not None:
                 self.tap((360, y), 2.5)
                 _, count = self.handle_chat()
                 claimed += count
                 self.tap(BACK, 2)
+            else:
+                logger.warning(f'SideQuest: 没找回对话「{title["text"]}」领取委托奖励')
+                problems.append('委托打完后没找回对话领取奖励')
         return quests, wins, claimed, problems
 
     def run(self):
