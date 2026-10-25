@@ -393,7 +393,9 @@ class AutoPush(UI):
                 elif step != 'card' or settle.reached():
                     self.device.sleep(1)
                     self.device.screenshot()
-                    cards = hard_list.unlocked_cards(cv2.cvtColor(self.device.image, cv2.COLOR_RGB2BGR))
+                    page = cv2.cvtColor(self.device.image, cv2.COLOR_RGB2BGR)
+                    cards = hard_list.unlocked_cards(page)
+                    hard_list.save_sample(page)
                     if not cards:
                         save_wait_image(self.device, 'AutoPush_hard_no_chapter')
                         self.device.click_xy(*hard_list.LIST_CLOSE)

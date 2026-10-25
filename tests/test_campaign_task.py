@@ -608,7 +608,7 @@ class EnterHardTests(unittest.TestCase):
         hard_list = SimpleNamespace(
             list_visible=lambda image: state['frame'] in ('list', 'fade'),
             hard_tab_active=lambda image: state['frame'] == 'list',
-            unlocked_cards=lambda image: [(557, 294), (163, 414)],
+            unlocked_cards=lambda image: [(557, 294), (163, 414)], save_sample=Mock(),
             HARD_TAB=(583, 1123), DIFFICULTY_TAG=(540, 1158), LIST_CLOSE=(630, 153))
         timer = SimpleNamespace(start=lambda: timer, reset=lambda: None, reached=lambda: False)
         fn = load('enter_hard', cv2=SimpleNamespace(cvtColor=lambda image, code: image, COLOR_RGB2BGR=0),

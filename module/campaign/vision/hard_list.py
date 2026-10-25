@@ -6,6 +6,7 @@
 实录 2026-10-23：困难页自动滚到当前进度附近，第 3 章 COMPLETE、第 4 章 0/18，第 5 章起上锁。
 """
 
+from datetime import datetime
 from pathlib import Path
 
 import cv2
@@ -30,6 +31,9 @@ CARD_COLUMNS = ((68, 258), (462, 652))
 LIST_AREA = (180, 1090)
 BORDER_GRAY = 220
 CARD_HEIGHT = (30, 50)
+# 困难页截图样本：卡片上的 n/N 或 COMPLETE 进度计数待接入章节完成判定，先留样本，最多保留 SAMPLE_LIMIT 张。
+SAMPLE_FOLDER = Path('log/campaign/chapter_list')
+SAMPLE_LIMIT = 20
 
 
 def list_visible(image):
@@ -60,3 +64,13 @@ def unlocked_cards(image):
             if CARD_HEIGHT[0] <= lower - upper <= CARD_HEIGHT[1]:
                 cards.append(((x1 + x2) // 2, (upper + lower) // 2))
     return sorted(cards, key=lambda point: point[1])
+
+
+def save_sample(image):
+    """保存困难页截图（BGR）供进度计数识别取样；超过上限删最旧的。"""
+    SAMPLE_FOLDER.mkdir(parents=True, exist_ok=True)
+    path = SAMPLE_FOLDER / f'{datetime.now():%Y%m%d_%H%M%S}_hard.png'
+    cv2.imwrite(str(path), image)
+    for old in sorted(SAMPLE_FOLDER.glob('*_hard.png'))[:-SAMPLE_LIMIT]:
+        old.unlink(missing_ok=True)
+    return path
