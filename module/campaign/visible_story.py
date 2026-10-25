@@ -26,6 +26,11 @@ from module.logger import logger
 # 目标脚圈离已记下的需手动关卡（小队触发备战时的脚下位置）多近算同一个敌人（客户区像素）：
 # 小队在脚圈约28底图像素内触发备战，约75客户区像素，再留关键帧投影误差。
 MANUAL_ENTRY_RADIUS = 120.
+# 受阻时脚圈离目录里仍关闭的地面机关多近算「守机关的怪」，优先打（客户区像素）。
+# 实录 2026-10-24（25章）：机关上那只怪的脚圈离机关中心约 23px，再留关键帧投影误差。
+SWITCH_GUARD_RADIUS = 90.
+# 判定停滞后再等多久补看一帧：小队可能只是途中短暂停顿，备战随后弹出。
+STALL_FOLLOWUP_SECONDS = 2.
 
 QUEST_AREA = (1565, 88, 1710, 114)
 # 光幕作受阻证据的检测分门槛（只用于转入找机关流程，不作点击）。
@@ -562,6 +567,38 @@ class VisibleStoryRunner:
                 return 'skip'
         return None
 
+    def closed_switch_points(self, field):
+        """目录里仍关闭的地面机关投影到本帧的位置；只用于给目标排序，不授予点击机关。
+
+        目录无法配准时返回空，照常按离小队远近选目标。
+        """
+        from module.campaign.facility_memory import FacilityUnconfirmed
+        from module.campaign.structures import facility_catalog
+        try:
+            catalog = facility_catalog(self)
+            catalog.observe(field, [])
+        except (FacilityUnconfirmed, OSError, cv2.error, np.linalg.LinAlgError):
+            return []
+        points = [np.asarray(item['position'], float) for item in catalog.expected]
+        self.session.record_evidence('switch_guard_check', field, switches=[point.tolist() for point in points])
+        return points
+
+    def stall_followup(self, target):
+        """判定停滞后隔一会儿补看一帧并留证；备战已弹出说明小队其实走到了，照常交战斗核对。
+
+        实录 2026-10-24（25章）：机关上的怪被判停滞而放弃，人工点同一只怪能走到，但当时的帧已被
+        32 槽覆盖，无法区分真走不到、小队跟丢还是途中短停。补看帧只认备战弹窗，不据此续等或补点。
+        """
+        self.session.pause(STALL_FOLLOWUP_SECONDS)
+        field = self.map_frame()
+        popup = goto.battle_popup_score(field) > .8
+        self.session.record_evidence('native_stall_followup', field, target=target, feedback=self.entry_outcome,
+                                     popup=popup, arrays=dict(field=field))
+        if popup:
+            logger.info(f"停滞判定后补看：{target['id']} 的备战已弹出，小队其实走到了，照常核对开战。")
+            self.entry_outcome = dict(state='entry')
+        return popup
+
     def selectable(self, item):
         """过滤本轮暂不可达和需手动战斗的 EX；被过滤目标仍保留在巡检与观察簿中。
 
@@ -1039,9 +1076,19 @@ class VisibleStoryRunner:
                 fresh, candidates = survey['field'], survey['targets']
             observed_arrow = squad_arrow(fresh)
             anchor = np.asarray(goto.VIEWPORT_PIXEL if observed_arrow is None else observed_arrow)
+            # 受阻后先打守在关闭机关上／旁边的怪：打掉它小队就站在机关旁，路可能随之打开。
+            # 实录 2026-10-24（25章）：按离小队远近先点了右边几只走不到的怪，机关上的怪排在后面。
+            switches = self.closed_switch_points(fresh) if preferred is None and self.try_visible else []
+
+            def switch_distance(item):
+                return min((float(np.linalg.norm(np.asarray(item['click'])-point)) for point in switches),
+                           default=float('inf'))
             target = preferred or min(candidates, key=lambda item: (
+                switch_distance(item) > SWITCH_GUARD_RADIUS,
                 stage_order(item['stage']) if item['stage'] is not None else (99, 99, '', 0),
                 float(np.linalg.norm(np.asarray(item['click']) - anchor))))
+            if target is not preferred and switch_distance(target) <= SWITCH_GUARD_RADIUS:
+                logger.info(f"受阻期间优先打守机关的敌人：{target['id']} 离关闭机关 {switch_distance(target):.0f}px。")
             # 每个目标编号只核对一次，避免同一目标每轮都重新配准目录。
             checked = None if target['id'] in self.manual_checked else self.manual_entry_check(target, fresh)
             self.manual_checked.add(target['id'])
@@ -1062,7 +1109,10 @@ class VisibleStoryRunner:
                 if goto.battle_popup_score(pending) > .8:
                     self.fight_entry()
                 continue
-            if self.wait_entry(fresh, arrow=observed_arrow, target=target):
+            entered = self.wait_entry(fresh, arrow=observed_arrow, target=target)
+            if not entered:
+                entered = self.stall_followup(target)
+            if entered:
                 won = self.fight_entry(target)
                 if not won:
                     self.deferred.add(target['id'])

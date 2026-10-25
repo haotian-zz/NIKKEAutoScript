@@ -71,6 +71,9 @@ class VisibleStoryTests(unittest.TestCase):
         # 需手动关卡的底图记忆单独验证（test_campaign_facility_map）。
         self.runner.remember_manual_entry = Mock()
         self.runner.manual_entry_check = Mock(return_value=None)
+        # 受阻排序用的机关目录单独验证（test_closed_switch_points_projects_catalog）。
+        self.real_closed_switch_points = self.runner.closed_switch_points
+        self.runner.closed_switch_points = Mock(return_value=[])
         self.reveal = Mock()
         patcher = patch.dict(sys.modules, {'module.campaign.navigation.story_navigation':
                                          SimpleNamespace(reveal_story_marker=self.reveal)})
@@ -789,6 +792,79 @@ class VisibleStoryTests(unittest.TestCase):
             self.runner.run(ticks=1)
         recover.assert_called_once()
         self.assertFalse(self.runner.try_visible)
+
+    def test_blocked_prefers_enemy_guarding_closed_switch(self):
+        """实录 2026-10-24（25章）：受阻后先打站在关闭机关上的怪，而不是离小队最近、走不到的那只。"""
+        self.runner.blocked_views, self.runner.try_visible = 1, True
+        self.ns['read_stage'] = Mock(return_value=(25, 8))
+        guard = dict(self.target, id='ring-27-2', click=[1040., 641.])
+        near = dict(self.target, id='ring-31-0', click=[900., 520.])
+        self.runner.scan = Mock(return_value=(self.field, [near, guard]))
+        self.runner.closed_switch_points = Mock(return_value=[np.array([1022.7, 626.1])])
+        self.runner.wait_entry = Mock(return_value=True)
+        self.runner.fight_entry = Mock(return_value=True)
+        self.runner.run(ticks=1)
+        self.session.tap.assert_called_once_with(guard['click'])
+
+    def test_switch_priority_only_while_blocked(self):
+        """没受阻时照常按离小队远近选目标，不为排序去配准设施目录。"""
+        self.ns['read_stage'] = Mock(return_value=(25, 8))
+        guard = dict(self.target, id='ring-27-2', click=[1040., 641.])
+        near = dict(self.target, id='ring-31-0', click=[900., 520.])
+        self.runner.scan = Mock(return_value=(self.field, [guard, near]))
+        self.runner.closed_switch_points = Mock(return_value=[np.array([1022.7, 626.1])])
+        self.runner.wait_entry = Mock(return_value=True)
+        self.runner.fight_entry = Mock(return_value=True)
+        self.runner.run(ticks=1)
+        self.runner.closed_switch_points.assert_not_called()
+        self.session.tap.assert_called_once_with(near['click'])
+
+    def test_closed_switch_points_projects_catalog(self):
+        """目录里仍关闭的机关按本帧投影返回；目录配准失败时返回空，照常按远近选目标。"""
+        catalog = SimpleNamespace(observe=Mock(), expected=[dict(position=[1022.7, 626.1])])
+        structures = SimpleNamespace(facility_catalog=Mock(return_value=catalog))
+        unconfirmed = type('FacilityUnconfirmed', (RuntimeError,), {})
+        memory = SimpleNamespace(FacilityUnconfirmed=unconfirmed)
+        with patch.dict(sys.modules, {'module.campaign.structures': structures,
+                                      'module.campaign.facility_memory': memory}):
+            points = self.real_closed_switch_points(self.field)
+            self.assertEqual([point.tolist() for point in points], [[1022.7, 626.1]])
+            catalog.observe.side_effect = unconfirmed('no anchor')
+            self.assertEqual(self.real_closed_switch_points(self.field), [])
+
+    def test_stall_followup_popup_still_fights(self):
+        """判停滞后补看到备战弹窗：照常核对开战，不把目标记成走不到。"""
+        self.ns['read_stage'] = Mock(return_value=(25, 8))
+        self.runner.scan = Mock(return_value=(self.field, [self.target]))
+        self.runner.wait_entry = Mock(return_value=False)
+        self.runner.stall_followup = Mock(return_value=True)
+        self.runner.fight_entry = Mock(return_value=True)
+        self.runner.run(ticks=1)
+        self.runner.fight_entry.assert_called_once_with(self.target)
+        self.assertNotIn(self.target['id'], self.runner.deferred)
+        self.assertEqual(self.runner.blocked_views, 0)
+
+    def test_stall_followup_records_frame(self):
+        """补看帧总要留证；只有备战弹窗才算走到。"""
+        self.runner.entry_outcome = dict(state='stationary')
+        self.assertFalse(self.runner.stall_followup(self.target))
+        event = self.session.record_evidence.call_args
+        self.assertEqual(event.args[0], 'native_stall_followup')
+        self.assertFalse(event.kwargs['popup'])
+        self.ns['goto'].battle_popup_score.return_value = 1.
+        self.assertTrue(self.runner.stall_followup(self.target))
+        self.assertEqual(self.runner.entry_outcome, dict(state='entry'))
+
+    def test_click_feedback_frames_survive_slot_wraparound(self):
+        """寻路反馈与停滞补看另存不回绕副本，32 槽覆盖后仍能回看。"""
+        with tempfile.TemporaryDirectory() as folder:
+            evidence = ActionEvidence(Path(folder), capacity=2)
+            evidence.record('native_click_feedback', self.field)
+            evidence.record('native_stall_followup', self.field)
+            for _ in range(4):
+                evidence.record('mouse_click', self.field)
+            kept = sorted(path.name for path in (evidence.folder/'keep').glob('*.json'))
+            self.assertEqual(kept, ['0000-native_click_feedback.json', '0001-native_stall_followup.json'])
 
     def test_entry_inspection_requires_two_actual_reads(self):
         """实际遇敌连续两次相同才能交战斗，不沿用原先点击的目标号。"""

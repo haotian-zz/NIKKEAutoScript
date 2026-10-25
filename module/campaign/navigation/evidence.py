@@ -28,7 +28,10 @@ KEEP_EVENTS = frozenset(('goal_view_result', 'switch_search_view', 'switch_searc
                          'offscreen_map_state', 'offscreen_unoccluded', 'offscreen_unoccluded_confirm',
                          'switch_search_unmeasured', 'switch_search_hint',
                          # 任务定位后看到了什么（实录 2026-10-23 24-27：定位后零红圈，32槽很快被巡检覆盖）。
-                         'quest_guide', 'goal_view', 'marker_probe', 'quest_barrier_blocked', 'marker_walk'))
+                         'quest_guide', 'goal_view', 'marker_probe', 'quest_barrier_blocked', 'marker_walk',
+                         # 点了哪个敌人、寻路反馈和停滞后补看（实录 2026-10-24 25章：机关上的怪被判停滞，
+                         # 回看时帧已被覆盖，分不清真走不到还是误判）。
+                         'scene_target', 'native_click_feedback', 'native_stall_followup', 'switch_guard_check'))
 KEEP_LIMIT = 300
 
 
