@@ -44,10 +44,11 @@ class StructureTests(unittest.TestCase):
         self.addCleanup(patcher.stop)
 
     def test_only_unactivated_switch_or_full_high_confidence_platform_is_actionable(self):
-        """开启机关、低分、底栏和截断框不得变成新落点。"""
+        """开启机关、低分、左下按钮／右下章节面板和截断框不得变成新落点；底部中间是场景。"""
         good = fixture('ground_mechanism', 'off')
         objects = [good, fixture('ground_mechanism', 'on'), fixture(confidence=.89),
-                   fixture(position=(1000., 920.)), fixture(position=(1760., 650.))]
+                   fixture(position=(120., 930.)), fixture(position=(1600., 920.)), fixture(position=(1760., 650.))]
+        self.assertEqual(len(structure.actionable([fixture(position=(1000., 920.))])), 1)
         self.assertEqual(structure.actionable(objects), [good])
 
     def test_stability_rejects_wrong_role_shift_and_competition(self):
