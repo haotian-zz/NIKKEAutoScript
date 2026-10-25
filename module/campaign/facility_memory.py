@@ -314,7 +314,13 @@ class FacilityMemory:
             ranked = sorted((distance, identifier) for identifier, distance in options.items())
             if ranked and ranked[0][0] <= 15.:
                 if len(ranked) > 1 and ranked[1][0]-ranked[0][0] < 12.:
-                    raise FacilityUnconfirmed('当前设施存在多个相近历史身份，未继续交互。')
+                    # 实录 2026-10-25（HARD 9）：目录里同一机关登记过两次，设施巡检遇到它就整轮停止。
+                    # 身份不明只让这一个设施本帧不可交互（不进 current），其他设施和巡检照常。
+                    assignments.append(False)
+                    unresolved.append(dict(kind=item['kind'], state=item['state'], position=item['position'],
+                                           possible_ids=[identifier for _, identifier in ranked[:2]],
+                                           reason='ambiguous_identity'))
+                    continue
                 assignments.append(ranked[0][1])
             else:
                 assignments.append(False if possible else None)
@@ -322,8 +328,14 @@ class FacilityMemory:
                     unresolved.append(dict(kind=item['kind'], state=item['state'], position=item['position'],
                                            possible_ids=sorted(possible), reason='identity_outside_support'))
         known = [identifier for identifier in assignments if identifier]
-        if len(set(known)) != len(known):
-            raise FacilityUnconfirmed('多个当前设施竞争同一历史身份，未合并或点击。')
+        contested = {identifier for identifier in known if known.count(identifier) > 1}
+        for index, identifier in enumerate(assignments):
+            # 多个当前设施竞争同一历史身份：都不合并、本帧都不可交互，其余设施照常登记。
+            if identifier in contested:
+                assignments[index] = False
+                item = objects[index]
+                unresolved.append(dict(kind=item['kind'], state=item['state'], position=item['position'],
+                                       possible_ids=[identifier], reason='contested_identity'))
         # 每次确认视野保留一个特征关键帧；同一屏或小幅漂移时复用旧关键帧，避免常规轮询耗尽容量。
         reuse = next((number for number, matrix, _, _ in matches if same_screen(matrix)), None)
         if reuse is not None:

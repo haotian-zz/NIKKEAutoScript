@@ -153,6 +153,16 @@ class FacilityMemoryTests(unittest.TestCase):
         self.assertEqual([item['facility_id'] for item in first], [item['facility_id'] for item in after])
         self.assertTrue(self.catalog.eligible(after[1]['facility_id'], 'blocked-A'))
 
+    def test_duplicate_history_skips_only_that_facility(self):
+        """实录 2026-10-25（HARD 9）：同一机关登记了两次，身份不明时只跳过它，不整轮停止。"""
+        self.catalog.observe(self.field, [observed(kind='ground_mechanism', state='off'),
+                                          observed((805., 500.), kind='ground_mechanism', state='off'),
+                                          observed((800., 800.))])
+        after = self.catalog.observe(self.panned, [observed((982., 500.), kind='ground_mechanism', state='off'),
+                                                   observed((980., 800.))])
+        self.assertEqual([item['kind'] for item in after], ['elevator'])
+        self.assertEqual(self.catalog.unresolved[0]['reason'], 'ambiguous_identity')
+
     def test_resource_coordinates_and_scope_are_not_scene_clicks(self):
         """外部有向传送标注保留方向且不冒充已激活；其他底图记录隔离。"""
         document = dict(image_sha256='sha-A', objects=[dict(id=name, type='point',
