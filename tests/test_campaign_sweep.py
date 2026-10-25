@@ -190,6 +190,44 @@ class ChapterSweepTests(unittest.TestCase):
         with self.assertRaisesRegex(SweepUnconfirmed, '斜向'):
             self.sweep.run()
 
+    def test_fog_edge_pans_back_and_continues_rows(self):
+        """实录 2026-10-25（HARD 9）：拖进左侧雾里测不到位移时拖回一格当作边界，继续往下扫，不整轮中止。"""
+        from module.campaign.sweep import SweepMotionLost
+        real = self.sweep.move.side_effect
+
+        def move(drag, before=None):
+            """往左拖到镜头 x=0 再拖就进雾：测不到位移。"""
+            if drag[0] > 0 and self.position[0] <= 0.:
+                self.sweep.steps += 1
+                raise SweepMotionLost('镜头运动缺少分布充分的背景内点，未确认巡检覆盖。')
+            return real(drag, before)
+
+        self.sweep.move = Mock(side_effect=move)
+        self.sweep.pan = Mock()
+        self.sweep.pan_anchor = Mock(return_value=None)
+        self.runner.map_frame.return_value = np.zeros((999, 1776, 3), np.uint8)
+        with patch.object(sweep_module.goto, 'battle_popup_score', return_value=0.):
+            with self.assertRaisesRegex(SweepUnconfirmed, '雾边'):
+                self.sweep.run()
+        self.assertGreaterEqual(self.sweep.proof['rows'], 3)
+        for point in ((0., 520.), (960., 520.)):
+            self.assertIn(point, self.visits)
+        np.testing.assert_allclose(self.sweep.pan.call_args_list[0][0][0], [-480., 0.])
+        self.assertTrue(self.sweep.coverage_warnings)
+
+    def test_fog_edge_limit_stops(self):
+        """一直测不到位移不是地图边缘，超过次数仍停止。"""
+        from module.campaign.sweep import SweepMotionLost
+        self.sweep.move = Mock(side_effect=SweepMotionLost('背景内点'))
+        self.sweep.pan = Mock()
+        self.sweep.pan_anchor = Mock(return_value=None)
+        self.sweep.fog_edges = sweep_module.FOG_EDGE_LIMIT
+        self.runner.map_frame.return_value = np.zeros((999, 1776, 3), np.uint8)
+        with patch.object(sweep_module.goto, 'battle_popup_score', return_value=0.):
+            with self.assertRaisesRegex(SweepUnconfirmed, '雾边测不到'):
+                self.sweep.run()
+        self.sweep.pan.assert_not_called()
+
     def test_unseen_squad_tracked_by_accumulated_content_shift(self):
         """实录22-36：拖几屏后箭头被任务栏旁的 HUD 排除；按看到时的位置加累计位移推算，画面内避开，画面外判离屏。"""
         field = np.zeros((999, 1776, 3), np.uint8)

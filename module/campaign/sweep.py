@@ -25,11 +25,17 @@ EDGE_CONFIRMATIONS = 2
 SQUAD_RETURN = 40.
 # 按累计位移推算的小队落点超出客户区这么多像素才算离屏（主平移有视差误差）。
 SQUAD_OFFSCREEN_MARGIN = 120.
+# 一轮巡检最多把几次配准失败当作雾边边界；超过说明不是地图边缘，按原样停止。
+FOG_EDGE_LIMIT = 6
 
 
 class SweepUnconfirmed(RuntimeError):
     """巡检缺乏运动或边界证据；禁止把未检查区域当成没有敌人。"""
     reason = 'chapter_clearance_unconfirmed'
+
+
+class SweepMotionLost(SweepUnconfirmed):
+    """拖动后严格配准和主平移都测不到镜头位移，常见于拖进地图外的雾或空白。"""
 
 
 def camera_motion(before, after, drag, allow_oblique=False):
@@ -90,6 +96,7 @@ class ChapterSweep:
         self.squad_seen = None
         self.started = time.monotonic()
         self.found = None
+        self.fog_edges = 0
         self.proof = dict(state='incomplete', rows=0, pans=0, pending=[])
 
     def sample(self):
@@ -173,7 +180,7 @@ class ChapterSweep:
             from module.campaign.switch_search import content_shift
             shift = content_shift(None, None, drag, before, after)
             if shift is None:
-                raise
+                raise SweepMotionLost(str(exc)) from exc
             self.coverage_warnings.append(dict(pan=self.steps, drag=list(drag), actual=shift.tolist(),
                                                reason=str(exc)))
             logger.info(f'镜头严格配准未通过，按主平移 {np.round(shift).astype(int).tolist()} 继续巡检；覆盖记为存疑。')
@@ -225,11 +232,37 @@ class ChapterSweep:
         self.squad_away = (np.array([np.cos(angle), np.sin(angle)]), self.content.copy())
         return None
 
+    def fog_edge(self, drag, exc):
+        """拖进雾里测不到位移时拖回一格，把这个方向当作边界；覆盖记为存疑，不允许报全清。
+
+        实录 2026-10-25（HARD 9）：左侧是悬崖外的大片雾，找左边界时镜头拖进雾里配准失败，
+        连续三轮整轮中止，一行都没往下扫，小屋下方离小队一两屏的敌人始终没进过画面。
+        """
+        self.fog_edges += 1
+        if self.fog_edges > FOG_EDGE_LIMIT:
+            raise SweepUnconfirmed(f'巡检已 {FOG_EDGE_LIMIT} 次在雾边测不到镜头位移，停止：{exc}') from exc
+        field = self.runner.map_frame()
+        if goto.battle_popup_score(field) > .8:
+            self.found = dict(state='entry')
+            return
+        back = -np.asarray(drag, float)
+        self.session.begin_target('chapter_sweep_fog_back')
+        self.pan(back, self.pan_anchor(field))
+        self.steps += 1
+        self.coverage_warnings.append(dict(pan=self.steps, drag=list(drag), reason=f'fog_edge: {exc}'))
+        self.session.record_evidence('chapter_sweep_fog_edge', self.runner.map_frame(), drag=list(drag),
+                                     pans=self.steps, rows=self.rows, reason=str(exc))
+        logger.info(f'镜头拖进雾里测不到位移，拖回一格并把 {list(drag)} 方向当作边界；覆盖记为存疑。')
+
     def edge(self, drag):
         """沿一轴走到连续两次几何静止的边界；新敌人、取消与输入故障立即结束当前巡检。"""
         still = 0
         for _ in range(32):
-            delta = self.move(drag)
+            try:
+                delta = self.move(drag)
+            except SweepMotionLost as exc:
+                self.fog_edge(drag, exc)
+                return self.found is None
             if self.found is not None:
                 return False
             still = still + 1 if np.linalg.norm(delta) < 3. else 0
@@ -251,7 +284,13 @@ class ChapterSweep:
                 self.rows += 1
                 if not self.edge([direction * HORIZONTAL_STEP, 0.]):
                     return self.found
-                delta = self.move([0., -VERTICAL_STEP])
+                try:
+                    delta = self.move([0., -VERTICAL_STEP])
+                except SweepMotionLost as exc:
+                    self.fog_edge([0., -VERTICAL_STEP], exc)
+                    if self.found is not None:
+                        return self.found
+                    break
                 if self.found is not None:
                     return self.found
                 if np.linalg.norm(delta) < 3.:
@@ -266,7 +305,7 @@ class ChapterSweep:
             if self.axes != {0, 1}:
                 raise SweepUnconfirmed('两轴镜头未分别获得运动证据，静止画面不能证明全章边界。')
             if self.coverage_warnings:
-                raise SweepUnconfirmed('巡检存在斜向相机响应，已保留覆盖存疑证据，不能声明本章全清。')
+                raise SweepUnconfirmed('巡检存在斜向相机响应或雾边测不到位移，已保留覆盖存疑证据，不能声明本章全清。')
             if self.hints:
                 self.proof['pending'] = self.hints
                 raise SweepUnconfirmed('巡检仍发现红圈或小地图敌人标记，清怪未完成。')
