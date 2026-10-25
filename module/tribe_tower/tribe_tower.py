@@ -45,9 +45,17 @@ class TribeTower(UI):
             self.device.screenshot()
         raise NoAvailableCompany
 
+    def renew_progress_guard(self):
+        # 实录 2026-10-24：五座塔各三次挑战合计超过 900 秒总时限，正常打塔途中被判卡死并重启游戏。
+        # 战斗结算、过关和换塔才算真实进展，重置总时限计时；真卡住时仍按原时限停止。
+        guard = getattr(self.device, '_execution_guard', None)
+        if guard is not None:
+            guard.progress()
+
     def _run(self):
         while len(self.available_company):
             self.device.stuck_record_clear()
+            self.renew_progress_guard()
             try:
                 self.ensure_into_tribe_tower()
             except NoOpportunityRemain:
@@ -153,6 +161,7 @@ class TribeTower(UI):
                         continue
 
                 if click_timer.reached() and self.appear_then_click(NEXT_STAGE, offset=(30, 30)):
+                    self.renew_progress_guard()
                     self.device.sleep(5)
                     confirm_timer.reset()
                     click_timer.reset()
@@ -163,6 +172,7 @@ class TribeTower(UI):
                     and not self.appear(NEXT_STAGE, offset=(30, 30))
                     and self.appear(END_CHECK, offset=30)
                 ):
+                    self.renew_progress_guard()
                     while 1:
                         self.device.screenshot()
                         if not self.appear(END_CHECK, offset=30):
