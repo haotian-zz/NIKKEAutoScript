@@ -29,6 +29,17 @@ class RejectedTargetsTests(unittest.TestCase):
         self.assertEqual(kept, [far])
         self.assertEqual((skipped[0][0], skipped[0][2]), (near, 'stalled'))
 
+    def test_moved_record_marks_without_skipping(self):
+        """走过才停下的位置只作标记：不跳过候选，但能查到附近已有标记（第二次停下才记走不到）。"""
+        rejected = RejectedTargets()
+        rejected.add(textured(), [900., 500.], 'moved')
+        moved = textured((60, -40))
+        target = dict(id='ring-40-0', click=[955., 470.])
+        self.assertEqual(rejected.filter(moved, [target]), ([target], []))
+        self.assertTrue(rejected.near(moved, target['click'], ('moved',)))
+        self.assertFalse(rejected.near(moved, [960.+REJECT_RADIUS*2, 460.], ('moved',)))
+        self.assertFalse(rejected.near(moved, target['click'], ('stalled',)))
+
     def test_unregistered_record_excludes_nothing(self):
         """配准不上（换了场景）的记录不排除任何目标。"""
         rejected = RejectedTargets()

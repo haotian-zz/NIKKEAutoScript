@@ -40,6 +40,10 @@ def static_view(before, after):
     return same_screen(matrix)
 
 
+# 只作标记、不跳过候选的原因：走过一段才停下的目标（见 VisibleStoryRunner.run），第二次停下才记走不到。
+SOFT_REASONS = ('moved',)
+
+
 class RejectedTargets:
     """记下的位置只用于跳过候选，不授予任何点击；清空时机由调用方按道路可能变化决定。"""
 
@@ -69,9 +73,17 @@ class RejectedTargets:
             found.append((project(matrix, record['point']).reshape(2), record['reason']))
         return found
 
+    def near(self, field, point, reasons):
+        """当前帧这个位置附近是否已有指定原因的记录。"""
+        if not any(record['reason'] in reasons for record in self.records):
+            return False
+        return any(reason in reasons and np.linalg.norm(np.asarray(point, float)-position) <= REJECT_RADIUS
+                   for position, reason in self.points(field))
+
     def filter(self, field, candidates):
         """去掉离记下位置太近的候选；返回 (保留的候选, 被跳过的 [(候选, 距离, 原因)])。"""
-        points = self.points(field) if candidates else []
+        points = [(point, reason) for point, reason in self.points(field) if reason not in SOFT_REASONS] \
+            if candidates else []
         kept, skipped = [], []
         for item in candidates:
             near = [(float(np.linalg.norm(np.asarray(item['click'], float)-point)), reason) for point, reason in points]

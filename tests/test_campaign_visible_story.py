@@ -856,6 +856,30 @@ class VisibleStoryTests(unittest.TestCase):
         self.runner.run(ticks=1)
         self.assertEqual(len(self.runner.rejected), 0)
 
+    def test_stall_after_moving_retries_once_then_rejects(self):
+        """实录 2026-10-25（HARD 9）：点 Boss 后经电梯被送上山脊停下；走过才停的目标先不记走不到、不进受阻，
+        下一轮从新位置再点一次，同一位置第二次停下才记走不到。"""
+        self.ns['read_stage'] = Mock(return_value=(25, 15))
+        self.runner.scan = Mock(return_value=(self.field, [self.target]))
+        # 场景配准换成恒等投影，只测记录规则。
+        self.runner.rejected.points = lambda field: [(record['point'], record['reason'])
+                                                     for record in self.runner.rejected.records]
+
+        def moved_then_stopped(*args, **kwargs):
+            self.runner.entry_outcome = dict(state='stationary', outcome='stalled', moved=True)
+            return False
+        self.runner.wait_entry = Mock(side_effect=moved_then_stopped)
+        self.runner.run(ticks=1)
+        self.assertEqual([record['reason'] for record in self.runner.rejected.records], ['moved'])
+        self.assertEqual(self.runner.blocked_views, 0)
+        self.assertNotIn(self.target['id'], self.runner.deferred)
+        self.assertEqual(self.runner.memory.attempt.call_args[0][:2], ('ring-1', 'moved'))
+        self.runner.run(ticks=1)
+        self.assertEqual(self.session.tap.call_count, 2)
+        self.assertEqual([record['reason'] for record in self.runner.rejected.records], ['moved', 'stalled'])
+        self.assertEqual(self.runner.blocked_views, 1)
+        self.assertIn(self.target['id'], self.runner.deferred)
+
     def test_rejected_position_skips_ring_with_new_id(self):
         """同一处换了扫描编号仍跳过，改点画面内其他目标，并留下跳过证据。"""
         self.ns['read_stage'] = Mock(return_value=(25, 15))

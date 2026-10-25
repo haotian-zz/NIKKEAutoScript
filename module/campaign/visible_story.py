@@ -379,6 +379,7 @@ class VisibleStoryRunner:
         motion = NativeMotion(before, arrow, None if target is None else target['click'])
         minimap = MinimapStability(before)
         previous_state = None
+        moved = False
         while True:
             field = self.map_frame(timeout=max(.1, min(30., progress.started+ENTRY_MOVE_SECONDS-time.monotonic())))
             if goto.battle_popup_score(field) > .8:
@@ -387,7 +388,8 @@ class VisibleStoryRunner:
             observation = combine_motion(motion.observe(field, squad_arrow(field)), minimap.observe(field))
             now = time.monotonic()
             state = progress.update(now, observation)
-            self.entry_outcome = dict(observation, outcome=state, elapsed=round(now-progress.started, 2))
+            moved = moved or observation['state'] == 'moving'
+            self.entry_outcome = dict(observation, outcome=state, elapsed=round(now-progress.started, 2), moved=moved)
             if observation['state'] != previous_state or state != 'waiting':
                 self.session.record_evidence('native_click_feedback', field, feedback=self.entry_outcome,
                                              target=target, arrays=dict(field=field))
@@ -1202,6 +1204,18 @@ class VisibleStoryRunner:
                     self.rejected.clear()
             else:
                 no_effect = bool(self.entry_outcome and self.entry_outcome.get('no_effect'))
+                moved = bool(self.entry_outcome and self.entry_outcome.get('moved'))
+                # 实录 2026-10-25（HARD 9）：点 Boss 后原生寻路走到电梯平台，小队被送上山脊、在出口平台停下。
+                # 停下前小队确实走过，说明这次停下不等于从新位置也走不到；记成走不到后，山脊上认出的同一个
+                # Boss 离记录 27px 被跳过，整轮受阻。走过才停的目标同一位置只放过一次，下一轮按新位置重新扫描、
+                # 重新点；第二次仍停下照常记走不到。没动过的停滞照旧。
+                if not no_effect and moved and not self.rejected.near(fresh, target['click'], ('moved',)):
+                    self.rejected.add(fresh, target['click'], 'moved')
+                    self.memory.attempt(target['id'], 'moved', self.entry_outcome)
+                    self.try_visible = True
+                    logger.info(f"小队走了一段才停下（可能经电梯换了位置）：{target['id']} 先不记走不到，"
+                                '按新位置重新扫描后可再点一次。')
+                    continue
                 reason = 'no_effect' if no_effect else 'stalled'
                 self.rejected.add(fresh, target['click'], reason)
                 self.memory.attempt(target['id'], reason, self.entry_outcome)
