@@ -1,4 +1,5 @@
 """独立推图任务：选择章节、进入主线并将实际结果写入简报。"""
+import logging
 import re
 import time
 
@@ -30,6 +31,8 @@ from module.ui.ui import UI
 
 # 切日后大厅可能连续弹出多个奖励／活动页，超过上限仍未见大厅则交人工确认。
 LOBBY_POPUP_LIMIT = 5
+# 困难推图因探索或设施预算用尽停止时，回章节列表读计数判断本章是否其实已全部通关。
+EXHAUSTED_CODES = ('story_exploration_exhausted', 'structure_interaction_unconfirmed', 'story_structure_budget')
 # 大厅任务仍为“返回大厅”时等待剧情触发及任务更新的上限（秒）。
 LOBBY_RETURN_WAIT = 30.
 # 前往【某处】任务：单次点击后等待到达并更新任务的上限（秒）。
@@ -48,6 +51,20 @@ def chapter_number(value):
     if re.fullmatch(r'[1-9]\d?', text) and 1 <= int(text) <= 50:
         return int(text)
     raise ValueError('请选择当前主线进度或第 1 至 50 章')
+
+
+def progress_text(progress):
+    """章节列表卡片进度的日志描述：OCR 读数（读不出写「读数不明」）、斜杠两侧字形相似度及结论。"""
+    if progress is None:
+        return '未读到已解锁卡片'
+    if progress.get('stage') is None:
+        return '卡片显示 COMPLETE，关卡全部通关'
+    parts = []
+    for name, label in (('stage', '蓝色关卡'), ('main', '红色关卡')):
+        item = progress[name]
+        read = f"{item['read'][0]}/{item['read'][1]}" if item['read'] else '读数不明'
+        parts.append(f"{label} {read}（斜杠两侧字形相似 {item['same']}）")
+    return '，'.join(parts)+'；'+{True: '全部通关', False: '未全部通关', None: '无法判断'}[progress['complete']]
 
 
 class AutoPush(UI):
@@ -360,8 +377,16 @@ class AutoPush(UI):
         return Ocr((490, 1125, 700, 1265), name='CAMPAIGN_MAP_ENTRY',
                    model_type=self.config.Optimization_OcrModelType).ocr(self.device.image)['text'].upper()
 
-    def enter_hard(self, target=None):
+    def counter_text(self, area):
+        """章节列表卡片进度计数的 OCR 文字（只用于日志与否决「已满」）。"""
+        return Ocr(area, name='HARD_COUNTER', model_type=self.config.Optimization_OcrModelType,
+                   log_level=logging.DEBUG).ocr(self.device.image)['text']
+
+    def enter_hard(self, target=None, peek=False):
         """竖屏地图上切到困难难度：点难度标签开章节列表 → 困难页签 → 最下面的已解锁卡片。
+
+        进入前读最下面卡片的进度计数：「当前进度」模式下它已全部通关，说明困难已追上普通进度，
+        报告完成、不进入。peek 为真只读计数后关闭列表，返回 card_progress 结果（读不到卡片返回 None）。
 
         困难页自动滚到当前进度，最下面的已解锁卡片就是困难最新章节；具体章节号随后在横屏由
         select_chapter 按 HARD 身份核对并用左右箭头切换。每步都等画面确认，不靠点击次数。
@@ -399,7 +424,19 @@ class AutoPush(UI):
                     if not cards:
                         save_wait_image(self.device, 'AutoPush_hard_no_chapter')
                         self.device.click_xy(*hard_list.LIST_CLOSE)
+                        if peek:
+                            return None
                         report('blocked', '困难难度没有已解锁的章节', '先通关对应普通章节解锁困难难度')
+                        return False
+                    progress = hard_list.card_progress(page, cards[-1], ocr=self.counter_text)
+                    logger.info(f'困难最新已解锁章节进度：{progress_text(progress)}')
+                    if peek:
+                        self.device.click_xy(*hard_list.LIST_CLOSE)
+                        return progress
+                    if progress['complete'] and target is None:
+                        self.device.click_xy(*hard_list.LIST_CLOSE)
+                        report('success', '困难已推到最新解锁章节且关卡全部通关',
+                               '章节列表计数已满；先推进普通主线解锁下一章困难')
                         return False
                     logger.info(f'困难章节列表：已解锁卡片 {cards}，进入最下面一张')
                     self.device.click_xy(*cards[-1])
@@ -407,7 +444,7 @@ class AutoPush(UI):
                     timer, settle = Timer(90).start(), Timer(10).start()
             else:
                 text = self.map_difficulty_text()
-                if 'HARD' in text and (step == 'card' or target is not None):
+                if 'HARD' in text and not peek and (step == 'card' or target is not None):
                     logger.info('已进入困难难度地图')
                     return True
                 if step == 'card' and timer.reached():
@@ -605,6 +642,14 @@ class AutoPush(UI):
                 if code == 'chapter_cleared':
                     report('success', f'本章清怪巡检完成，本轮确认清除 {total_cleared} 个敌人', reason)
                     return
+                if difficulty == 'hard' and target is None and code in EXHAUSTED_CODES:
+                    # 探索或设施预算用尽不等于本章清空：回章节列表读本章计数，满了才算完成（困难每段都经列表进最新章）。
+                    progress = self.enter_hard(peek=True)
+                    if progress is not None and progress['complete']:
+                        report('success', f'困难本章关卡已全部通关，本轮确认清除 {total_cleared} 个敌人',
+                               '章节列表计数已满；先推进普通主线解锁下一章困难')
+                        return
+                    reason = f'{reason}（章节列表：{progress_text(progress)}）'
                 if continuous and code == 'story_return_lobby':
                     origin_chapter = result.get('chapter')
                     if not isinstance(origin_chapter, int) or origin_chapter in returned_chapters:

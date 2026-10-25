@@ -220,6 +220,40 @@ class CampaignStartTests(unittest.TestCase):
         self.assertEqual(reports[-1][0], 'blocked')
         self.assertEqual(reports[-1][2], '没有可达的目标')
 
+    def hard_exhausted_runner(self, progress):
+        """困难当前进度：本段探索用尽停止，随后回章节列表只读计数（peek）。"""
+        takeover = type('Takeover', (Exception,), {})
+        campaign = SimpleNamespace(run=Mock(side_effect=takeover()), state=SimpleNamespace(enemies={}),
+                                   last_result={'state': 'needs_review', 'reason': 'story_exploration_exhausted',
+                                                'message': '探索 30 屏没有找到可用目标'})
+        factory = Mock(return_value=campaign)
+        factory.RESOLUTION = (1776, 999)
+        reports = []
+        fn = load('run', Campaign=factory, RequestHumanTakeover=takeover, GameStuckError=RuntimeError,
+                  save_wait_image=Mock(), logger=Mock(), report=lambda *a: reports.append(a),
+                  chapter_number=load('chapter_number', re=re), GOAL_REASONS={},
+                  EXHAUSTED_CODES=('story_exploration_exhausted',), progress_text=lambda item: '蓝色关卡 12/27')
+        runner = SimpleNamespace(config=SimpleNamespace(Client_Platform='win', CampaignMap_MapType='main',
+                                 CampaignMap_Chapter='current', CampaignMap_Difficulty='hard', PCClient_ScreenNumber=1,
+                                 PCClient_GameWindowPosition='center', task_delay=Mock()), device=Mock(),
+                                 runtime_ready=lambda: True, renew_progress_guard=Mock(),
+                                 ensure_main_map=Mock(return_value=True), enter_hard=Mock(side_effect=[True, progress]),
+                                 select_chapter=Mock(return_value=True), cleared_count=load('cleared_count'))
+        fn(runner)
+        self.assertEqual(runner.enter_hard.call_args_list[-1].kwargs, {'peek': True})
+        return reports
+
+    def test_hard_exhausted_with_full_counter_reports_success(self):
+        """探索用尽但章节列表计数已满：本章其实已全部通关，报告完成。"""
+        reports = self.hard_exhausted_runner(dict(complete=True))
+        self.assertEqual(reports[-1][0], 'success')
+
+    def test_hard_exhausted_with_remaining_stages_stops_with_counter(self):
+        """计数未满：照常停止，原因里带上章节列表读数。"""
+        reports = self.hard_exhausted_runner(dict(complete=False))
+        self.assertEqual(reports[-1][0], 'blocked')
+        self.assertIn('章节列表：蓝色关卡 12/27', reports[-1][2])
+
     def test_critical_memory_pressure_stops_before_loading_detector(self):
         """真实低余量必须先于模型初始化被拦住，保留具体资源原因而非误报模型依赖失败。"""
         reports = []
@@ -598,29 +632,53 @@ class CampaignStartTests(unittest.TestCase):
 
 class EnterHardTests(unittest.TestCase):
 
-    def test_list_fade_after_card_click_does_not_reclick_tab(self):
-        """实录 2026-10-23（困难 5→6）：点卡片后列表淡出帧的页签认不出，不能回头点页签，地图读到 HARD 即返回。"""
-        frames = iter(['list', 'fade', 'map'])
+    def enter(self, frames, complete=False):
+        """按帧序列跑 enter_hard；返回 (函数, 运行器, 设备, report)。卡片进度按 complete 给出。"""
+        frames = iter(frames)
         state = {}
 
         def screenshot():
             state['frame'] = next(frames)
+        progress = dict(complete=complete, stage=dict(same=.99 if complete else .6, read=None),
+                        main=dict(same=.99, read=(2, 2)), text='')
         hard_list = SimpleNamespace(
             list_visible=lambda image: state['frame'] in ('list', 'fade'),
             hard_tab_active=lambda image: state['frame'] == 'list',
             unlocked_cards=lambda image: [(557, 294), (163, 414)], save_sample=Mock(),
+            card_progress=Mock(return_value=progress),
             HARD_TAB=(583, 1123), DIFFICULTY_TAG=(540, 1158), LIST_CLOSE=(630, 153))
         timer = SimpleNamespace(start=lambda: timer, reset=lambda: None, reached=lambda: False)
+        report = Mock()
         fn = load('enter_hard', cv2=SimpleNamespace(cvtColor=lambda image, code: image, COLOR_RGB2BGR=0),
                   hard_list=hard_list, WaitGuard=Mock(), Timer=lambda seconds: timer, logger=Mock(),
-                  save_wait_image=Mock(), report=Mock())
+                  save_wait_image=Mock(), report=report, progress_text=str)
         device = Mock(screenshot=Mock(side_effect=screenshot))
         runner = SimpleNamespace(device=device, config=SimpleNamespace(
             PCClient_ScreenNumber=0, PCClient_GameWindowPosition='center'),
-            map_difficulty_text=lambda: 'HARD' if state['frame'] == 'map' else '')
+            map_difficulty_text=lambda: 'HARD' if state['frame'] == 'map' else '', counter_text=Mock())
+        return fn, runner, device, report
+
+    def test_list_fade_after_card_click_does_not_reclick_tab(self):
+        """实录 2026-10-23（困难 5→6）：点卡片后列表淡出帧的页签认不出，不能回头点页签，地图读到 HARD 即返回。"""
+        fn, runner, device, report = self.enter(['list', 'fade', 'map'])
         self.assertTrue(fn(runner))
         clicks = [call.args for call in device.click_xy.mock_calls]
         self.assertEqual(clicks, [(163, 414)])
+
+    def test_complete_latest_chapter_reports_success_without_entering(self):
+        """最下面的已解锁卡片计数已满：困难已追上普通进度，关列表报告完成，不进入章节。"""
+        fn, runner, device, report = self.enter(['list', 'list'], complete=True)
+        self.assertFalse(fn(runner))
+        self.assertEqual([call.args for call in device.click_xy.mock_calls], [(630, 153)])
+        self.assertEqual(report.call_args.args[0], 'success')
+
+    def test_peek_reads_progress_and_closes_list_even_on_hard_map(self):
+        """peek：已在困难地图也要开列表读计数，读完关列表返回进度，不点卡片。"""
+        fn, runner, device, report = self.enter(['map', 'list', 'list'])
+        progress = fn(runner, peek=True)
+        self.assertFalse(progress['complete'])
+        self.assertEqual([call.args for call in device.click_xy.mock_calls], [(540, 1158), (630, 153)])
+        report.assert_not_called()
 
 
 if __name__ == '__main__':

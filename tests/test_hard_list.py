@@ -59,5 +59,44 @@ class HardListTests(unittest.TestCase):
         self.assertEqual(hard_list.unlocked_cards(hard_page()), [])
 
 
+def counter_page():
+    """实录 2026-10-25 困难页（第 7～9 章计数）放回 720×1280 原位；返回画面与三张卡片的标题框中心。"""
+    crop = cv2.imread(str(Path(__file__).resolve().parent / 'fixtures/hard_list_counters.png'))
+    image = np.zeros((1280, 720, 3), np.uint8)
+    image[180:180 + crop.shape[0], 40:40 + crop.shape[1]] = crop
+    return image, {7: (557, 196), 8: (163, 315), 9: (557, 435)}
+
+
+class CounterTests(unittest.TestCase):
+    """卡片进度：空心描边计数靠斜杠两侧字形比较判断是否满，OCR 只报剩余数。"""
+
+    def test_full_counters_match_and_partial_does_not(self):
+        image, cards = counter_page()
+        for chapter in (7, 8):
+            progress = hard_list.card_progress(image, cards[chapter])
+            self.assertTrue(progress['complete'], (chapter, progress))
+        progress = hard_list.card_progress(image, cards[9])
+        self.assertFalse(progress['complete'], progress)
+        self.assertLess(progress['stage']['same'], .8)
+
+    def test_ocr_reads_only_veto_full_and_complete_stamp_wins(self):
+        """实录：OCR 把 27/27 读成 27127（不否决），读到明确的 n<N 才否决；卡片写 COMPLETE 直接算满。"""
+        image, cards = counter_page()
+        texts = iter(['', '27127', '2/2'])
+        progress = hard_list.card_progress(image, cards[8], ocr=lambda area: next(texts))
+        self.assertTrue(progress['complete'])
+        self.assertIsNone(progress['stage']['read'])
+        texts = iter(['', '26/27', '2/2'])
+        self.assertFalse(hard_list.card_progress(image, cards[8], ocr=lambda area: next(texts))['complete'])
+        self.assertTrue(hard_list.card_progress(np.zeros_like(image), cards[9],
+                                                ocr=lambda area: 'COMPLETE')['complete'])
+
+    def test_missing_counter_is_unknown(self):
+        image, cards = counter_page()
+        self.assertIsNone(hard_list.card_progress(np.zeros_like(image), cards[9])['complete'])
+        self.assertEqual(hard_list.parse_counter('·12/27'), (12, 27))
+        self.assertIsNone(hard_list.parse_counter('2127'))
+
+
 if __name__ == '__main__':
     unittest.main()

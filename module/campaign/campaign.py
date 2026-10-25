@@ -9,15 +9,11 @@ from module.base.base import ModuleBase
 from module.base.timer import Timer
 from module.base.utils import publish_preview_frame
 from module.campaign.vision.chapter import CLIENT_SIZE, chapter_identity
-from module.campaign.goals import choose_goal, describe
 from module.campaign.map.map_state import StaticMap
 from module.campaign.map.catalog import chapter_map
 from module.campaign.vision.minimap import map_visible, minimap_control_visible
-from module.campaign.navigation.targets import TargetFinder
 from module.campaign.vision.observation import EXPANDED_ROI, CampaignObserver
-from module.campaign.navigation.routing import CutRoads
 from module.campaign.report import (GOAL_REASONS, LOCALIZATION, MINIMAP_MODES, direction_text, label, points_text)
-from module.campaign.run_state import RunState, describe_changes
 from module.campaign.timing import Stopwatch
 from module.config.config import TaskEnd
 from module.exception import RequestHumanTakeover
@@ -50,10 +46,6 @@ SQUAD_LOCATE_ATTEMPTS = 4
 # 连续这么多帧都读不到右下角章节角标才判定当前不在主线地图。
 MAIN_STORY_PAGE_FRAMES = 3
 MAIN_STORY_PAGE_INTERVAL = 0.5
-# 决策空跑的拍数与拍间隔：空跑不发送输入，场面不会变，多拍只为验证跨帧状态确实在累积
-# （同一只敌人要合并、封锁状态要按视野迁移），所以几拍就够。
-DRY_RUN_TICKS = 3
-DRY_RUN_INTERVAL = 1.0
 
 
 class Campaign(ModuleBase):
@@ -406,6 +398,7 @@ class Campaign(ModuleBase):
         """
         if self.target_finder_chapter != chapter:
             self.target_finder_chapter, self.chart, self.target_finder = chapter, None, None
+            from module.campaign.navigation.targets import TargetFinder
             try:
                 package, _ = chapter_map(chapter)
                 self.chart = StaticMap(package, self.observer.matcher)
@@ -450,6 +443,9 @@ class Campaign(ModuleBase):
         advance 为假用于同一轮内的补视野、复核帧与重新决策，不推进冷却计数（见 RunState.update）。
         决策行带上本轮耗时：候选的行走距离要各自重算距离场，是这一步的主要开销，几次决策的耗时能直接对比。
         """
+        from module.campaign.goals import choose_goal, describe
+        from module.campaign.navigation.routing import CutRoads
+        from module.campaign.run_state import describe_changes
         watch = Stopwatch()
         changes = self.state.update(snapshot, advance=advance)
         chart = self.ensure_chart(self.current_chapter)
@@ -504,36 +500,6 @@ class Campaign(ModuleBase):
                                   position=[round(float(value), 1) for value in goal['position']])
         return {'campaign': dict(source, memory=memory)}
 
-    def dry_run(self, initial, ticks=DRY_RUN_TICKS):
-        """只观测只决策不点击的空跑，返回最后一轮的目标。
-
-        空跑用于在真实场面上验证运行状态层与目标选择而不移动：每轮打出
-        选中的目标、被排除的候选和状态变更，最后打一次状态摘要。
-        第一轮用 initial（章节确认／小队定位时那帧），之后每轮重新截图观测。
-        """
-        logger.hr('推图试跑（只看不动）', level=2)
-        info = self.observer.map_info
-        if info is None:
-            logger.warning('本章地图信息不可用，跳过试跑。')
-            return None
-        identity = (self.current_chapter, self.current_difficulty)
-        self.state = RunState(self.current_chapter, self.current_difficulty, info['size'])
-        goal, snapshot = None, initial
-        for index in range(1, ticks + 1):
-            if self.config.stop_event is not None and self.config.stop_event.is_set():
-                raise TaskEnd
-            if index > 1:
-                self.device.sleep(DRY_RUN_INTERVAL)
-                self.device.screenshot()
-                image = cv2.cvtColor(self.device.image, cv2.COLOR_RGB2BGR)
-                snapshot = self.observer.observe(image, identity, time.time())
-            if snapshot is None:
-                logger.warning(f'第 {index}/{ticks} 轮没有可用的观测，跳过。')
-                continue
-            goal = self.plan_tick(snapshot)
-        logger.info(f'运行状态：{self.state.summary_text()}')
-        return goal
-
     def run(self):
         """主线任务入口：准备地图资源与客户区，确认停在主线剧情界面，再确认章节与小队位置。
 
@@ -561,11 +527,13 @@ class Campaign(ModuleBase):
                                     else getattr(exc, 'reason', 'story_execution_error'), 'message': str(exc)}
                 raise RequestHumanTakeover(str(exc)) from exc
             self.last_result = result
-            if result['state'] != 'fallback':
-                if result['state'] == 'needs_review':
-                    raise RequestHumanTakeover(result.get('message', '主线目标需要复核'))
-                return self.current_chapter
-            logger.info(f"主线可见目标流程转入地图导航：{result['message']}")
+            if result['state'] == 'needs_review':
+                raise RequestHumanTakeover(result.get('message', '主线目标需要复核'))
+            return self.current_chapter
+        # 以下标注地图 + 小队底图定位 + A* 规划 + 执行器主循环只服务工具菜单的 AutoMainStory／AutoMainCollectible；
+        # AutoPush 只走上面的可见目标流程（2026-10-25 实机调用追踪确认），地图规划模块在这里才导入。
+        from module.campaign.navigation.routing import CutRoads
+        from module.campaign.run_state import RunState
         self.ensure_resources()
         self.prepare_client()
         self.check_main_story_page()
