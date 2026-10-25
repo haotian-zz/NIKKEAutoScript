@@ -306,6 +306,8 @@ class VisibleStoryRunner:
         self.chapter_surveyed = False
         # 受阻目标 → 已按底图坐标去看过的目录机关编号；踩亮开关后清空。
         self.known_switch_tries = {}
+        # 没有可点敌人时已为哪些 (受阻目标, 道路状态) 转过找已知机关，每组只转一次。
+        self.switch_fallbacks = set()
         # 已核对过是否为需手动关卡（EX）位置的目标编号。
         self.manual_checked = set()
         # 任务已在下一章但切章核对未通过的轮数。
@@ -717,6 +719,38 @@ class VisibleStoryRunner:
         self.try_visible = False
         return True
 
+    def known_switch_blocked(self, field):
+        """画面没有可点敌人、目录里还有对本目标没试过的关闭机关时，先按受阻进入找机关流程。
+
+        清怪巡检只找敌人，不碰机关；受阻流程原先只在点敌人走不到或主线旁有光幕时才启动。
+        实录 2026-10-25（HARD 9）：开局设施巡检已登记小队右上的关闭机关（0.92），打完可见敌人后
+        任务栏没有困难主线标记，直接转清怪巡检，在暗色悬崖上配准失败停止，机关一次没踩。
+        已试过的机关由目录尝试记录和 known_switch_tries 排除；同一目标在同一道路状态下只转一次，
+        恢复流程没去试（如交互预算已用完）也不会反复空转，之后照常巡检。
+        """
+        from module.campaign.facility_memory import FacilityUnconfirmed
+        from module.campaign.structures import facility_catalog, known_switches, recenter_squad
+        goal = 'quest:'+str(self.quest)
+        try:
+            catalog = facility_catalog(self)
+        except (FacilityUnconfirmed, OSError):
+            return False
+        key = (goal, catalog.data.get('state_epoch', 0))
+        pending = known_switches(catalog, goal, self.known_switch_tries.get(goal, set()))
+        if not pending or key in self.switch_fallbacks:
+            return False
+        self.switch_fallbacks.add(key)
+        names = ', '.join(identifier for identifier, _ in pending)
+        self.session.record_evidence('known_switch_blocked', field, quest=self.quest, switches=names,
+                                     arrays=dict(field=field))
+        logger.info(f'画面没有可点敌人，目录里还有 {len(pending)} 个未试过的关闭机关（{names}）：'
+                    '先进入找机关流程，再做清怪巡检。')
+        recenter_squad(self)
+        self.blocked_click = None
+        self.blocked_views += 1
+        self.try_visible = False
+        return True
+
     def walk_to_marker(self, field):
         """画面内两帧同位置的主线菱形下认不出红圈时，点菱形让游戏原生寻路走到下一关。
 
@@ -1084,6 +1118,8 @@ class VisibleStoryRunner:
                 if self.quest_barrier_blocked(fresh):
                     continue
                 if self.walk_to_marker(fresh):
+                    continue
+                if self.known_switch_blocked(fresh):
                     continue
                 try:
                     survey = ChapterSweep(self).run()

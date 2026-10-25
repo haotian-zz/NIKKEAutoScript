@@ -76,6 +76,9 @@ class VisibleStoryTests(unittest.TestCase):
         # 受阻排序用的机关目录单独验证（test_closed_switch_points_projects_catalog）。
         self.real_closed_switch_points = self.runner.closed_switch_points
         self.runner.closed_switch_points = Mock(return_value=[])
+        # 没有敌人时转找已知机关单独验证（test_known_closed_switch_enters_recovery_before_sweep）。
+        self.real_known_switch_blocked = self.runner.known_switch_blocked
+        self.runner.known_switch_blocked = Mock(return_value=False)
         self.reveal = Mock()
         patcher = patch.dict(sys.modules, {'module.campaign.navigation.story_navigation':
                                          SimpleNamespace(reveal_story_marker=self.reveal)})
@@ -314,6 +317,48 @@ class VisibleStoryTests(unittest.TestCase):
             objects.detect_objects.return_value = [barrier]
             self.assertFalse(self.runner.quest_barrier_blocked(self.field))
         self.session.tap.assert_not_called()
+
+    def test_known_closed_switch_enters_recovery_before_sweep(self):
+        """实录 2026-10-25（HARD 9）：没有可点敌人、目录里有没试过的关闭机关时先转找机关，同一道路状态只转一次。"""
+        self.runner.quest = None
+        catalog = SimpleNamespace(data=dict(state_epoch=0))
+        pending = [('scene-0000', np.array([1300., 400.]))]
+        structures = SimpleNamespace(facility_catalog=Mock(return_value=catalog), recenter_squad=Mock(),
+                                     known_switches=Mock(return_value=pending))
+        memory = SimpleNamespace(FacilityUnconfirmed=type('FacilityUnconfirmed', (RuntimeError,), {}))
+        with patch.dict(sys.modules, {'module.campaign.structures': structures,
+                                      'module.campaign.facility_memory': memory}):
+            self.assertTrue(self.real_known_switch_blocked(self.field))
+            self.assertEqual(self.runner.blocked_views, 1)
+            self.assertFalse(self.runner.try_visible)
+            structures.recenter_squad.assert_called_once()
+            # 同一目标、同一道路状态不再转第二次，避免恢复没去试时空转。
+            self.assertFalse(self.real_known_switch_blocked(self.field))
+            # 开关踩亮后道路状态变化，可再转一次。
+            catalog.data['state_epoch'] = 1
+            self.assertTrue(self.real_known_switch_blocked(self.field))
+            # 全部试过就照常巡检。
+            structures.known_switches.return_value = []
+            catalog.data['state_epoch'] = 2
+            self.assertFalse(self.real_known_switch_blocked(self.field))
+        self.assertEqual(structures.known_switches.call_args[0][1], 'quest:None')
+        self.session.tap.assert_not_called()
+
+    def test_no_targets_tries_known_switch_before_sweep(self):
+        """没有可点敌人时先问已知机关；转入找机关就不启动清怪巡检。"""
+        self.runner.scan = Mock(return_value=(self.field, []))
+        self.runner.quest_target = Mock(return_value=(None, False))
+        self.runner.reveal_marked_area = Mock(return_value=False)
+        self.runner.quest_barrier_blocked = Mock(return_value=False)
+        self.runner.known_switch_blocked = Mock(return_value=True)
+        sweep = Mock()
+        with patch.dict(self.ns, ChapterSweep=sweep):
+            try:
+                self.runner.run(ticks=1)
+            except Exception:
+                pass
+        self.runner.known_switch_blocked.assert_called()
+        sweep.assert_not_called()
 
     def test_unconfirmed_sweep_after_empty_quest_view_asks_for_manual_mechanism(self):
         """实录24-34：任务画面无敌人、巡检配准失败时，停止原因提示可能需要人工踩传送器等机关。"""
