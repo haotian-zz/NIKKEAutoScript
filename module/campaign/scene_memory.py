@@ -8,8 +8,8 @@ import cv2
 import numpy as np
 
 from module.campaign.vision.detection import Detection
-from module.campaign.vision.enemy_ring import (HUD_RECTS, RingFrame, scene_registration, scene_ring_candidates,
-                                               scene_tracks)
+from module.campaign.vision.enemy_ring import (HUD_RECTS, RingFrame, clickable_ring, scene_registration,
+                                               scene_ring_candidates, scene_tracks)
 from module.campaign.vision.surface_motion import project
 
 
@@ -63,7 +63,7 @@ def follow_bosses(previous, current, field):
     """上一帧已确认的 Boss 入口本帧没认出骷髅时，按背景配准预测位置跟踪红色形状补回脚圈。
 
     只延续已经由骷髅＋光圈确认过的入口，不新建；配准失败或形状对不上就放弃，等下次认出骷髅。
-    补回的入口没有骷髅锚点，两帧确认按普通圈的 12px 中心门槛。
+    补回的入口没有骷髅锚点，两帧确认按普通圈的 12px 中心门槛；中心取配准投影，不取形状匹配位置。
     """
     tracks = getattr(previous, 'boss_tracks', ())
     if not tracks:
@@ -87,10 +87,12 @@ def follow_bosses(previous, current, field):
         if any(np.linalg.norm(point-(np.asarray(item['box'][:2])+item['box'][2:])/2) < 40. for item in known):
             continue
         red = red_shape(field) if red is None else red
-        found = follow_portal(red, track, predicted)
-        if found is None:
+        # 入口是静止地物：位置取背景配准的预测，形状匹配只确认它还在预测附近。
+        # 实录 2026-10-25（HARD 9）：旋转面片和光柱让匹配位置相对预测漂移（留存帧 p50 5.5px、p90 16px、
+        # 最大 26px）；按匹配位置给落点时，传送到山脊后同一 Boss 两帧中心差 12.8px，被两帧确认拒掉一直没点。
+        if follow_portal(red, track, predicted) is None or not clickable_ring(predicted):
             continue
-        box, _ = found
+        box = predicted
         center = (np.asarray(box[:2])+box[2:])/2
         near = [index for index, other in enumerate(centers) if np.linalg.norm(other-center) < 20.]
         if near:

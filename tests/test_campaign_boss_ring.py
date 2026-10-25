@@ -7,7 +7,7 @@ from unittest.mock import patch
 import cv2
 import numpy as np
 
-from module.campaign.scene_memory import follow_bosses
+from module.campaign.scene_memory import follow_bosses, stable_candidates
 from module.campaign.vision.boss_ring import boss_ring_candidates, portal_track, quest_portal_candidates, red_shape
 from module.campaign.vision.enemy_ring import RingFrame
 
@@ -88,8 +88,24 @@ class PortalTrackingTests(unittest.TestCase):
             followed = follow_bosses(self.frame(confirmed, box), self.frame(), turned)
         self.assertEqual(followed.kinds, ('boss',))
         expected = (np.asarray(box[:2])+box[2:])/2+[30, 10]
-        self.assertLess(np.linalg.norm(followed.centers[0]-expected), 12.)
+        self.assertLess(np.linalg.norm(followed.centers[0]-expected), 1.)
         self.assertEqual(len(followed.boss_tracks), 1)
+
+    def test_followed_position_is_registration_not_shape_match(self):
+        """实录 2026-10-25（HARD 9 山脊）：面片和光柱动画让形状匹配偏 10～13px，落点仍取配准投影，两帧确认通过。"""
+        confirmed = self.portal()
+        evidence = boss_ring_candidates(confirmed)[0]
+        box = evidence['box']
+        drifted = self.portal(skull=False, shift=(10, -8))
+        with patch('module.campaign.scene_memory.scene_registration', return_value=(np.eye(3), None, None)):
+            followed = follow_bosses(self.frame(confirmed, box), self.frame(), drifted)
+        center = (np.asarray(box[:2])+box[2:])/2
+        self.assertLess(np.linalg.norm(followed.centers[0]-center), 1.)
+        x, y, width, height = evidence['glyph']
+        before = dict(kind='boss', click=center.tolist(),
+                      boss_visual=dict(anchor=[x+width/2, y+height/2], region=evidence['box']))
+        after = dict(kind='boss', click=followed.centers[0].tolist())
+        self.assertEqual(len(stable_candidates([before], [after])), 1)
 
     def test_portal_gone_or_registration_failed_is_not_followed(self):
         confirmed = self.portal()
