@@ -9,6 +9,7 @@ import unittest
 
 import numpy as np
 
+from module.campaign.vision import detection
 from module.campaign.vision.inference_backend import LocalInference, ensure_worker, stop_worker
 
 
@@ -111,3 +112,64 @@ class InferenceBackendTests(unittest.TestCase):
         with patch('http.client.HTTPConnection', return_value=connection):
             self.assertIsNone(backend.predict(np.zeros((30, 40, 3), np.uint8), ['ring'], [True]*4))
         self.assertFalse(backend.available)
+
+
+class InferenceConfigurationTests(unittest.TestCase):
+    """AutoPush 的 CUDA 优先放进隔离 worker，推图结束关闭；起不来才用进程内 CUDA。"""
+
+    def setUp(self):
+        self.folder = tempfile.TemporaryDirectory()
+        self.addCleanup(self.folder.cleanup)
+        metadata = json.loads((detection.MODEL_DIRECTORY/'campaign.json').read_text(encoding='utf8'))
+        self.settings = Path(self.folder.name)/'data/campaign_detector.json'
+        self.settings.parent.mkdir(parents=True)
+        self.settings.write_text(json.dumps(dict(backend='cuda', threads=4, benchmark_passed=True,
+                                                 model_sha256=metadata['sha256'])), encoding='utf8')
+        patcher = patch.object(detection, 'DETECTOR_SETTINGS', self.settings)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.addCleanup(setattr, detection, '_worker', None)
+        self.addCleanup(setattr, detection, '_detector_profile', {})
+        detection._worker, detection._detector_profile = None, {}
+
+    def configure(self, ready, cuda=True, process=None):
+        backend = 'module.campaign.vision.inference_backend'
+        with patch(f'{backend}.ensure_worker', return_value=process) as start, \
+                patch(f'{backend}.worker_ready', return_value=ready), \
+                patch(f'{backend}.prepare_cuda', return_value=cuda) as local:
+            detection.configure_inference('AutoPush')
+        return start, local
+
+    def test_ready_worker_is_used_and_reused_across_segments(self):
+        process = Mock()
+        process.poll.return_value = None
+        start, local = self.configure(ready=True, process=process)
+        self.assertEqual(detection._detector_profile, dict(threads=4, remote=True))
+        local.assert_not_called()
+        start, _ = self.configure(ready=True, process=Mock())
+        start.assert_not_called()
+        self.assertIs(detection._worker, process)
+
+    def test_worker_unavailable_falls_back_to_in_process_cuda_then_cpu(self):
+        self.configure(ready=False)
+        self.assertEqual(detection._detector_profile,
+                         dict(threads=4, providers=['CUDAExecutionProvider', 'CPUExecutionProvider']))
+        self.configure(ready=False, cuda=False)
+        self.assertEqual(detection._detector_profile, dict(threads=4))
+
+    def test_other_instances_never_start_a_worker(self):
+        with patch('module.campaign.vision.inference_backend.ensure_worker') as start:
+            detection.configure_inference('DailyFull')
+        start.assert_not_called()
+        self.assertEqual(detection._detector_profile, {})
+
+    def test_release_stops_owned_worker_and_drops_sessions(self):
+        process = Mock()
+        detection._worker, detection._detector_profile = process, dict(threads=4, remote=True)
+        with patch('module.campaign.vision.inference_backend.stop_worker') as stop, \
+                patch.object(detection.detector, 'cache_clear') as clear:
+            detection.release_inference()
+        stop.assert_called_once_with(process)
+        clear.assert_called_once()
+        self.assertIsNone(detection._worker)
+        self.assertEqual(detection._detector_profile, {})

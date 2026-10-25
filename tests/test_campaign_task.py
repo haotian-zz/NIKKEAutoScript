@@ -32,6 +32,7 @@ def load(name, **namespace):
     namespace.setdefault('ARK_CHECK', object())
     namespace.setdefault('DESTINATION_SCORE', .8)
     namespace.setdefault('destination_place', Mock(return_value=None))
+    namespace.setdefault('release_inference', Mock())
     exec(compile(ast.Module(body=[node], type_ignores=[]), name, 'exec'), namespace)
     return namespace[name]
 
@@ -241,6 +242,8 @@ class CampaignStartTests(unittest.TestCase):
                                  select_chapter=Mock(return_value=True), cleared_count=load('cleared_count'))
         fn(runner)
         self.assertEqual(runner.enter_hard.call_args_list[-1].kwargs, {'peek': True})
+        # 检测 worker 随推图结束释放，不留在常驻实例里。
+        fn.__globals__['release_inference'].assert_called_once()
         return reports
 
     def test_hard_exhausted_with_full_counter_reports_success(self):

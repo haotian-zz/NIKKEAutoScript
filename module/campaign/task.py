@@ -16,6 +16,7 @@ from module.campaign.report import GOAL_REASONS
 from module.campaign.vision import battle
 from module.campaign.vision.chapter import chapter_identity
 from module.campaign.vision.chapter_completion import overlay_anchor
+from module.campaign.vision.detection import release_inference
 from module.campaign.vision import hard_list
 from module.campaign.window import CampaignWindow
 from module.campaign.visible_story import (DESTINATION_SCORE, destination_lobby_quest, destination_place,
@@ -550,9 +551,6 @@ class AutoPush(UI):
         if self.config.Client_Platform != 'win' or self.config.CampaignMap_MapType != 'main':
             report('blocked', '当前推图仅支持 PC 主线地图', '请选择 PC 实例与主线地图')
             return
-        if not self.runtime_ready():
-            self.config.task_delay(schedule=True)
-            return
         try:
             mode = getattr(self.config, 'CampaignMap_RunMode', 'single')
             if mode not in ('single', 'continuous'):
@@ -564,6 +562,10 @@ class AutoPush(UI):
                 raise ValueError('请选择普通或困难难度')
         except ValueError as exc:
             report('blocked', '推图设置无效', str(exc))
+            self.config.task_delay(schedule=True)
+            return
+        if not self.runtime_ready():
+            release_inference()
             self.config.task_delay(schedule=True)
             return
         total_cleared, recovery, segment = 0, 0, 0
@@ -702,6 +704,8 @@ class AutoPush(UI):
                    f'本轮已确认清除 {total_cleared} 个敌人，推图已停止' if total_cleared else '主线推图需要处理',
                    str(exc.__cause__ or exc) or '入口或地图状态需要处理，详情见日志与截图')
         finally:
+            # 检测 worker 及其 CUDA 内存随推图结束释放，不留在常驻的实例进程里。
+            release_inference()
             self.config.task_delay(schedule=True)
             self.device.target_resolution = (720, 1280)
             self.device.ensure_resolution(self.config.PCClient_ScreenNumber, 720, 1280,

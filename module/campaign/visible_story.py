@@ -1227,14 +1227,10 @@ def run_visible_story(owner):
     owner.check_main_story_page()
     owner.detect_current_chapter(localize=False)
     session = CampaignSession(owner, navigation=False)
-    inference_worker = None
     try:
-        inference_worker = configure_inference(owner.config.config_name)
+        # 检测 worker 跨段复用，推图结束由 AutoPush.run 统一释放。
+        configure_inference(owner.config.config_name)
         session.start()
         return VisibleStoryRunner(owner, session, CampaignExecutor(owner, session)).run()
     finally:
-        try:
-            session.close()
-        finally:
-            from module.campaign.vision.inference_backend import stop_worker
-            stop_worker(inference_worker)
+        session.close()

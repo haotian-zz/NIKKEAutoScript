@@ -3,6 +3,7 @@
 import hashlib
 import http.client
 import json
+import logging
 import os
 from pathlib import Path
 import subprocess
@@ -100,37 +101,43 @@ class LocalInference:
                         or not (0 <= box[0] < box[2] <= image.shape[1] and 0 <= box[1] < box[3] <= image.shape[0])):
                     raise ValueError('Invalid detection contract')
             return detections
-        except (OSError, ValueError, KeyError, TypeError, http.client.HTTPException):
+        except (OSError, ValueError, KeyError, TypeError, http.client.HTTPException) as exc:
             self.available = False
+            logging.getLogger('nkas').warning(f'推图检测 worker 不可用（{exc}），本次任务改用进程内 CPU 检测。')
             return None
         finally:
             connection.close()
+
+
+def worker_ready(model_sha256):
+    """健康检查同时核对模型和实际CUDA后端，防止同端口的其他进程被误用。"""
+    connection = http.client.HTTPConnection('127.0.0.1', 12280, timeout=.5)
+    try:
+        connection.request('GET', '/health')
+        response = connection.getresponse()
+        value = json.loads(response.read(8192))
+        return (response.status == 200 and value.get('model_sha256') == model_sha256
+                and value.get('providers', [])[:1] == ['CUDAExecutionProvider'])
+    except (OSError, ValueError, http.client.HTTPException):
+        return False
+    finally:
+        connection.close()
+
+
+# 冷启动要导入 torch 并建 CUDA 会话：实测 2026-10-25（win4090）热缓存 7.7 秒、冷启动超过 12 秒。
+WORKER_START_SECONDS = 30.
 
 
 def ensure_worker(repository, model_sha256):
     """按本机已验证配置启动隔离worker；不改生产依赖，不接管未知服务。
 
     返回本次创建的进程句柄，调用者任务结束时关闭；已有同模型服务只复用，不由本任务终止。
-    环境缺失或12秒内未准备好则返回None，既有CPU回退仍可运行。
+    环境缺失或30秒内未准备好则返回None，既有CPU回退仍可运行。
     """
     repository = Path(repository)
     runtime = repository/'data/vision_runtime'
 
-    def ready():
-        """健康检查同时核对模型和实际CUDA后端，防止同端口的其他进程被误用。"""
-        connection = http.client.HTTPConnection('127.0.0.1', 12280, timeout=.5)
-        try:
-            connection.request('GET', '/health')
-            response = connection.getresponse()
-            value = json.loads(response.read(8192))
-            return (response.status == 200 and value.get('model_sha256') == model_sha256
-                    and value.get('providers', [])[:1] == ['CUDAExecutionProvider'])
-        except (OSError, ValueError, http.client.HTTPException):
-            return False
-        finally:
-            connection.close()
-
-    if ready():
+    if worker_ready(model_sha256):
         return None
     python = runtime/'venv/Scripts/python.exe'
     worker = repository/'module/campaign/vision/inference_worker.py'
@@ -143,9 +150,9 @@ def ensure_worker(repository, model_sha256):
                                    stdout=log, stderr=log, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
     started = False
     try:
-        deadline = time.monotonic()+12.
+        deadline = time.monotonic()+WORKER_START_SECONDS
         while process.poll() is None and time.monotonic() < deadline:
-            if ready():
+            if worker_ready(model_sha256):
                 started = True
                 return process
             time.sleep(.2)

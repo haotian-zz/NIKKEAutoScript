@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 from functools import lru_cache
+import gc
 import hashlib
 import json
 import logging
@@ -20,6 +21,8 @@ GRID_LABELS = ('scene_ground_mechanism_off', 'scene_ground_mechanism_on', 'scene
 # 应用已知的类别集合；实际类别顺序始终由模型元数据决定，这里不假定模型包含哪些类。
 LABELS = LEGACY_SCENE_LABELS + MINIMAP_LABELS + GRID_LABELS
 MODEL_DIRECTORY = Path(__file__).parent / 'models'
+# 本机私有的检测后端配置（不入 Git），只有 AutoPush 读取。
+DETECTOR_SETTINGS = Path(__file__).resolve().parents[3] / 'data/campaign_detector.json'
 EDGE_MARGIN = 2
 NMS_IOU = .45
 
@@ -170,7 +173,6 @@ class Detector:
         options.inter_op_num_threads = 1
         self.session = ort.InferenceSession(str(model), sess_options=options,
                                             providers=providers or ['CPUExecutionProvider'])
-        logging.getLogger('nkas').info(f'推图检测后端：{self.session.get_providers()}，ORT {ort.__version__}，CPU线程 {threads}。')
         inputs, outputs = self.session.get_inputs(), self.session.get_outputs()
         if len(inputs) != 1 or inputs[0].shape != [1, 3, self.size, self.size] or inputs[0].type != 'tensor(float)':
             raise ValueError('Campaign YOLO input contract mismatch.')
@@ -182,6 +184,8 @@ class Detector:
         if remote:
             from module.campaign.vision.inference_backend import LocalInference
             self.remote = LocalInference(self.metadata['sha256'], self.labels)
+        backend = '隔离 CUDA worker（进程内 CPU 备用）' if remote else self.session.get_providers()
+        logging.getLogger('nkas').info(f'推图检测后端：{backend}，ORT {ort.__version__}，CPU线程 {threads}。')
 
     def scene_contract(self, scene):
         """校验模型包声明的全画面网格；边界余量和 NMS 阈值必须与本模块实现一致。"""
@@ -235,16 +239,21 @@ def detector():
 
 
 _detector_profile = {}
+# 本进程启动的隔离 CUDA worker 句柄；复用到推图结束，由 release_inference 关闭。
+_worker = None
 
 
 def configure_inference(config_name):
     """仅AutoPush读取已通过本机benchmark的私人配置，其他实例使用默认CPU。
 
-    不允许配置任意服务地址、依赖目录或模型文件。CUDA仅在私有环境已就绪时启用。
+    不允许配置任意服务地址、依赖目录或模型文件。CUDA 优先放进隔离 worker，worker 起不来时用进程内 CUDA，
+    私有环境不可用再用 CPU。实测 2026-10-25（win4090）：进程内 CUDA 建会话并推理后常驻约 1.8GB
+    （CUDA 上下文与 cuDNN），清缓存只回收约 0.2GB，常驻的 NKAS 实例因此一直多占；worker 方式整帧检测
+    84ms（进程内 77ms）、网格 104ms（88ms），worker 的约 2.5GB 在推图结束随进程退出全部释放。
     """
-    global _detector_profile
+    global _detector_profile, _worker
     profile = {}
-    path = Path(__file__).resolve().parents[3] / 'data/campaign_detector.json'
+    path = DETECTOR_SETTINGS
     if config_name == 'AutoPush' and path.exists():
         settings = json.loads(path.read_text(encoding='utf8'))
         metadata = json.loads((MODEL_DIRECTORY/'campaign.json').read_text(encoding='utf8'))
@@ -253,14 +262,30 @@ def configure_inference(config_name):
             if type(threads) is int and 1 <= threads <= 8:
                 profile = dict(threads=threads)
                 if settings.get('backend') == 'cuda':
-                    from module.campaign.vision.inference_backend import prepare_cuda
-                    if prepare_cuda(path.parent.parent):
+                    from module.campaign.vision.inference_backend import ensure_worker, prepare_cuda, worker_ready
+                    if _worker is None or _worker.poll() is not None:
+                        _worker = ensure_worker(path.parent.parent, metadata['sha256'])
+                    if worker_ready(metadata['sha256']):
+                        profile['remote'] = True
+                    elif prepare_cuda(path.parent.parent):
                         profile['providers'] = ['CUDAExecutionProvider', 'CPUExecutionProvider']
-    worker = None
     if profile != _detector_profile:
         _detector_profile = profile
         detector.cache_clear()
-    return worker
+
+
+def release_inference():
+    """推图结束时关闭本进程启动的 worker，丢弃检测与标题识别会话，下次推图重新建立。"""
+    global _detector_profile, _worker
+    from module.campaign.vision.entry_title import title_recognizer
+    from module.campaign.vision.inference_backend import stop_worker
+    try:
+        stop_worker(_worker)
+    finally:
+        _worker, _detector_profile = None, {}
+        detector.cache_clear()
+        title_recognizer.cache_clear()
+        gc.collect()
 
 
 def scene_mask(image):

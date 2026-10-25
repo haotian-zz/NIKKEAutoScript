@@ -19,7 +19,9 @@ RTX4090其他游戏运行时，完整15片场景CPU4线程P50约621ms；生产Py
 
 路径为`data/campaign_detector.json`。CUDA依赖固定为`data/vision_runtime/ort39-gpu`，DLL目录固定为`data/vision_runtime/venv/Lib/site-packages/torch/lib`，均为本机实验环境，不自动下载，不修改toolkit已装依赖或系统PATH。只在进程尚未载入其他ORT时加载私有包；缺依赖或CUDA不可用保留CPU。日志记录实际providers，不能仅凭配置声称CUDA已生效。
 
-`AutoPush.runtime_ready()`必须先配置后实例化检测器，避免CPU二进制已载入后热替换。进程内共享模型会话，CPU线程1～8可配置，默认4；线程更多本次反而变慢。其他实例使用CPU。隔离HTTP客户端/worker保留作性能实验，当前选型不启动服务，界面与游戏输入仍由正式会话执行。
+`AutoPush.runtime_ready()`必须先配置后实例化检测器，避免CPU二进制已载入后热替换。进程内共享模型会话，CPU线程1～8可配置，默认4；线程更多本次反而变慢。其他实例使用CPU。界面与游戏输入仍由正式会话执行。
+
+2026-10-25 改为隔离 worker 优先：进程内 CUDA 建会话并推理后常驻约 1.8GB（CUDA 上下文与 cuDNN），清掉检测器缓存只回收约 0.2GB，常驻的 NKAS 实例进程因此长期多占内存；此前 7 次推图因可用内存低于 512MiB 没有启动。同机复测（win4090，HARD 9 留存帧 20 张）：整帧旧五类检测进程内 77ms、worker 84ms，网格检测 88ms／104ms；worker 启动热缓存 7.7 秒、冷启动超过 12 秒（等待上限因此改为 30 秒），worker 约 2.5GB，推图结束由 `AutoPush.run` 的 `release_inference()` 关闭并丢弃检测与标题识别会话。worker 起不来时退回进程内 CUDA，私有环境不可用再用 CPU；worker 中途失效时本次任务改用进程内 CPU 并记警告。
 
 ## 点击后的状态
 
