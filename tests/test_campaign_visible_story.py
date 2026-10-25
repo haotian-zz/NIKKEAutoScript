@@ -512,6 +512,21 @@ class VisibleStoryTests(unittest.TestCase):
         self.runner.marker_pans = 4
         self.assertFalse(self.runner.reveal_marked_area(self.field))
 
+    def test_top_bar_marker_only_pans_camera(self):
+        """实录 25-18：菱形贴在顶栏右侧，只按它的方向平移镜头，不在顶栏点击。"""
+        marker = dict(kind='hud', position=[1617., 53.], confidence=.91)
+        self.ns['story_markers'] = Mock(return_value=[marker])
+        self.ns['squad_arrow'].return_value = [888., 410.]
+        self.ns['goto'].ARROW_GROUND_OFFSET = 90.
+        self.assertTrue(self.runner.reveal_marked_area(self.field))
+        self.assertEqual(self.ns['story_markers'].call_args.kwargs, dict(top_bar=True))
+        args, kwargs = self.ns['pan_scene'].call_args
+        drag = np.asarray(args[1])
+        self.assertAlmostEqual(float(np.linalg.norm(drag)), 480., places=3)
+        self.assertTrue(drag[0] < 0 < drag[1])
+        self.session.tap_verified_ui.assert_not_called()
+        self.session.tap.assert_not_called()
+
     def test_far_edge_marker_is_tapped_once_to_move_camera_to_target(self):
         """实录21-15：贴在顶栏下的离屏菱形点一次由游戏移镜头，最多两次后回到小步平移。"""
         marker = dict(kind='edge', position=[651., 225.], confidence=.95)

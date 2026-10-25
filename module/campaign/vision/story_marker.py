@@ -70,13 +70,16 @@ def outward_arrow(image, box):
     return False
 
 
-def story_markers(image):
+def story_markers(image, top_bar=False):
     """匹配不同大小的蓝色主线菱形，返回客户区 box、position、confidence 和 scene/edge 形态。
 
     候选按蓝色外框的实际大小归一化；白色内框补候选时须有周围青色且模板分至少0.9。
     白色内框只返回 cue 探索提示，不能判断场内／离屏或获得点击许可。
     顶栏、任务栏、小地图与底部按钮不参与识别。离屏点击必须同时满足靠边与外向箭头判据，
     靠边却无箭头的标记保留为 scene，只允许后续验证所属脚圈，不能直接点击。
+    top_bar 为 True 时另返回中心落在顶栏里的菱形（kind='hud'），只给镜头方向，任何情况下都不能点击。
+    实录 2026-10-24/25（25-18）：目标在右上方时菱形贴在顶栏右侧 (1617, 54)，被顶栏遮罩挡掉，
+    任务标记观测为空，转去全章巡检、拖进雾里配准失败停止；历史截图里顶栏内的菱形都是真的任务标记。
     """
     if image is None or image.shape != (999, 1776, 3):
         raise ValueError('主线标记识别需要 1776×999 BGR 客户区截图。')
@@ -85,7 +88,7 @@ def story_markers(image):
     blue = cv2.inRange(hsv, (80, 50, 100), (130, 255, 255))
     blue = cv2.morphologyEx(blue, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8))
     white = cv2.inRange(hsv, (0, 0, 180), (179, 90, 255))
-    for left, top, right, bottom in HUD_RECTS:
+    for left, top, right, bottom in HUD_RECTS[1:] if top_bar else HUD_RECTS:
         blue[top:bottom, left:right] = 0
         white[top:bottom, left:right] = 0
     blue_contours, _ = cv2.findContours(blue, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
@@ -125,10 +128,13 @@ def story_markers(image):
         if best is None or best < threshold:
             continue
         box = [int(x), int(y), int(x + width), int(y + height)]
+        hud = False
         if any(x < right and x + width > left and y < bottom and y + height > top
                for left, top, right, bottom in HUD_RECTS):
-            continue
-        kind = 'cue' if cue else ('edge' if outward_arrow(image, box) else 'scene')
+            if not (top_bar and center[1] < HUD_RECTS[0][3]):
+                continue
+            hud = True
+        kind = 'hud' if hud else 'cue' if cue else ('edge' if outward_arrow(image, box) else 'scene')
         result.append(dict(kind=kind, box=box,
                            position=center.tolist(), confidence=round(best, 4)))
     selected = []

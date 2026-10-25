@@ -843,9 +843,9 @@ class VisibleStoryRunner:
                 fresh = self.map_frame()
                 if goto.battle_popup_score(fresh) > .8:
                     return True
-            observed = story_markers(fresh)
+            observed = story_markers(fresh, top_bar=True)
             observations.append(observed)
-            markers = [item for item in observed if item['kind'] in ('scene', 'edge', 'cue')]
+            markers = [item for item in observed if item['kind'] in ('scene', 'edge', 'cue', 'hud')]
             confirmed = [item for item in markers if sum(
                 np.linalg.norm(np.asarray(item['position']) - old['position']) <= 10. for old in previous) == 1]
             if confirmed:
@@ -865,7 +865,8 @@ class VisibleStoryRunner:
             return False
         # 顶栏夹住的菱形实测都在 y≈225；场内菱形（如 21-32 的 y≈133～159）点了会触发原生寻路，不能当作边缘。
         clamped = 200. <= target[1] <= 250. or target[0] <= 100. or target[0] >= 1676.
-        if self.marker_jumps < 2 and length > 250. and clamped:
+        # 顶栏里的菱形只给方向：点那里会点到顶栏按钮，只平移镜头。
+        if self.marker_jumps < 2 and length > 250. and clamped and marker['kind'] != 'hud':
             # 实录 2026-10-21（21-15）：目标在多屏之外时菱形贴在顶栏下沿（y≈225）或左右边缘，480px
             # 小步平移追不上；
             # 点一下边缘菱形，游戏会把镜头移到任务目标（同头像回中）。只移动镜头，之后重新扫描脚圈；
