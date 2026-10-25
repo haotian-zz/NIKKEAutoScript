@@ -1,7 +1,9 @@
 """竖屏章节列表困难页：列表锚点、困难页签与已解锁卡片识别。"""
 
 import unittest
+from pathlib import Path
 
+import cv2
 import numpy as np
 
 from module.campaign.vision import hard_list
@@ -32,6 +34,15 @@ class HardListTests(unittest.TestCase):
         image[1103:1145, 510:660] = 240
         self.assertFalse(hard_list.hard_tab_active(image))
         self.assertFalse(hard_list.list_visible(np.zeros((1280, 720, 3), np.uint8)))
+
+    def test_list_visible_with_story_badge(self):
+        """实录 2026-10-24：有新剧情时「剧情」页签右上角叠红色 N 角标，列表仍要认出来。"""
+        crop = cv2.imread(str(Path(__file__).resolve().parent / 'fixtures/chapter_list_story_badge.png'))
+        image = np.zeros((1280, 720, 3), np.uint8)
+        x1, y1, x2, y2 = hard_list.LIST_TAB_REGION
+        image[y1:y2, x1:x2] = crop
+        self.assertTrue(hard_list.list_visible(image))
+        self.assertFalse(hard_list.hard_tab_active(image))
 
     def test_unlocked_cards_only(self):
         """实录排布：第 3 章右列 y≈280、第 4 章左列 y≈400 已解锁，第 5、6 章上锁。"""

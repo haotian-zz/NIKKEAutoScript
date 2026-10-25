@@ -15,6 +15,9 @@ ASSETS = Path(__file__).resolve().parent / 'assets'
 LIST_TAB = cv2.imread(str(ASSETS / 'chapter_list_tab.png'))
 if LIST_TAB is None:
     raise FileNotFoundError(ASSETS / 'chapter_list_tab.png')
+# 只比对「剧情」页签左侧 3/4：有新剧情时右上角会叠红色 N 角标。
+# 实录 2026-10-24：带角标时整张模板只有 0.71，去掉右侧后 0.997，其它画面最高 0.59。
+LIST_TAB = LIST_TAB[:, :LIST_TAB.shape[1] * 3 // 4]
 LIST_TAB_REGION = (0, 1050, 360, 1200)
 LIST_TAB_THRESHOLD = .9
 # 地图右下角难度标签（竖屏）、困难页签、关闭按钮
