@@ -158,6 +158,9 @@ class Recovery:
             result = self.settle(current, before, plan.get('target'))
             runner.memory.previous = None
             runner.deferred.clear()
+            # 踩过机关或走过设施后道路可能已通，之前走不到的位置重新允许尝试。
+            if hasattr(runner, 'rejected'):
+                runner.rejected.clear()
             return 'scouted' if plan['action'] == 'move' and result != 'entry' else result
         except TargetTriggered:
             return 'entry'

@@ -607,6 +607,9 @@ def recover_visible_structure(runner, field, allow_unanchored=False):
         # 镜头或小队可能已经移动，旧观察身份不得阻止新画面的独立目标复核。
         runner.memory.previous = None
         runner.deferred.clear()
+        # 踩过机关或走过设施后道路可能已通，之前走不到的位置重新允许尝试。
+        if hasattr(runner, 'rejected'):
+            runner.rejected.clear()
         runner.guided_quests.discard(runner.quest)
         runner.marker_pans = 0
         return 'attempted'

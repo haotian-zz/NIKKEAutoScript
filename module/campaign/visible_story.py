@@ -15,6 +15,7 @@ from module.campaign.scene_memory import SceneEnemyMemory, stable_candidates
 from module.campaign.clearance import ClearanceJournal
 from module.campaign.chapter_flow import ChapterOverlayFlow
 from module.campaign.sweep import ChapterSweep, SweepUnconfirmed
+from module.campaign.rejected_targets import RejectedTargets, static_view
 from module.campaign.vision.perception import squad_arrow, squad_ground
 from module.campaign.vision.offscreen import squad_offscreen
 from module.campaign.vision.story_marker import story_markers
@@ -288,6 +289,8 @@ class VisibleStoryRunner:
         self.session.accept_ex_entry = True
         self.memory = SceneEnemyMemory(session.evidence.folder / 'scene-enemies.json', owner.chapter_ocr)
         self.deferred = set()
+        # 点过却走不到／点了没反应的位置，按场景配准跟踪；脚圈换了编号也不再点同一处。
+        self.rejected = RejectedTargets()
         self.quest = None
         self.ex_sequence = 0
         self.manual_ex_seen = False
@@ -409,6 +412,14 @@ class VisibleStoryRunner:
                 fresh = self.map_frame()
                 # 镜头已换，点击前目标的画面坐标不再对应；只按新镜头观察小队。
                 return self.wait_entry(fresh, arrow=squad_arrow(fresh), recenter=False)
+            # 实录 2026-10-24（25章）：小队站在橙色圈上、头顶无箭头，小地图圆环也没有，把自己脚下的圈当敌人点；
+            # 二十秒画面纹丝不动后整轮中止。镜头没动、没弹备战，说明这一下没点到能走过去打的敌人。
+            if (state == 'observation_unknown' and target is not None
+                    and observation.get('reason') == 'squad_unobserved' and static_view(before, field)):
+                logger.info('点击后画面没变、小队和小地图圆环都看不到：当作点到的不是敌人（可能是小队自己脚下的圈），'
+                            '记下位置换别的目标。')
+                self.entry_outcome = dict(self.entry_outcome, no_effect=True)
+                return False
             if state != 'waiting':
                 raise StoryVerificationError('原生寻路未确认到达；已保留观测，未发送后续目标。', 'native_'+state)
             self.session.pause(.7)
@@ -610,7 +621,20 @@ class VisibleStoryRunner:
             self.manual_ex_seen = True
             return False
         return (item['id'] not in self.deferred
-                and item['status'] not in ('deferred', 'ex_skipped', 'unreachable', 'stalled', 'manual_required'))
+                and item['status'] not in ('deferred', 'ex_skipped', 'unreachable', 'stalled', 'no_effect',
+                                           'manual_required'))
+
+    def drop_rejected(self, field, candidates):
+        """去掉落在之前走不到／点了没反应位置上的候选；没有记录时不做配准。"""
+        kept, skipped = self.rejected.filter(field, candidates)
+        for item, distance, reason in skipped:
+            text = '点了没反应' if reason == 'no_effect' else '走不到'
+            logger.info(f"跳过 {item['id']}：离之前{text}的位置 {distance:.0f}px。")
+        if skipped:
+            self.session.record_evidence('rejected_skip', field, skipped=[
+                dict(id=item['id'], click=item['click'], distance=round(distance, 1), reason=reason)
+                for item, distance, reason in skipped])
+        return kept
 
     def return_lobby(self, field):
         """连续确认主线要求返回大厅后点真实任务箭头一次，后续由大厅独立核对任务推进。
@@ -910,6 +934,7 @@ class VisibleStoryRunner:
             raise SweepUnconfirmed('未能返回尚未完成巡检的章节，清怪状态保持未完成。')
         self.memory.previous = None
         self.deferred.clear()
+        self.rejected.clear()
 
     def advance_chapter(self, proof):
         """本章完整巡检无剩余敌人且任务已进入下一章后，才点击下一章节并核对新身份。"""
@@ -1037,7 +1062,7 @@ class VisibleStoryRunner:
             if goto.battle_popup_score(fresh) > .8:
                 self.fight_entry()
                 continue
-            candidates = [item for item in candidates if self.selectable(item)]
+            candidates = self.drop_rejected(fresh, [item for item in candidates if self.selectable(item)])
             preferred, marked = self.quest_target(field, fresh, candidates)
             if marked and preferred is None and self.reveal_marked_area(fresh, has_targets=bool(candidates)):
                 continue
@@ -1073,7 +1098,10 @@ class VisibleStoryRunner:
                     continue
                 if survey['state'] == 'verified_empty':
                     return self.advance_chapter(survey['proof'])
-                fresh, candidates = survey['field'], survey['targets']
+                fresh, candidates = survey['field'], self.drop_rejected(survey['field'], survey['targets'])
+                if not candidates:
+                    raise StoryVerificationError('巡检找到的目标都在之前走不到或点了没反应的位置上，未再点击；'
+                                                 '请人工查看是否需要机关或手动处理。', 'story_rejected_only')
             observed_arrow = squad_arrow(fresh)
             anchor = np.asarray(goto.VIEWPORT_PIXEL if observed_arrow is None else observed_arrow)
             # 受阻后先打守在关闭机关上／旁边的怪：打掉它小队就站在机关旁，路可能随之打开。
@@ -1121,8 +1149,16 @@ class VisibleStoryRunner:
                     logger.info('受阻期间打赢一个可见敌人，重新尝试之前受阻的目标。')
                     self.blocked_views, self.try_visible = 0, False
                     self.deferred.clear()
+                    self.rejected.clear()
             else:
-                self.memory.attempt(target['id'], 'stalled', self.entry_outcome)
+                no_effect = bool(self.entry_outcome and self.entry_outcome.get('no_effect'))
+                reason = 'no_effect' if no_effect else 'stalled'
+                self.rejected.add(fresh, target['click'], reason)
+                self.memory.attempt(target['id'], reason, self.entry_outcome)
+                if no_effect:
+                    # 点到的不是能走过去的东西，不算道路受阻，不进入设施诊断。
+                    self.deferred.add(target['id'])
+                    continue
                 self.blocked_click = list(target['click'])
                 self.blocked_views += 1
                 self.try_visible = True

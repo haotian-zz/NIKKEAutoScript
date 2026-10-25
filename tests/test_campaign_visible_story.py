@@ -34,6 +34,8 @@ def definitions():
                      squad_arrow=Mock(return_value=None), squad_offscreen=Mock(return_value=None),
                      story_markers=story_markers, pan_scene=Mock(),
                      UiControlChanged=type('UiControlChanged', (RuntimeError,), {}))
+    from module.campaign.rejected_targets import RejectedTargets
+    namespace.update(RejectedTargets=RejectedTargets, static_view=Mock(return_value=False))
     namespace.update(read_title=Mock(return_value=None), title_crop=Mock(return_value=None))
     from module.campaign.vision.native_motion import ClickProgress, NativeMotion, combine_motion
     namespace.update(ClickProgress=ClickProgress, NativeMotion=NativeMotion, combine_motion=combine_motion,
@@ -746,6 +748,74 @@ class VisibleStoryTests(unittest.TestCase):
                 self.runner.wait_entry(self.field)
         self.assertEqual(raised.exception.reason, 'native_observation_unknown')
         recenter.assert_called_once_with(self.runner)
+
+    def test_unobserved_static_click_is_no_effect(self):
+        """实录 2026-10-24（25章）：点了自己脚下的橙色圈，二十秒小队和小地图都看不到、镜头没动：当作点了没反应。"""
+        clock = [0.]
+        self.ns['time'].monotonic.side_effect = lambda: clock[0]
+        self.session.pause.side_effect = lambda seconds: clock.__setitem__(0, clock[0]+seconds)
+        self.ns['NativeMotion'] = Mock()
+        self.ns['NativeMotion'].return_value.observe.return_value = dict(state='unknown', reason='squad_unobserved')
+        self.ns['static_view'].return_value = True
+        self.assertFalse(self.runner.wait_entry(self.field, target=self.target))
+        self.assertTrue(self.runner.entry_outcome['no_effect'])
+        self.assertEqual(self.runner.entry_outcome['outcome'], 'observation_unknown')
+        self.session.tap.assert_not_called()
+
+    def test_unobserved_moving_view_still_stops(self):
+        """镜头动过（或配准不上）就不能说点了没反应，仍按观测未确认停止。"""
+        clock = [0.]
+        self.ns['time'].monotonic.side_effect = lambda: clock[0]
+        self.session.pause.side_effect = lambda seconds: clock.__setitem__(0, clock[0]+seconds)
+        self.ns['NativeMotion'] = Mock()
+        self.ns['NativeMotion'].return_value.observe.return_value = dict(state='unknown', reason='squad_unobserved')
+        with self.assertRaises(self.ns['StoryVerificationError']) as raised:
+            self.runner.wait_entry(self.field, target=self.target)
+        self.assertEqual(raised.exception.reason, 'native_observation_unknown')
+
+    def test_no_effect_click_is_rejected_without_facility_recovery(self):
+        """点了没反应：记下位置、本目标暂缓，但不算道路受阻，不进入设施诊断。"""
+        self.ns['read_stage'] = Mock(return_value=(25, 18))
+        self.runner.scan = Mock(return_value=(self.field, [self.target]))
+
+        def no_effect(*args, **kwargs):
+            self.runner.entry_outcome = dict(state='unknown', outcome='observation_unknown', no_effect=True)
+            return False
+        self.runner.wait_entry = Mock(side_effect=no_effect)
+        self.runner.run(ticks=1)
+        self.assertEqual(len(self.runner.rejected), 1)
+        self.assertEqual(self.runner.rejected.records[0]['reason'], 'no_effect')
+        self.assertEqual((self.runner.blocked_views, self.runner.try_visible), (0, False))
+        self.assertIn(self.target['id'], self.runner.deferred)
+        self.assertEqual(self.runner.memory.attempt.call_args[0][:2], ('ring-1', 'no_effect'))
+
+    def test_stall_records_position_and_blocked_win_clears_it(self):
+        """停滞也记下位置；受阻期间打赢可见敌人后道路可能已通，记录清空允许重试。"""
+        self.ns['read_stage'] = Mock(return_value=(25, 15))
+        self.runner.scan = Mock(return_value=(self.field, [self.target]))
+        self.runner.wait_entry = Mock(return_value=False)
+        self.runner.run(ticks=1)
+        self.assertEqual(self.runner.rejected.records[0]['reason'], 'stalled')
+        other = dict(self.target, id='ring-9', click=[1200., 600.])
+        self.runner.scan = Mock(return_value=(self.field, [other]))
+        self.runner.wait_entry = Mock(return_value=True)
+        self.runner.fight_entry = Mock(return_value=True)
+        self.runner.run(ticks=1)
+        self.assertEqual(len(self.runner.rejected), 0)
+
+    def test_rejected_position_skips_ring_with_new_id(self):
+        """同一处换了扫描编号仍跳过，改点画面内其他目标，并留下跳过证据。"""
+        self.ns['read_stage'] = Mock(return_value=(25, 15))
+        renamed = dict(self.target, id='ring-40-0')
+        other = dict(self.target, id='ring-40-1', click=[1200., 600.])
+        self.runner.scan = Mock(return_value=(self.field, [renamed, other]))
+        self.runner.rejected = Mock(filter=Mock(return_value=([other], [(renamed, 8., 'no_effect')])))
+        self.runner.wait_entry = Mock(return_value=True)
+        self.runner.fight_entry = Mock(return_value=True)
+        self.runner.run(ticks=1)
+        self.session.tap.assert_called_once_with(other['click'])
+        skipped = [call for call in self.session.record_evidence.call_args_list if call[0][0] == 'rejected_skip']
+        self.assertEqual(skipped[0][1]['skipped'][0]['id'], 'ring-40-0')
 
     def test_structure_scout_keeps_recovery_priority_over_another_enemy_click(self):
         """受阻后的设施换视角仍需继续找设施，不立即插入另一次敌人点击打断恢复。"""
