@@ -7,7 +7,9 @@ from unittest.mock import patch
 import cv2
 import numpy as np
 
-from module.campaign.vision.boss_ring import boss_ring_candidates, quest_portal_candidates
+from module.campaign.scene_memory import follow_bosses
+from module.campaign.vision.boss_ring import boss_ring_candidates, portal_track, quest_portal_candidates, red_shape
+from module.campaign.vision.enemy_ring import RingFrame
 
 
 class BossRingTests(unittest.TestCase):
@@ -52,6 +54,51 @@ class BossRingTests(unittest.TestCase):
         box = np.asarray(found[0]['box'])
         self.assertLess(np.linalg.norm((box[:2]+box[2:])/2 - [1235, 420]), 40.)
 
+
+
+class PortalTrackingTests(unittest.TestCase):
+    """实录 2026-10-25（HARD 9）：骷髅面片旋转，侧对镜头的帧认不出；已确认的入口按红色形状跟踪。"""
+
+    def portal(self, skull=True, shift=(0, 0)):
+        """5-20 困难 Boss 实拍入口放在暗底上；skull=False 时把白色骷髅涂成面片的粉色（模拟侧转）。"""
+        crop = cv2.imread(str(Path(__file__).resolve().parent / 'fixtures/hard_boss_5_20.png'))
+        if not skull:
+            hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+            crop = crop.copy()
+            crop[(hsv[..., 2] >= 170) & (hsv[..., 1] <= 120)] = (150, 70, 220)
+        field = np.full((999, 1776, 3), 40, np.uint8)
+        x, y = 1110+shift[0], 260+shift[1]
+        field[y:y+240, x:x+240] = crop
+        return field
+
+    def frame(self, field=None, box=None):
+        """只含 Boss 入口跟踪信息的场景帧（无普通脚圈、无特征；配准在测试里替换）。"""
+        tracks = () if box is None else (portal_track(red_shape(field), box),)
+        centers = np.empty((0, 2)) if box is None else np.asarray([(np.asarray(box[:2])+box[2:])/2])
+        kinds = () if box is None else ('boss',)
+        return RingFrame(centers, np.empty((0, 2)), None, np.zeros(2), [], [], kinds, (), (), tracks)
+
+    def test_confirmed_portal_is_followed_when_skull_turns_away(self):
+        confirmed = self.portal()
+        box = boss_ring_candidates(confirmed)[0]['box']
+        turned = self.portal(skull=False, shift=(30, 10))
+        self.assertEqual(boss_ring_candidates(turned), [])
+        translation = np.float32([[1, 0, 30], [0, 1, 10], [0, 0, 1]])
+        with patch('module.campaign.scene_memory.scene_registration', return_value=(translation, None, None)):
+            followed = follow_bosses(self.frame(confirmed, box), self.frame(), turned)
+        self.assertEqual(followed.kinds, ('boss',))
+        expected = (np.asarray(box[:2])+box[2:])/2+[30, 10]
+        self.assertLess(np.linalg.norm(followed.centers[0]-expected), 12.)
+        self.assertEqual(len(followed.boss_tracks), 1)
+
+    def test_portal_gone_or_registration_failed_is_not_followed(self):
+        confirmed = self.portal()
+        box = boss_ring_candidates(confirmed)[0]['box']
+        empty = np.full((999, 1776, 3), 40, np.uint8)
+        with patch('module.campaign.scene_memory.scene_registration', return_value=(np.eye(3), None, None)):
+            self.assertEqual(follow_bosses(self.frame(confirmed, box), self.frame(), empty).kinds, ())
+        with patch('module.campaign.scene_memory.scene_registration', side_effect=ValueError('场景纹理不足。')):
+            self.assertEqual(follow_bosses(self.frame(confirmed, box), self.frame(), self.portal(skull=False)).kinds, ())
 
 
 class QuestPortalTests(unittest.TestCase):

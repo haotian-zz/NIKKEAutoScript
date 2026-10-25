@@ -166,6 +166,56 @@ def boss_ring_candidates(field):
     return result
 
 
+# 已确认入口的跟踪：困难 Boss 的骷髅印在旋转的三角面片上，侧对镜头时认不出。
+# 实录 2026-10-25（HARD 9）：小队停在主线入口旁，当天 813 帧里只有 98 帧认出骷髅，两帧扫描几乎从不
+# 同时确认，7 分钟里一次没点它，只去点悬崖下走不到的敌人。骷髅在某帧确认后，下一帧按入口光圈连同
+# 光柱的红色形状，在背景配准预测的位置附近匹配：同一入口相邻帧 0.77～0.85，随机位置 p99 0.38。
+TRACK_SCORE = .6
+TRACK_SEARCH = 30
+
+
+def red_shape(field):
+    """入口红色形状（光圈＋光柱）的模糊掩码，用于跨帧外观跟踪。"""
+    return cv2.GaussianBlur(red_mask(field).astype(np.float32), (0, 0), 4.)
+
+
+def portal_region(box, shape):
+    """入口光圈框向上扩到光柱、左右略扩的跟踪区域，裁到画面内。"""
+    x1, y1, x2, y2 = box
+    width = x2-x1
+    return (int(max(0, x1-.2*width)), int(max(0, y1-1.6*width)),
+            int(min(shape[1], x2+.2*width)), int(min(shape[0], y2+.15*width)))
+
+
+def portal_track(red, box):
+    """本帧入口的跟踪记录：光圈框与红色形状模板；区域内没有红色返回 None。"""
+    x1, y1, x2, y2 = portal_region(box, red.shape)
+    template = red[y1:y2, x1:x2]
+    if template.size == 0 or template.std() < 1.:
+        return None
+    return dict(box=tuple(map(float, box)), template=template, offset=(x1-box[0], y1-box[1]))
+
+
+def follow_portal(red, track, predicted):
+    """在预测光圈框附近匹配上一帧的入口红色形状；返回 (本帧光圈框, 分数) 或 None。"""
+    template = track['template']
+    left = int(round(predicted[0]+track['offset'][0]))-TRACK_SEARCH
+    top = int(round(predicted[1]+track['offset'][1]))-TRACK_SEARCH
+    x1, y1 = max(0, left), max(0, top)
+    x2 = min(red.shape[1], left+template.shape[1]+2*TRACK_SEARCH)
+    y2 = min(red.shape[0], top+template.shape[0]+2*TRACK_SEARCH)
+    patch = red[y1:y2, x1:x2]
+    if patch.shape[0] < template.shape[0] or patch.shape[1] < template.shape[1] or patch.std() < 1.:
+        return None
+    _, score, _, point = cv2.minMaxLoc(cv2.matchTemplate(patch, template, cv2.TM_CCOEFF_NORMED))
+    if score < TRACK_SCORE:
+        return None
+    dx = x1+point[0]-(predicted[0]+track['offset'][0])
+    dy = y1+point[1]-(predicted[1]+track['offset'][1])
+    box = (predicted[0]+dx, predicted[1]+dy, predicted[2]+dx, predicted[3]+dy)
+    return (box, float(score)) if clickable_ring(box) else None
+
+
 def scene_boss_rings(field):
     """将双证据入口适配为场景脚圈；confidence保留字形IoU，不冒充模型概率或胜利证据。"""
     return [Detection('scene_enemy_ring', item['shape_score'], tuple(map(float, item['box'])))

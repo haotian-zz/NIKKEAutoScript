@@ -71,6 +71,7 @@ class RingFrame:
     kinds 可选并与 centers 对齐；可信 EX 分类用于保留待清，未知类别不授予普通关卡身份。
     squad_overlap_boxes 是客户区中覆盖可信小队落点的歧义框，仅用于诊断和纹理屏蔽。
     boss_evidence 保存本帧骷髅及实际脚圈框，供动画中心波动时核对共同可点击区域。
+    boss_tracks 保存本帧已确认 Boss 入口的框与红色形状模板，供下一帧骷髅侧转认不出时跟踪。
     """
 
     centers: np.ndarray
@@ -82,6 +83,7 @@ class RingFrame:
     kinds: tuple = ()
     squad_overlap_boxes: tuple = ()
     boss_evidence: tuple = ()
+    boss_tracks: tuple = ()
 
 
 def observe_rings(image, panel, matrix, viewport):

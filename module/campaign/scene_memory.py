@@ -1,5 +1,6 @@
 """场景敌人观察簿：保存红圈、完整关卡身份与状态，不把旧屏幕位置当作新的点击证据。"""
 
+import dataclasses
 import json
 import time
 
@@ -7,7 +8,9 @@ import cv2
 import numpy as np
 
 from module.campaign.vision.detection import Detection
-from module.campaign.vision.enemy_ring import HUD_RECTS, RingFrame, scene_ring_candidates, scene_tracks
+from module.campaign.vision.enemy_ring import (HUD_RECTS, RingFrame, scene_registration, scene_ring_candidates,
+                                               scene_tracks)
+from module.campaign.vision.surface_motion import project
 
 
 def ring_frame(field, reader=None):
@@ -47,8 +50,61 @@ def ring_frame(field, reader=None):
     kinds = tuple('ex' if any(np.linalg.norm(point-ex.center) < 20. for ex in ex_rings)
                   else 'boss' if any(np.linalg.norm(point-boss.center) < 20. for boss in boss_rings)
                   else 'unknown' for point in centers)
+    tracks = ()
+    if boss_rings:
+        from module.campaign.vision.boss_ring import portal_track, red_shape
+        red = red_shape(field)
+        tracks = tuple(track for track in (portal_track(red, item.box) for item in boss_rings) if track is not None)
     return RingFrame(centers, np.asarray([key.pt for key in keys]), descriptors, np.zeros(2), [], [], kinds,
-                     overlap, tuple(boss_evidence))
+                     overlap, tuple(boss_evidence), tracks)
+
+
+def follow_bosses(previous, current, field):
+    """上一帧已确认的 Boss 入口本帧没认出骷髅时，按背景配准预测位置跟踪红色形状补回脚圈。
+
+    只延续已经由骷髅＋光圈确认过的入口，不新建；配准失败或形状对不上就放弃，等下次认出骷髅。
+    补回的入口没有骷髅锚点，两帧确认按普通圈的 12px 中心门槛。
+    """
+    tracks = getattr(previous, 'boss_tracks', ())
+    if not tracks:
+        return current
+    try:
+        matrix, _, _ = scene_registration(previous, current)
+    except (ValueError, cv2.error, np.linalg.LinAlgError):
+        return current
+    from module.campaign.vision.boss_ring import follow_portal, portal_track, red_shape
+    centers = [np.asarray(point, float) for point in current.centers]
+    kinds = list(current.kinds) if len(current.kinds) == len(centers) else ['unknown']*len(centers)
+    known = list(current.boss_tracks)
+    red = None
+    for track in tracks:
+        try:
+            corners = project(matrix, np.asarray([track['box'][:2], track['box'][2:]], float))
+        except ValueError:
+            continue
+        predicted = (*corners[0], *corners[1])
+        point = corners.mean(0)
+        if any(np.linalg.norm(point-(np.asarray(item['box'][:2])+item['box'][2:])/2) < 40. for item in known):
+            continue
+        red = red_shape(field) if red is None else red
+        found = follow_portal(red, track, predicted)
+        if found is None:
+            continue
+        box, _ = found
+        center = (np.asarray(box[:2])+box[2:])/2
+        near = [index for index, other in enumerate(centers) if np.linalg.norm(other-center) < 20.]
+        if near:
+            kinds[near[0]] = 'boss'
+        else:
+            centers.append(center)
+            kinds.append('boss')
+        refreshed = portal_track(red, box)
+        if refreshed is not None:
+            known.append(refreshed)
+    if len(known) == len(current.boss_tracks):
+        return current
+    return dataclasses.replace(current, centers=np.asarray(centers, float).reshape(-1, 2), kinds=tuple(kinds),
+                               boss_tracks=tuple(known))
 
 
 class SceneEnemyMemory:
@@ -67,6 +123,8 @@ class SceneEnemyMemory:
     def observe(self, field, frame=None):
         """扫描全部可见脚圈并更新轨迹；几何跟踪不可信时创建新观察，不沿用旧坐标。"""
         current = ring_frame(field, self.reader) if frame is None else frame
+        if frame is None and self.previous is not None:
+            current = follow_bosses(self.previous, current, field)
         links = {}
         if self.previous is not None and len(self.previous.centers) and len(current.centers):
             try:
