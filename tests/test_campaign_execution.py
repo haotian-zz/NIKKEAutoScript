@@ -1097,18 +1097,20 @@ class ExecutorTests(unittest.TestCase):
         self.assertEqual(self.owner.story_wins, {(20, 6)})
         self.assertEqual(self.owner.state.enemies['unrelated']['status'], 'pending')
 
-    def test_continuous_stops_on_first_defeat_without_retrying(self):
-        """持续模式首次确认战败即返回，不自动连败重打。"""
+    def test_continuous_retries_defeat_like_single_run(self):
+        """持续模式战败也原地重打，最多 BATTLE_DEFEAT_RETRIES 次后返回并请求人工。"""
         self.owner.continuous = True
         goal = dict(kind='enemy', id='enemy-1', position=[112, 96])
         self.owner.state.enemies['enemy-1'] = {'status': 'pending'}
-        self.session.battle_step.side_effect = [dict(state='defeat')] + settle_gone_frames()
+        self.session.battle_step.side_effect = ([dict(state='defeat')]
+                                               + [dict(state='battle', auto=True), dict(state='defeat')] * 3
+                                               + settle_gone_frames())
         with patch('module.campaign.execution.Timer', instant_timer):
             with self.assertRaises(BattleFailed):
                 self.executor.battle(goal)
         taps = [item.args[0] for item in self.session.tap.call_args_list]
-        self.assertNotIn(DEFEAT_RETRY_POINT, taps)
-        self.assertEqual(taps, [DEFEAT_BACK_POINT])
+        self.assertIn(DEFEAT_RETRY_POINT, taps)
+        self.assertEqual(taps.count(DEFEAT_BACK_POINT), 1)
         self.assertEqual(self.owner.state.enemies['enemy-1']['status'], 'pending')
 
     def test_battle_defeat_retries_in_place_then_returns_and_fails(self):

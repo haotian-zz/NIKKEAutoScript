@@ -708,6 +708,16 @@ class EnterHardTests(unittest.TestCase):
         clicks = [call.args for call in device.click_xy.mock_calls]
         self.assertEqual(clicks, [(163, 414)])
 
+    def test_card_of_current_chapter_closes_list_when_click_does_nothing(self):
+        """实录 2026-10-26（困难 10）：列表从本章地图打开，点最新卡片＝点当前章，列表不关；过了等待就关列表回地图。"""
+        fn, runner, device, report = self.enter(['list', 'list', 'list', 'map'])
+        settled = SimpleNamespace(start=lambda: settled, reset=lambda: None, reached=lambda: True)
+        fn.__globals__['Timer'] = lambda seconds: settled
+        self.assertTrue(fn(runner))
+        clicks = [call.args for call in device.click_xy.mock_calls]
+        self.assertEqual(clicks, [(163, 414), (630, 153)])
+        report.assert_not_called()
+
     def test_complete_latest_chapter_reports_success_without_entering(self):
         """最下面的已解锁卡片计数已满：困难已追上普通进度，关列表报告完成，不进入章节。"""
         fn, runner, device, report = self.enter(['list', 'list'], complete=True)

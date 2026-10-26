@@ -278,14 +278,14 @@ class CampaignExecutor:
         按钮可点，而「画面像不像野外」正好会在点「进入战斗」之后的过场里为真，用它判断战斗结束
         等于把战斗丢回给推图流程。所以必须先取得胜负结算，再连续确认野外才交回控制权：
         胜利与升级附加页分别点继续，战败按 BATTLE_DEFEAT_RETRIES 决定重打还是返回。
-        持续推图首次战败即返回并停止，单轮模式保留原重试次数。
+        持续推图与单轮模式都按 BATTLE_DEFEAT_RETRIES 重打（用户 2026-10-26：困难推图失败最多重试三次）。
         战前、战后剧情由会话点击 SKIP；剧情、附加页或未识别画面清空野外确认计数。
         剧情跳过与继续提示均不作为胜利证据，剧情期间保留已确认的胜负及原有超时约束。
         一段战斗（进弹窗、重打后重新开打）单独计 BATTLE_TIME_LIMIT 秒，等不到结算就交人工：
         不无限等，也不盲目连点。战斗结束时给会话打开一次「沿用战斗前坐标」的许可，
         第一帧重新配准失败就用旧坐标继续推图。
         """
-        defeat_retries = 0 if getattr(self.owner, 'continuous', False) is True else BATTLE_DEFEAT_RETRIES
+        defeat_retries = BATTLE_DEFEAT_RETRIES
         self.session.begin_target('battle')
         self.session.battle_mode = True
         settled, close_entry, retries, polls = None, False, 0, 0

@@ -411,6 +411,13 @@ class AutoPush(UI):
                     # 实录 2026-10-23（困难 5→6）：点卡片后列表淡出的过渡帧里页签红色认不出，
                     # 回头再点页签会把 step 改掉，地图出来读到 HARD 也不返回，直到超时。
                     pass
+                elif step == 'card' and hard_list.hard_tab_active(image):
+                    # 实录 2026-10-26（困难 10 读完计数 26/27）：列表是从困难 10 地图打开的，点最新卡片＝点当前章，
+                    # 游戏不响应、列表不关，原逻辑每 10 秒重点一次直到超时。点过 10 秒列表还在就关掉它，
+                    # 回到的就是这一章的困难地图，由下面的 HARD 判据确认进入。
+                    logger.info('点了最新章节卡片后列表仍在：它就是当前所在章节，关闭列表回到地图。')
+                    self.device.click_xy(*hard_list.LIST_CLOSE)
+                    settle = Timer(10).start()
                 elif not hard_list.hard_tab_active(image):
                     if step != 'tab' or timer.reached():
                         self.device.click_xy(*hard_list.HARD_TAB)
