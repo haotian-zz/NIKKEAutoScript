@@ -71,6 +71,10 @@ FIELD_WAIT_LIMIT = 30.
 # 叠在场景上、HUD 会淡出或整体挪动，单帧判据偶尔会把开着的读成关着；照单帧就点，那一下正好
 # 把自动射击关掉（开与关是同一个按钮），战斗会被拖长甚至打输。
 AUTO_CONFIRM_FRAMES = 2
+# 点过 AUTO 后仍连续读成关闭、且过了 AUTO_TAP_INTERVAL，再按一次游戏的 AUTO 快捷键 TAB（同一场最多一次）。
+# 实录 2026-10-26（10-22 HARD）：战斗中 AUTO 被关掉，点了一次没生效就禁止再切，整场手动射击打输；
+# 用户按 TAB 打开 AUTO 后打过。点击没落地时开关没变，前后都读成关闭才补这一下，不会把开着的关掉。
+AUTO_HOTKEY = 'tab'
 # 设备卡死判据的续期阈值（秒）：它判的是「一直在等某个按钮匹配成功」，而推图全程不做按钮匹配，
 # 计时到 6 分钟就会在 device.screenshot 里抛 GameStuckError('Wait too long')；
 # 调度器只在每个任务开始时清一次计时，而一章可能跑满 20 分钟，所以这里提前续期。
@@ -807,7 +811,7 @@ class CampaignSession(NavigationSession):
         return state
 
     def handle_auto(self, state):
-        """战斗中把自动射击打开：连续多帧都读成关闭外观才点，且同一场战斗最多点一次。
+        """战斗中把自动射击打开：连续多帧都读成关闭外观才点；点了仍读成关闭再按一次 TAB，之后不再切换。
 
         AUTO 的开与关是同一个按钮，误判一次就等于把开着的自动射击关掉。实机日志里出现过相反方向的
         问题：一整场战斗提示了四次「自动射击未开启」、也就连点了四次 AUTO，而现场观察这个开关一直开着。
@@ -824,10 +828,20 @@ class CampaignSession(NavigationSession):
         box = state.get('auto_box')
         detail = (f"AUTO 按钮模板 {battle.value_text(state.get('auto_score'))}，"
                   f"框内橙色占比 {ratio}" + (f"，定位框 {box}" if box else ''))
+        if self.auto_taps == 1 and self.auto_off_frames >= AUTO_CONFIRM_FRAMES \
+                and time.monotonic()-self.tap_times.get(AUTO_POINT, 0.) >= AUTO_TAP_INTERVAL:
+            press = getattr(self.win.handler, 'press_key', None)
+            if press is not None:
+                self.check()
+                press(AUTO_HOTKEY)
+                self.auto_taps += 1
+                logger.info(f'点 AUTO 后仍连续 {self.auto_off_frames} 帧读成关闭（{detail}）：'
+                            f'点击可能没落地，改按游戏快捷键 {AUTO_HOTKEY.upper()} 打开一次。')
+                return
         if self.auto_taps:
-            if not self.auto_skip_logged:
+            if not self.auto_skip_logged and self.auto_taps > 1:
                 self.auto_skip_logged = True
-                logger.warning(f'AUTO 状态仍为未开启（{detail}）；已达到本场单次点击上限，禁止重复切换。')
+                logger.warning(f'AUTO 状态仍为未开启（{detail}）；本场点击和快捷键各试过一次，禁止重复切换。')
             return
         if self.auto_off_frames < AUTO_CONFIRM_FRAMES:
             logger.info(f'AUTO 状态待确认（{detail}），连续关闭帧数 '
@@ -836,7 +850,9 @@ class CampaignSession(NavigationSession):
         if not self.tap(AUTO_POINT, AUTO_TAP_INTERVAL):
             return
         self.auto_taps += 1
-        logger.info(f'AUTO 关闭状态已确认（连续 {self.auto_off_frames} 帧，{detail}），已发送开启点击。')
+        # 点过之后重新数关闭帧：点击后的关闭读数才说明这一下没生效。
+        self.auto_off_frames = 0
+        logger.info(f'AUTO 关闭状态已确认（连续 {AUTO_CONFIRM_FRAMES} 帧，{detail}），已发送开启点击。')
 
     def tap(self, point, interval=0.):
         """按客户区坐标点一次界面按钮：与移动落点共用同一套校验、闸门与预算。

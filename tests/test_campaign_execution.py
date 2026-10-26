@@ -2,6 +2,7 @@
 
 import subprocess
 import sys
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -622,11 +623,27 @@ class SessionTests(unittest.TestCase):
     def test_battle_step_taps_auto_at_most_once_per_battle(self):
         """AUTO 连续读成关闭也只点一次：开关是同一个按钮，重复点会把开着的自动射击关掉。"""
         self.session.tap = Mock()
+        self.handler.press_key = Mock()
+        # tap 被 Mock 掉、不记点击时间：这里当作刚点过，间隔内不按快捷键。
+        self.session.tap_times[AUTO_POINT] = time.monotonic()
         off = dict(state='battle', auto=False, auto_score=.755, auto_ratio=0.0)
         with patch('module.campaign.vision.battle.battle_state', return_value=off):
             for _ in range(4):
                 self.session.battle_step()
         self.session.tap.assert_called_once_with(AUTO_POINT, AUTO_TAP_INTERVAL)
+        self.handler.press_key.assert_not_called()
+
+    def test_auto_still_off_after_click_presses_tab_once(self):
+        """实录 10-22 HARD：点 AUTO 没生效，连续读成关闭且过了间隔后按一次 TAB，之后不再切换。"""
+        self.session.tap = Mock(return_value=True)
+        self.handler.press_key = Mock()
+        self.session.tap_times[AUTO_POINT] = 0.
+        off = dict(state='battle', auto=False, auto_score=.9, auto_ratio=0.0)
+        with patch('module.campaign.vision.battle.battle_state', return_value=off):
+            for _ in range(8):
+                self.session.battle_step()
+        self.session.tap.assert_called_once_with(AUTO_POINT, AUTO_TAP_INTERVAL)
+        self.handler.press_key.assert_called_once_with('tab')
 
     def test_tap_respects_button_interval(self):
         """按钮最短点击间隔内不重复点：点击没生效时下一拍再补，而不是每拍都补一下。"""
