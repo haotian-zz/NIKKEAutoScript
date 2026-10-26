@@ -6,7 +6,7 @@ import json
 import numpy as np
 
 from module.campaign.navigation import controls as goto
-from module.campaign.navigation.camera_navigation import pan_scene
+from module.campaign.navigation.camera_navigation import pan_scene, scene_unchanged
 from module.campaign.navigation.facility_map import (
     gaze_position, in_seek_view, locate_view, record_map_positions, seek_map_point)
 from module.campaign.navigation.movement_feedback import TargetTriggered
@@ -99,7 +99,7 @@ def structure_observations(field, arrow, unanchored=False):
     return objects
 
 
-def wait_structure_settle(runner, before=None, recenter=True):
+def wait_structure_settle(runner, before=None, recenter=True, samples=None):
     """设施落点后共用独立移动反馈；可靠静止才恢复扫描，不据此认领传送成功。
 
     无有效反馈最多20秒，真实移动可续等但总计60秒；不以整张小地图的低变化比例
@@ -110,6 +110,7 @@ def wait_structure_settle(runner, before=None, recenter=True):
     小队在画面里但贴边、背景比对覆盖不到时，把镜头朝小队平移一次，同样重新计时等一次。
     实录 2026-10-23（23-31）：踩亮左侧开关后小队停在画面左缘（x≈75），背景角点包不住小队、
     小地图圆环也没读到，20秒只得到 squad_outside_background_support 就中止了整轮。
+    samples 不为 None 时收集等待途中看得到小队的帧 (帧, 箭头)，最多 TRANSIT_SAMPLES 帧，供判断中途换乘。
     """
     before = runner.map_frame() if before is None else before
     progress = ClickProgress(time.monotonic())
@@ -121,7 +122,10 @@ def wait_structure_settle(runner, before=None, recenter=True):
         field = runner.map_frame(timeout=max(.1, min(30., progress.started + 60. - time.monotonic())))
         if goto.battle_popup_score(field) > .8:
             return field
-        observation = combine_motion(motion.observe(field, squad_arrow(field)), minimap.observe(field))
+        arrow = squad_arrow(field)
+        if samples is not None and arrow is not None and len(samples) < TRANSIT_SAMPLES:
+            samples.append((field, arrow))
+        observation = combine_motion(motion.observe(field, arrow), minimap.observe(field))
         state = progress.update(time.monotonic(), observation)
         if state == 'stalled':
             runner.session.record_evidence('structure_settled', field, feedback=observation,
@@ -142,12 +146,12 @@ def wait_structure_settle(runner, before=None, recenter=True):
         if length >= 120.:
             logger.info('设施交互后小队贴在画面边缘、背景比对覆盖不到：镜头朝小队平移一次后重新等待停稳。')
             pan_scene(runner.session, drag*min(1., 480./length), squad_ground=ground)
-            return wait_structure_settle(runner, recenter=False)
+            return wait_structure_settle(runner, recenter=False, samples=samples)
     if recenter and state == 'observation_unknown' and observation.get('reason') == 'squad_unobserved':
         logger.info('设施交互后一直看不到小队：找回小队镜头后重新等待停稳一次。')
         recenter_squad(runner)
         if squad_arrow(runner.map_frame()) is not None:
-            return wait_structure_settle(runner, recenter=False)
+            return wait_structure_settle(runner, recenter=False, samples=samples)
     # 停止策略分级（2026-10-25）：停稳只决定何时重新扫描，确认不了不是风险；下一轮照常从新鲜画面判断，
     # 小队若仍在走，下一次点击只会改变去向。旧做法在这里整轮停止（5 天定时运行 4 次）。
     logger.info('设施交互后未确认小队停稳：按当前画面继续，下一轮重新扫描敌人与道路。')
@@ -163,6 +167,12 @@ BLOCKED_GOAL_SECONDS = 900.
 # 设施目录不可用时，每次真实进展（胜利或开关确认开启）前最多交互几次设施。
 # 目录可用时每个设施在同一道路状态下只试一次（跨运行保存），由受阻总时限收口。
 STRUCTURE_INPUTS = 2
+
+
+# 平台尝试后小队离目标平台最近距离超过它（客户区像素）、且换了位置，算中途换乘停在半路。
+TRANSIT_NEAR = 150.
+# 判断中途换乘最多保留的等待帧数（全尺寸帧约 5MB 一张）。
+TRANSIT_SAMPLES = 24
 
 
 # 点关闭机关后盯住机关本身的时长，以及原位判定半径（客户区像素）。
@@ -452,11 +462,66 @@ def attack_gate_enemy(runner, searched, blocked_goal):
     return 'scouted'
 
 
-def attempt_structure(runner, target, fresh, catalog, blocked_goal, located=None):
+def closest_approach(catalog, identifier, samples):
+    """等待途中小队离该设施的最近距离（客户区像素）；没有一帧能投影设施时返回 None。"""
+    closest = None
+    for field, arrow in samples:
+        position = catalog.project_facility(field, identifier)
+        if position is None:
+            continue
+        ground = np.asarray(arrow, float)+[0., goto.ARROW_GROUND_OFFSET]
+        distance = float(np.linalg.norm(np.asarray(position, float)-ground))
+        closest = distance if closest is None else min(closest, distance)
+        if closest <= TRANSIT_NEAR:
+            break
+    return closest
+
+
+def continue_transit(runner, target, before, observed, samples, catalog, blocked_goal, resumed):
+    """平台尝试后小队换了位置、却一直没到过目标平台旁：多半中途坐了别的传送平台，游戏到站即停。
+
+    实录 2026-10-25（HARD 9）：从山脊点炮台区左侧平台，小队经山脊传送平台到了楼顶就停下，离目标约
+    525px；脚本把左侧平台记成已试，转去点走不到的敌人，又被游戏送回山脊。人工做法是到站后再点一次。
+    小队到过目标旁（坐的就是它）或画面没变（没走动）都不算；投影不出目标时判断不了，按已试处理。
+    返回 None（不是中途换乘或无法续点）或续点的 attempt_structure 结果。
+    """
+    if scene_unchanged(before, observed):
+        return None
+    closest = closest_approach(catalog, target['facility_id'], samples+[(observed, squad_arrow(observed))])
+    if closest is None or closest <= TRANSIT_NEAR:
+        return None
+    catalog.transit(target['facility_id'])
+    if resumed:
+        logger.info(f"续点后小队仍停在离平台 {target['facility_id']} {closest:.0f}px 处：不再续点，按已试处理。")
+        return None
+    field = runner.map_frame()
+    first = structure_observations(field, squad_arrow(field), True)
+    runner.session.pause(.25)
+    fresh = runner.map_frame()
+    if goto.battle_popup_score(fresh) > .8:
+        return 'entry'
+    second = structure_observations(fresh, squad_arrow(fresh), True)
+    try:
+        registered = catalog.observe(fresh, stable_facilities(first, second))
+    except FacilityUnconfirmed:
+        registered = []
+    again = [item for item in eligible_structures(catalog, stable_structures(first, second), registered, blocked_goal)
+             if item['facility_id'] == target['facility_id']]
+    runner.session.record_evidence('structure_transit', fresh, target=target, closest=closest,
+                                   resumed=bool(again), arrays=dict(field=fresh))
+    logger.info(f"小队换了位置但一直没到平台 {target['facility_id']} 旁（最近 {closest:.0f}px）：多半中途坐了别的"
+                '传送平台、到站即停。' + ('从新位置再点一次。' if again else '画面里没新鲜确认到它，受阻时可再试一次。'))
+    if not again:
+        return None
+    return attempt_structure(runner, again[0], fresh, catalog, blocked_goal, resumed=True)
+
+
+def attempt_structure(runner, target, fresh, catalog, blocked_goal, located=None, resumed=False):
     """踩关闭机关或走平台：发送一次新鲜落点，等原位开启或停稳；返回'entry'或'attempted'。
 
     located 是交互前的地图定位（只有每次进展前第一次设施尝试才补），交互后再定位一次比较。
     机关原位确认开启算道路改变（switch），其余交互结果保持未确认、只算走过设施（facility）。
+    平台尝试停在半路（中途换乘）时从新位置续点一次，resumed 表示这已经是续点。
     """
     session = runner.session
     session.begin_target('structure_attempt')
@@ -473,6 +538,7 @@ def attempt_structure(runner, target, fresh, catalog, blocked_goal, located=None
     except TargetTriggered:
         return 'entry'
     switch_state = 'unconfirmed'
+    samples = [] if target['kind'] == 'elevator' and catalog is not None and 'facility_id' in target else None
     if target['kind'] == 'ground_mechanism':
         observed, switch_state = watch_switch(runner, target)
         if switch_state == 'entry':
@@ -481,7 +547,7 @@ def attempt_structure(runner, target, fresh, catalog, blocked_goal, located=None
             recenter_squad(runner)
         observed = wait_structure_settle(runner)
     else:
-        observed = wait_structure_settle(runner, fresh)
+        observed = wait_structure_settle(runner, fresh, samples=samples)
     location_result = dict(state='unknown', transfer='unconfirmed', activated=(
         'confirmed' if switch_state == 'activated' else 'unconfirmed'))
     if located is not None and goto.battle_popup_score(observed) <= .8:
@@ -498,9 +564,13 @@ def attempt_structure(runner, target, fresh, catalog, blocked_goal, located=None
     runner.memory.previous = None
     if switch_state == 'activated':
         reset_switch_marks(runner, catalog)
-    else:
-        # 踩过机关或走过设施后道路可能已通：之前走不到的位置、暂缓目标都重新允许尝试。
-        runner.world.advance('facility')
+        return 'attempted'
+    # 踩过机关或走过设施后道路可能已通：之前走不到的位置、暂缓目标都重新允许尝试。
+    runner.world.advance('facility')
+    if samples is not None and goto.battle_popup_score(observed) <= .8:
+        resumed = continue_transit(runner, target, fresh, observed, samples, catalog, blocked_goal, resumed)
+        if resumed is not None:
+            return resumed
     return 'attempted'
 
 

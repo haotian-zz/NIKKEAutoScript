@@ -53,6 +53,24 @@ class FacilityMemoryTests(unittest.TestCase):
         self.assertTrue(restarted.eligible(identifier, 'quest:21-16'))
         self.assertEqual(restarted.data['connections'], [])
 
+    def test_transit_attempt_allows_exactly_one_retry(self):
+        """中途换乘停在半路的那次不算试过，只放行一次；重启后同样生效。"""
+        identifier = self.catalog.observe(self.field, [observed()])[0]['facility_id']
+        self.catalog.attempt(identifier, 'quest:None')
+        self.assertFalse(self.catalog.eligible(identifier, 'quest:None'))
+        self.catalog.transit(identifier)
+        restarted = FacilityMemory('isolated', (21, 'normal'), 'sha-A', root=self.temporary.name)
+        self.assertTrue(restarted.eligible(identifier, 'quest:None'))
+        restarted.attempt(identifier, 'quest:None')
+        restarted.transit(identifier)
+        self.assertFalse(restarted.eligible(identifier, 'quest:None'))
+
+    def test_project_facility_follows_camera_pan(self):
+        """镜头平移180px后设施投影跟着平移；无纹理画面配不上，返回None。"""
+        identifier = self.catalog.observe(self.field, [observed()])[0]['facility_id']
+        np.testing.assert_allclose(self.catalog.project_facility(self.panned, identifier), [980., 500.], atol=2.)
+        self.assertIsNone(self.catalog.project_facility(np.zeros_like(self.field), identifier))
+
     def test_click_and_motion_do_not_activate_switch(self):
         """点击及192px地图位移不能认领机关开启，只有重新观察on状态才记录observed_on。"""
         identifier = self.catalog.observe(

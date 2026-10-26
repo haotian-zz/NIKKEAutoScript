@@ -188,6 +188,7 @@ class StructureTests(unittest.TestCase):
         """目录替身：persisted 编号已试过，其余没试过；observe 依次返回各次登记结果。"""
         catalog = Mock(data=dict(facilities=facilities))
         catalog.eligible.side_effect = lambda identifier, goal: identifier != 'persisted'
+        catalog.project_facility.return_value = None
         catalog.observe.side_effect = observed
         return catalog
 
@@ -275,6 +276,51 @@ class StructureTests(unittest.TestCase):
                 structure.recover_visible_structure(self.runner, self.field)
         seek.assert_not_called()
         self.runner.session.tap.assert_not_called()
+
+    def transit_run(self, projected, unchanged=False):
+        """从山脊点远处平台的替身：等待途中收集一帧，目标平台投影到 projected；返回 (结果, 目录)。"""
+        pad = fixture(position=(700., 860.))
+        catalog = Mock()
+        catalog.project_facility.return_value = None if projected is None else np.array(projected)
+        catalog.observe.return_value = [dict(pad, facility_id='scene-0013')]
+        catalog.eligible.return_value = True
+
+        def settle(runner, before=None, recenter=True, samples=None):
+            if samples is not None:
+                samples.append((self.field, np.array([880., 340.])))
+            return self.field
+        with patch.object(structure, 'wait_structure_settle', side_effect=settle), \
+                patch.object(structure, 'scene_unchanged', return_value=unchanged), \
+                patch.object(structure, 'detect_objects', return_value=[pad]), \
+                patch.object(structure, 'squad_arrow', return_value=np.array([880., 340.])), \
+                patch.object(structure.goto, 'ARROW_GROUND_OFFSET', 90.), \
+                patch.object(structure.goto, 'battle_popup_score', return_value=0.):
+            result = structure.attempt_structure(self.runner, dict(pad, facility_id='scene-0013'), self.field,
+                                                 catalog, 'quest:None')
+        return result, catalog
+
+    def test_platform_attempt_stopped_short_resumes_once(self):
+        """实录 2026-10-25（HARD 9）：小队换乘到楼顶就停，离目标平台约500px：记中途换乘，从新位置续点一次。"""
+        result, catalog = self.transit_run([550., 840.])
+        self.assertEqual(result, 'attempted')
+        self.assertEqual(self.runner.session.tap.call_count, 2)
+        self.assertEqual(catalog.attempt.call_count, 2)
+        self.assertEqual(catalog.transit.call_args_list[0].args, ('scene-0013',))
+
+    def test_platform_reached_or_unmoved_is_not_transit(self):
+        """小队到过目标平台旁（坐的就是它）或画面没变，都按一次普通尝试处理，不续点。"""
+        result, catalog = self.transit_run([890., 450.])
+        self.assertEqual(result, 'attempted')
+        catalog.transit.assert_not_called()
+        self.runner.session.tap.reset_mock()
+        result, catalog = self.transit_run([550., 840.], unchanged=True)
+        catalog.project_facility.assert_not_called()
+        catalog.transit.assert_not_called()
+        self.runner.session.tap.assert_called_once()
+        self.runner.session.tap.reset_mock()
+        result, catalog = self.transit_run(None)
+        catalog.transit.assert_not_called()
+        self.runner.session.tap.assert_called_once()
 
     def test_moving_squad_needs_three_new_stable_minimap_frames(self):
         """首帧小队仍在动时不提前结束；之后连续三帧稳定才允许恢复扫描。"""

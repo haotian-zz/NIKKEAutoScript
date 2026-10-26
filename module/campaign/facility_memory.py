@@ -534,12 +534,42 @@ class FacilityMemory:
         return True
 
     def eligible(self, identifier, blocked_goal):
-        """只跳过已确认开启机关或针对同一受阻目标已尝试设施，不永久封禁可重复使用的传送点。"""
+        """只跳过已确认开启机关或针对同一受阻目标已尝试设施，不永久封禁可重复使用的传送点。
+
+        唯一一次尝试是中途换乘停在半路（transit）时还能再试一次；第二次之后不论结果都不再放行。
+        """
         record = self.data['facilities'][identifier]
-        return (not (record['kind'] == 'ground_mechanism' and record['activated'] == 'observed_on')
-                and not any(attempt['blocked_goal'] == blocked_goal
-                            and attempt.get('state_epoch', 0) == self.data.get('state_epoch', 0)
-                            for attempt in record['attempts']))
+        if record['kind'] == 'ground_mechanism' and record['activated'] == 'observed_on':
+            return False
+        attempts = [attempt for attempt in record['attempts'] if attempt['blocked_goal'] == blocked_goal
+                    and attempt.get('state_epoch', 0) == self.data.get('state_epoch', 0)]
+        return not attempts or (len(attempts) == 1 and attempts[0].get('transit', False))
+
+    def transit(self, identifier):
+        """最近一次尝试小队换了位置却没到过这个设施旁（多半中途坐了别的传送平台）：允许再试一次。"""
+        attempts = self.data['facilities'][identifier]['attempts']
+        if attempts:
+            attempts[-1]['transit'] = True
+            self.save()
+
+    def project_facility(self, field, identifier):
+        """把已登记设施投影到这一帧的客户区坐标；与它的观测关键帧都配不上时返回 None。
+
+        只用于判断小队到没到过设施旁，不授予点击许可，也不改变目录。
+        """
+        views = [old for old in self.data['facilities'][identifier]['observations'] if old['view'] in self.frames]
+        if not views:
+            return None
+        frame = facility_frame(field, [])
+        if frame.descriptors is None or len(frame.keys) < 30:
+            return None
+        for old in views:
+            try:
+                matrix, _, _ = scene_registration(self.frames[old['view']], frame)
+            except (ValueError, cv2.error, np.linalg.LinAlgError):
+                continue
+            return project(matrix, old['position'])
+        return None
 
     def switch_activated(self):
         """点下的关闭机关已在原位确认开启：道路可能整体改变，此前对各受阻目标的尝试都重新可用。"""
