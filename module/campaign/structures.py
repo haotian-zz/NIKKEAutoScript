@@ -173,6 +173,8 @@ STRUCTURE_INPUTS = 2
 TRANSIT_NEAR = 150.
 # 判断中途换乘最多保留的等待帧数（全尺寸帧约 5MB 一张）。
 TRANSIT_SAMPLES = 24
+# 续点时目标平台投影与新鲜检测的最大偏差（客户区像素）；目录投影误差实测 25～55px。
+TRANSIT_MATCH = 80.
 
 
 # 点关闭机关后盯住机关本身的时长，以及原位判定半径（客户区像素）。
@@ -501,22 +503,23 @@ def continue_transit(runner, target, before, observed, samples, catalog, blocked
     if goto.battle_popup_score(fresh) > .8:
         return 'entry'
     second = structure_observations(fresh, squad_arrow(fresh), True)
-    try:
-        registered = catalog.observe(fresh, stable_facilities(first, second))
-    except FacilityUnconfirmed:
-        registered = []
-    # 续点是同一次尝试的延续，只核对目标平台仍在画面里，不再按已试记录过滤。
-    again = [dict(item, facility_id=known['facility_id']) for item in stable_structures(first, second)
-             for known in registered if known['facility_id'] == target['facility_id']
-             and known['kind'] == item['kind'] and np.linalg.norm(np.asarray(known['position'])-item['position']) < 1.]
-    catalog.transit(target['facility_id'], continued=bool(again))
-    runner.session.record_evidence('structure_transit', fresh, target=target, closest=closest,
-                                   resumed=bool(again), arrays=dict(field=fresh))
+    # 续点是同一次尝试的延续，不再按已试记录过滤。实录 19:32：同一个平台在楼顶画面被目录登记成别的
+    # 编号，按编号对不上；改用目标平台的投影位置找附近两帧稳定的平台。
+    expected = catalog.project_facility(fresh, target['facility_id'])
+    candidates = [item for item in stable_structures(first, second) if item['kind'] == 'elevator']
+    near = [] if expected is None else [
+        item for item in candidates if np.linalg.norm(np.asarray(item['position'])-expected) <= TRANSIT_MATCH]
+    again = (None if not near else dict(min(near, key=lambda item: np.linalg.norm(np.asarray(item['position'])-expected)),
+                                        facility_id=target['facility_id']))
+    catalog.transit(target['facility_id'], continued=again is not None)
+    runner.session.record_evidence('structure_transit', fresh, target=target, closest=closest, resumed=again is not None,
+                                   expected=None if expected is None else np.asarray(expected).tolist(),
+                                   candidates=candidates, arrays=dict(field=fresh))
     logger.info(f"小队换了位置但一直没到平台 {target['facility_id']} 旁（最近 {closest:.0f}px）：多半中途坐了别的"
                 '传送平台、到站即停。' + ('从新位置再点一次。' if again else '画面里没新鲜确认到它，受阻时可再试一次。'))
-    if not again:
+    if again is None:
         return None
-    return attempt_structure(runner, again[0], fresh, catalog, blocked_goal, resumed=True)
+    return attempt_structure(runner, again, fresh, catalog, blocked_goal, resumed=True)
 
 
 def attempt_structure(runner, target, fresh, catalog, blocked_goal, located=None, resumed=False):

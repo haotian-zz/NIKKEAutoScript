@@ -279,11 +279,11 @@ class StructureTests(unittest.TestCase):
 
     def transit_run(self, projected, unchanged=False):
         """从山脊点远处平台的替身：等待途中收集一帧，目标平台投影到 projected；返回 (结果, 目录)。"""
-        pad = fixture(position=(700., 860.))
+        pad = fixture(position=(560., 830.))
         catalog = Mock()
         catalog.project_facility.return_value = None if projected is None else np.array(projected)
-        catalog.observe.return_value = [dict(pad, facility_id='scene-0013')]
-        # 实录：之前已有一次中途换乘记录，目录不再放行；续点是同一次尝试的延续，不看这个。
+        # 实录：楼顶画面里同一平台被登记成别的编号，目录也不再放行；续点按投影位置找，不看这两样。
+        catalog.observe.return_value = [dict(pad, facility_id='scene-0030')]
         catalog.eligible.return_value = False
 
         def settle(runner, before=None, recenter=True, samples=None):
