@@ -22,6 +22,13 @@ class ChooseNextNIKKETooLong(Exception):
     pass
 
 
+# 按钮颜色判据阈值。实录 2026-10-26（画质调低后）界面色调整体偏暗约 10：送礼按钮与素材差 20、咨询按钮差 11，
+# 原阈值 10 认不出详情页、把可咨询读成已咨询，任务在咨询页空转或一直点左上角。按钮置灰时差值远大于这些阈值。
+GIFT_COLOR = 30
+COMMUNICATE_COLOR = 25
+QUICK_COLOR = 20
+
+
 class NoOpportunitiesRemain(Exception):
     pass
 
@@ -98,7 +105,7 @@ class Conversation(UI):
         # 实录 2026-10-26：游戏更新后送礼按钮实测 (253, 173, 59)，与素材 (254, 177, 79) 差 20，阈值 10 认不出详情页，
         # 转去读列表页剩余次数读到 0，任务原地空转。按钮是灰的时差值远大于 30。
         if DETAIL_CHECK.match(self.device.image, threshold=0.71) and GIFT.match_appear_on(
-            self.device.image, threshold=30
+            self.device.image, threshold=GIFT_COLOR
         ):
             # 没有次数
             if self.detail_opportunities() == 0 or OPPORTUNITY_B.match(
@@ -203,7 +210,7 @@ class Conversation(UI):
         )
         # 固定本轮按钮，避免快速咨询防抖或动画期间误点普通咨询。
         communicate_button = COMMUNICATE_QUICKLY if rank_max else COMMUNICATE
-        color_threshold = 6 if rank_max else 10
+        color_threshold = QUICK_COLOR if rank_max else COMMUNICATE_COLOR
         if rank_max:
             logger.info('Use quick conversation for max-rank NIKKE %s', nikke)
         confirm_timer = Timer(1.6, count=2).start()
@@ -235,9 +242,9 @@ class Conversation(UI):
                 self.answer(nikke)
             elif (
                 # 快速咨询没有答题阶段，也通过普通咨询按钮失效判断完成。
-                not COMMUNICATE.match_appear_on(self.device.image, threshold=10)
+                not COMMUNICATE.match_appear_on(self.device.image, threshold=COMMUNICATE_COLOR)
                 and self.appear(DETAIL_CHECK, offset=(5, 5), static=False)
-                and GIFT.match_appear_on(self.device.image, threshold=10)
+                and GIFT.match_appear_on(self.device.image, threshold=GIFT_COLOR)
                 and confirm_timer.reached()
             ):
                 return self.communicate()
@@ -248,7 +255,7 @@ class Conversation(UI):
                 click_timer.reset()
                 continue
 
-            if click_timer.reached() and not GIFT.match_appear_on(self.device.image, threshold=10):
+            if click_timer.reached() and not GIFT.match_appear_on(self.device.image, threshold=GIFT_COLOR):
                 self.device.click_xy(100, 100)
                 click_timer.reset()
                 continue
@@ -263,7 +270,7 @@ class Conversation(UI):
                 self.device.screenshot()
 
             if self.appear(DETAIL_CHECK, offset=(30, 30), static=False) and GIFT.match_appear_on(
-                self.device.image, threshold=10
+                self.device.image, threshold=GIFT_COLOR
             ):
                 break
             if click_timer.reached() and self.appear_then_click(
