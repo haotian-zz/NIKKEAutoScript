@@ -159,7 +159,8 @@ GATE_ENEMY_TRIES = 3
 EXPLORE_SECONDS = 300.
 # 同一受阻目标的总时限；超过即停止并报告，不等任务一小时总时限。
 BLOCKED_GOAL_SECONDS = 900.
-# 每次真实进展（胜利或开关确认开启）前最多交互几次设施。
+# 设施目录不可用时，每次真实进展（胜利或开关确认开启）前最多交互几次设施。
+# 目录可用时每个设施在同一道路状态下只试一次（跨运行保存），由受阻总时限收口。
 STRUCTURE_INPUTS = 2
 
 
@@ -322,6 +323,96 @@ def known_switch_view(runner, catalog, blocked_goal):
     return None
 
 
+# 每个受阻目标最多去看几个目录里没试过的电梯平台。
+KNOWN_PLATFORM_TRIES = 3
+
+
+def known_platforms(catalog, blocked_goal, tried):
+    """目录里有底图坐标、对本受阻目标未试过的电梯平台编号与坐标。"""
+    return [(identifier, np.asarray(record['map_position'], float))
+            for identifier, record in catalog.data['facilities'].items()
+            if record['kind'] == 'elevator' and record.get('map_position') is not None
+            and identifier not in tried and catalog.eligible(identifier, blocked_goal)]
+
+
+def eligible_structures(catalog, candidates, registered, blocked_goal):
+    """两帧稳定的候选对应到目录编号，只留对本受阻目标没试过的。"""
+    return [dict(item, facility_id=known['facility_id']) for item in candidates
+            for known in registered if known['kind'] == item['kind']
+            and np.linalg.norm(np.asarray(known['position'])-item['position']) < 1.
+            and catalog.eligible(known['facility_id'], blocked_goal)]
+
+
+def platform_look(runner, catalog, blocked_goal, expected):
+    """移镜头后两帧确认平台；返回 (entry/found/none, 离预计位置最近的未试平台, 新鲜帧)。"""
+    session = runner.session
+    field = runner.map_frame()
+    first = structure_observations(field, squad_arrow(field), True)
+    session.pause(.25)
+    fresh = runner.map_frame()
+    if goto.battle_popup_score(fresh) > .8:
+        return 'entry', None, fresh
+    second = structure_observations(fresh, squad_arrow(fresh), True)
+    try:
+        registered = catalog.observe(fresh, stable_facilities(first, second))
+    except FacilityUnconfirmed:
+        return 'none', None, fresh
+    pool = [item for item in eligible_structures(catalog, stable_structures(first, second), registered, blocked_goal)
+            if item['kind'] == 'elevator']
+    if not pool:
+        return 'none', None, fresh
+    return 'found', min(pool, key=lambda item: np.linalg.norm(np.asarray(item['position'])-expected)), fresh
+
+
+def known_platform_view(runner, catalog, blocked_goal):
+    """最后一级：画面内没有可试设施时，按底图坐标去看目录里没试过的电梯平台，当场两帧确认后交回。
+
+    实录 2026-10-25（HARD 9）：点 Boss 时游戏把小队经右侧炮台平台送上山脊，山脊是死路；之后的受阻
+    恢复只看当前画面，画面里唯一的平台以前试过，于是直接停止，炮台区另外几个平台（目录里 11 个
+    没试过）一次没踩。由近及远，每个受阻目标在同一道路状态下最多看 KNOWN_PLATFORM_TRIES 个；
+    坐标只决定往哪看，点击仍用新鲜检测，传送与否由之后的实际寻路判断。
+    返回 None（没有可看的或都没确认到，镜头已找回小队）或 dict(state=entry/found, ...)。
+    """
+    if catalog is None:
+        return None
+    world = runner.world
+    tried = world.members('known_platform_tried', blocked_goal, reset_on=('switch',))
+    if len(tried) >= KNOWN_PLATFORM_TRIES or not known_platforms(catalog, blocked_goal, tried):
+        return None
+    try:
+        gaze = gaze_position(locate_view(runner, 'known_platform_start'))
+    except ValueError as exc:
+        logger.info(f'目录里有没试过的电梯平台，但镜头配准未通过：{exc}')
+        return None
+    moved = False
+    while len(tried) < KNOWN_PLATFORM_TRIES:
+        pool = known_platforms(catalog, blocked_goal, tried)
+        if not pool:
+            break
+        identifier, point = min(pool, key=lambda item: np.linalg.norm(item[1]-gaze))
+        tried = world.add_member('known_platform_tried', blocked_goal, identifier, reset_on=('switch',))
+        logger.info(f'目标受阻：目录里的电梯平台 {identifier} 未对本目标试过，按底图坐标 '
+                    f'{np.round(point).astype(int).tolist()} 移镜头过去用新鲜检测确认。')
+        moved = True
+        reached = seek_map_point(runner, point, tag='known_platform')
+        if reached is None:
+            continue
+        state, target, fresh = platform_look(runner, catalog, blocked_goal, np.asarray(reached['client'], float))
+        runner.session.record_evidence('known_platform_view', fresh, facility_id=identifier,
+                                       map_position=point.tolist(), expected=np.asarray(reached['client']).tolist(),
+                                       state=state, target=target, arrays=dict(field=fresh))
+        if state == 'entry':
+            return dict(state='entry', field=fresh)
+        if state == 'found':
+            logger.info(f"已知平台附近新鲜确认没试过的平台 {target['facility_id']} {target['position']}"
+                        f"（{target['confidence']:.2f}），交由原生寻路前往。")
+            return dict(state='found', target=target, field=fresh)
+        logger.info(f'已知平台 {identifier} 附近未新鲜确认到没试过的平台。')
+    if moved:
+        recenter_squad(runner)
+    return None
+
+
 def attack_gate_enemy(runner, searched, blocked_goal):
     """点击探索发现的未清敌人脚圈，按原生寻路反馈等待备战；返回'entry'或'scouted'。
 
@@ -401,11 +492,13 @@ def attempt_structure(runner, target, fresh, catalog, blocked_goal, located=None
 
 
 def recover_visible_structure(runner, field, allow_unanchored=False):
-    """普通目标受阻后：先看画面内设施，再按「目录已知机关 → 目标旁 → 探索」找关闭机关，最后试平台。
+    """普通目标受阻后：先看画面内设施，再按「目录已知机关 → 目标旁 → 探索」找关闭机关，
+    画面内仍没有可试设施时去看目录里没试过的电梯平台。
 
     平台 start/end 只是模型外观类别，不代表可逆或已经传送。游戏自身决定路径和交互；
-    不编造电梯配对、地面坐标或成功结果。每次真实进展前最多交互 STRUCTURE_INPUTS 次设施；
-    预算用完且探索也没找到可用目标才停止。小队位置读不到时用画面中心排序（停止策略分级 2026-10-25）。
+    不编造电梯配对、地面坐标或成功结果。目录可用时每个设施在同一道路状态下只试一次，
+    目录不可用时每次真实进展前最多交互 STRUCTURE_INPUTS 次；都试过或超过受阻总时限才停止。
+    小队位置读不到时用画面中心排序（停止策略分级 2026-10-25）。
     """
     learned = recover_if_enabled(runner, field)
     if learned is not None:
@@ -446,10 +539,9 @@ def recover_visible_structure(runner, field, allow_unanchored=False):
             runner.memory.previous = None
             return 'scouted'
     if catalog is not None:
-        candidates = [dict(item, facility_id=known['facility_id']) for item in candidates
-                      for known in registered if known['kind'] == item['kind']
-                      and np.linalg.norm(np.asarray(known['position'])-item['position']) < 1.
-                      and catalog.eligible(known['facility_id'], blocked_goal)]
+        candidates = eligible_structures(catalog, candidates, registered, blocked_goal)
+    # 目录按设施去重：同一道路状态下每个设施只试一次，次数不再另设上限。
+    budget = catalog is not None or inputs < STRUCTURE_INPUTS
     ground = None if arrow is None else np.asarray(arrow) + [0., goto.ARROW_GROUND_OFFSET]
     if ground is None:
         ground = minimap_squad_ground(fresh)
@@ -459,7 +551,7 @@ def recover_visible_structure(runner, field, allow_unanchored=False):
     # 邻近平台仍可能需要主动踏上或交互，不能以100px近距推定已经操作；距离只用于排序。
     candidates = [item for item in candidates if np.linalg.norm(np.asarray(item['position'])-anchor) <= 1000.]
     searched = None
-    if (inputs < STRUCTURE_INPUTS and not any(item['kind'] == 'ground_mechanism' for item in candidates)
+    if (budget and not any(item['kind'] == 'ground_mechanism' for item in candidates)
             and world.once('switch_hunt', blocked_goal, reset_on=('switch',))):
         # 门旁平台可能只是单向到达端；先找关闭机关，找不到再退回平台尝试。
         searched = known_switch_view(runner, catalog, blocked_goal)
@@ -488,7 +580,13 @@ def recover_visible_structure(runner, field, allow_unanchored=False):
             recenter_squad(runner)
             runner.memory.previous = None
             return 'scouted'
-    if candidates and inputs < STRUCTURE_INPUTS:
+    if not candidates and budget and searched is None:
+        searched = known_platform_view(runner, catalog, blocked_goal)
+        if searched is not None and searched['state'] == 'entry':
+            return 'entry'
+        if searched is not None:
+            fresh, candidates = searched['field'], [searched['target']]
+    if candidates and budget:
         target = min(candidates, key=lambda item: (
             item['kind'] != 'ground_mechanism', np.linalg.norm(np.asarray(item['position'])-anchor)))
         # 仅每次真实进展前的首个、画面内直接看到的设施尝试补地图证据，探索找到的不再全图定位。
@@ -507,5 +605,5 @@ def recover_visible_structure(runner, field, allow_unanchored=False):
             target = dict(matches[0], **({'facility_id': target['facility_id']}
                                         if 'facility_id' in target else {}))
         return attempt_structure(runner, target, fresh, catalog, blocked_goal, located)
-    raise StructureUnconfirmed('目标受阻，设施交互预算已用尽且探索没有找到可用的关闭机关或敌人；'
-                               '尚未确认可通行路线，停止并保留现场。')
+    raise StructureUnconfirmed('目标受阻，画面内和目录里的设施都已试过（或交互预算已用尽），探索也没有找到'
+                               '可用的关闭机关或敌人；尚未确认可通行路线，停止并保留现场。')

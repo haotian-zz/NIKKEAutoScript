@@ -97,7 +97,7 @@ class StructureTests(unittest.TestCase):
     def test_used_persistent_facility_is_not_clicked_with_a_fresh_input_budget(self):
         """新任务的输入次数归零也不能再次点击当前受阻目标已经试过的持久设施。"""
         target = fixture()
-        catalog = Mock()
+        catalog = Mock(data=dict(facilities={}))
         catalog.observe.return_value = [dict(target, facility_id='persisted-platform')]
         catalog.eligible.return_value = False
         with patch.object(structure, 'facility_catalog', return_value=catalog), \
@@ -182,6 +182,68 @@ class StructureTests(unittest.TestCase):
                 patch.object(structure.goto, 'ARROW_GROUND_OFFSET', 90.):
             with self.assertRaisesRegex(structure.StructureUnconfirmed, '预算'):
                 structure.recover_visible_structure(self.runner, self.field)
+        self.runner.session.tap.assert_not_called()
+
+    def catalog(self, facilities, observed):
+        """目录替身：persisted 编号已试过，其余没试过；observe 依次返回各次登记结果。"""
+        catalog = Mock(data=dict(facilities=facilities))
+        catalog.eligible.side_effect = lambda identifier, goal: identifier != 'persisted'
+        catalog.observe.side_effect = observed
+        return catalog
+
+    def test_catalog_dedupes_facilities_instead_of_input_cap(self):
+        """目录可用时按设施去重：之前已交互两次，画面内没试过的平台照样尝试一次。"""
+        target = fixture()
+        for _ in range(2):
+            self.runner.world.bump('structure_input', reset_on=('win', 'switch'))
+        catalog = self.catalog({}, [[dict(target, facility_id='scene-0001')]])
+        with patch.object(structure, 'facility_catalog', return_value=catalog), \
+                patch.object(structure, 'detect_objects', return_value=[target]), \
+                patch.object(structure, 'squad_arrow', return_value=np.array([600., 400.])), \
+                patch.object(structure.goto, 'battle_popup_score', return_value=0.), \
+                patch.object(structure, 'wait_structure_settle', return_value=self.field):
+            self.assertEqual(structure.recover_visible_structure(self.runner, self.field), 'attempted')
+        self.runner.session.tap.assert_called_once_with(target['position'])
+        catalog.attempt.assert_called_once_with('scene-0001', 'quest:(21, 15)')
+
+    def test_known_platform_is_tried_when_view_has_no_untried_facility(self):
+        """实录 2026-10-25（HARD 9）：画面里唯一平台以前试过，目录里还有没试过的平台：移镜头过去新鲜确认后点它。"""
+        used, pad = fixture(), fixture(position=(700., 520.))
+        facilities = {'persisted': dict(kind='elevator', map_position=[100., 100.]),
+                      'scene-0004': dict(kind='elevator', map_position=[400., 300.]),
+                      'scene-0009': dict(kind='elevator', map_position=[900., 900.]),
+                      'scene-0011': dict(kind='ground_mechanism', map_position=[120., 100.])}
+        catalog = self.catalog(facilities, [[dict(used, facility_id='persisted')],
+                                            [dict(pad, facility_id='scene-0004')]])
+        seek = Mock(return_value=dict(client=np.array([690., 515.]), field=self.field))
+        with patch.object(structure, 'facility_catalog', return_value=catalog), \
+                patch.object(structure, 'detect_objects', side_effect=[[used], [used], [pad], [pad]]), \
+                patch.object(structure, 'squad_arrow', return_value=np.array([600., 400.])), \
+                patch.object(structure.goto, 'battle_popup_score', return_value=0.), \
+                patch.object(structure, 'locate_view', return_value={}), \
+                patch.object(structure, 'gaze_position', return_value=np.array([150., 120.])), \
+                patch.object(structure, 'seek_map_point', seek), \
+                patch.object(structure, 'wait_structure_settle', return_value=self.field):
+            self.assertEqual(structure.recover_visible_structure(self.runner, self.field), 'attempted')
+        self.assertEqual(seek.call_args.args[1].tolist(), [400., 300.])
+        self.runner.session.tap.assert_called_once_with(pad['position'])
+        catalog.attempt.assert_called_once_with('scene-0004', 'quest:(21, 15)')
+        self.assertEqual(self.runner.world.members('known_platform_tried', 'quest:(21, 15)', reset_on=('switch',)),
+                         {'scene-0004'})
+
+    def test_known_platforms_all_tried_stop_without_moving_camera(self):
+        """目录里的平台都试过：不移镜头、不点击，按设施都试过停止。"""
+        used = fixture()
+        catalog = self.catalog({'persisted': dict(kind='elevator', map_position=[100., 100.])},
+                               [[dict(used, facility_id='persisted')]])
+        with patch.object(structure, 'facility_catalog', return_value=catalog), \
+                patch.object(structure, 'detect_objects', return_value=[used]), \
+                patch.object(structure, 'squad_arrow', return_value=np.array([600., 400.])), \
+                patch.object(structure.goto, 'battle_popup_score', return_value=0.), \
+                patch.object(structure, 'seek_map_point') as seek:
+            with self.assertRaisesRegex(structure.StructureUnconfirmed, '目录'):
+                structure.recover_visible_structure(self.runner, self.field)
+        seek.assert_not_called()
         self.runner.session.tap.assert_not_called()
 
     def test_moving_squad_needs_three_new_stable_minimap_frames(self):
