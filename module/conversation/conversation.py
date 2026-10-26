@@ -95,8 +95,10 @@ class Conversation(UI):
 
     def get_next_target(self, skip_first_screenshot=True):
         # 是否进入到某个角色
+        # 实录 2026-10-26：游戏更新后送礼按钮实测 (253, 173, 59)，与素材 (254, 177, 79) 差 20，阈值 10 认不出详情页，
+        # 转去读列表页剩余次数读到 0，任务原地空转。按钮是灰的时差值远大于 30。
         if DETAIL_CHECK.match(self.device.image, threshold=0.71) and GIFT.match_appear_on(
-            self.device.image, threshold=10
+            self.device.image, threshold=30
         ):
             # 没有次数
             if self.detail_opportunities() == 0 or OPPORTUNITY_B.match(
@@ -174,6 +176,9 @@ class Conversation(UI):
                         self.device.click_xy(380, 450)
                     # TODO
                     self.device.sleep(2)
+            except NoOpportunitiesRemain:
+                # 次数用完要交给 run 结束任务；原先被下面一起吞掉，get_next_target 无限递归。
+                raise
             except Exception:
                 pass
 

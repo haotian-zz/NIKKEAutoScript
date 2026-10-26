@@ -37,8 +37,10 @@ class GeneralShop(ShopBase):
 
     @property
     def credit_or_gratis(self) -> bool:
+        # 实录 2026-10-26（画质调低后）：免费价格图标模板 0.99，颜色 (67, 78, 86) 与素材 (76, 88, 97) 差 12，
+        # 阈值 5 判成不是免费，第一个免费商品没买。
         if GRATIS_B.match(self._image, offset=(5, 5), threshold=0.96, static=False) and GRATIS_B.match_appear_on(
-            self._image, threshold=5
+            self._image, threshold=20
         ):
             return True
         elif CREDIT.match(self._image, offset=(5, 5), threshold=0.96, static=False) and CREDIT.match_appear_on(
