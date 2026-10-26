@@ -283,7 +283,8 @@ class StructureTests(unittest.TestCase):
         catalog = Mock()
         catalog.project_facility.return_value = None if projected is None else np.array(projected)
         catalog.observe.return_value = [dict(pad, facility_id='scene-0013')]
-        catalog.eligible.return_value = True
+        # 实录：之前已有一次中途换乘记录，目录不再放行；续点是同一次尝试的延续，不看这个。
+        catalog.eligible.return_value = False
 
         def settle(runner, before=None, recenter=True, samples=None):
             if samples is not None:

@@ -505,8 +505,10 @@ def continue_transit(runner, target, before, observed, samples, catalog, blocked
         registered = catalog.observe(fresh, stable_facilities(first, second))
     except FacilityUnconfirmed:
         registered = []
-    again = [item for item in eligible_structures(catalog, stable_structures(first, second), registered, blocked_goal)
-             if item['facility_id'] == target['facility_id']]
+    # 续点是同一次尝试的延续，只核对目标平台仍在画面里，不再按已试记录过滤。
+    again = [dict(item, facility_id=known['facility_id']) for item in stable_structures(first, second)
+             for known in registered if known['facility_id'] == target['facility_id']
+             and known['kind'] == item['kind'] and np.linalg.norm(np.asarray(known['position'])-item['position']) < 1.]
     runner.session.record_evidence('structure_transit', fresh, target=target, closest=closest,
                                    resumed=bool(again), arrays=dict(field=fresh))
     logger.info(f"小队换了位置但一直没到平台 {target['facility_id']} 旁（最近 {closest:.0f}px）：多半中途坐了别的"
