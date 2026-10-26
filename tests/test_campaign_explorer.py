@@ -188,6 +188,58 @@ class ExplorerTests(unittest.TestCase):
         # 南、东两个航点各一拖；倒回时从东(1,1)直接横拖回南(0,1)。
         self.assertEqual(drags, [(0., -200.), (-300., 0.), (300., 0.)])
 
+    def observe_screens(self, screens):
+        """观察簿按调用次数返回：1 是一个稳定脚圈，0 是没有；没有脚圈的一屏只取一帧。"""
+        screens = iter(screens)
+        self.runner.memory.observe.side_effect = lambda field: (
+            [ring('ring-1', (830., 470.))] if next(screens) == 1 else [])
+
+    def test_rewind_corrects_estimate_by_matching_the_noted_view(self):
+        """实录 2026-10-25（HARD 9）：估算倒回后没认出敌人；按当时画面配准还差 120px，补移一次后认出并返回。"""
+        self.observe_screens([0, 1, 1, 0, 0, 1, 1])
+        with patch.object(explore, 'detect_objects', return_value=[]), \
+                patch.object(explore, 'view_offset', return_value=np.array([120., 0.])) as offset, \
+                patch.object(explore, 'pan_scene') as pan:
+            result = self.explorer().run()
+        self.assertEqual((result['state'], result['step']), ('enemy', 1))
+        offset.assert_called_once()
+        drags = [tuple(call.args[1]) for call in pan.call_args_list]
+        self.assertEqual(drags, [(0., -200.), (-300., 0.), (300., 0.), (-120., 0.)])
+
+    def test_rewind_tries_latest_sighting_first_then_earlier_one(self):
+        """第 1、2 屏都见过敌人：先倒回最近的第 2 屏，配不上当时画面就放弃它，再倒回第 1 屏认出后返回。"""
+        self.observe_screens([0, 1, 1, 1, 1, 0, 1, 1])
+        with patch.object(explore, 'detect_objects', return_value=[]), \
+                patch.object(explore, 'view_offset', return_value=None), \
+                patch.object(explore, 'pan_scene') as pan:
+            result = self.explorer().run()
+        self.assertEqual((result['state'], result['step']), ('enemy', 1))
+        drags = [tuple(call.args[1]) for call in pan.call_args_list]
+        self.assertEqual(drags, [(0., -200.), (-300., 0.), (300., 0.)])
+
+    def test_sighting_with_squad_rewinds_by_recentering_before_newer_ones(self):
+        """实录 2026-10-25（HARD 9）：起点那屏看得到小队也看得到敌人；倒回时先点头像找回小队，不按累计估算拖镜头。"""
+        self.observe_screens([1, 1, 0, 1, 1, 1, 1])
+        arrows = [np.array([888., 600.])]
+        recenter = Mock(return_value='marker')
+        with patch.object(explore, 'detect_objects', return_value=[]), \
+                patch.object(explore, 'squad_arrow', side_effect=lambda frame: arrows.pop() if arrows else None), \
+                patch.dict(sys.modules, {'module.campaign.vision.minimap_occlusion':
+                                         SimpleNamespace(recenter_offscreen=recenter)}), \
+                patch.object(explore, 'pan_scene') as pan:
+            result = self.explorer().run()
+        self.assertEqual((result['state'], result['step']), ('enemy', 0))
+        recenter.assert_called_once()
+        self.assertEqual([tuple(call.args[1]) for call in pan.call_args_list], [(0., -200.), (-300., 0.)])
+
+    def test_note_keeps_latest_squad_sighting_and_latest_others(self):
+        """看得到小队的记录只留最近一处、不被后来的挤掉；其余只留最近 REWIND_SIGHTINGS 处。"""
+        finder, sightings = self.explorer(), []
+        for step, squad in enumerate([True, True, False, False, False, False]):
+            sightings = finder.note(sightings, dict(field=self.field, squad=np.zeros(2) if squad else None), step)
+        self.assertEqual([(item['step'], item['squad']) for item in sightings],
+                         [(1, True), (3, False), (4, False), (5, False)])
+
     def test_enemy_first_returns_rings_immediately(self):
         """没有可点敌人时的探索：敌人优先，第一屏见到稳定脚圈即交回主循环。"""
         self.runner.memory.observe.return_value = [ring('ring-1', (830., 470.))]
@@ -289,6 +341,16 @@ class ContentShiftTests(unittest.TestCase):
 
     def test_still_frame_is_zero_shift_for_boundary_detection(self):
         np.testing.assert_allclose(explore.content_shift(self.field, self.field, [400., 0.]), [0., 0.])
+
+    def test_view_offset_needs_no_drag_direction(self):
+        """倒回配准不知道镜头往哪走：两屏位移取最大一簇；配不上或缺特征返回 None。"""
+        reference = explore.facility_frame(self.field, [])
+        np.testing.assert_allclose(explore.view_offset(reference, explore.facility_frame(self.panned, [])),
+                                   [180., 0.], atol=3.)
+        np.testing.assert_allclose(explore.view_offset(explore.facility_frame(self.panned, []), reference),
+                                   [-180., 0.], atol=3.)
+        self.assertIsNone(explore.view_offset(reference, explore.facility_frame(np.zeros_like(self.field), [])))
+        self.assertIsNone(explore.view_offset(None, reference))
 
     def test_motion_against_drag_is_not_measured(self):
         self.assertIsNone(explore.content_shift(self.field, self.panned, [-400., 0.]))

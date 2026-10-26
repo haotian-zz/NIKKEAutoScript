@@ -7,7 +7,8 @@
 
 几何不确定只降级、不停止：配准测不到位移时按拖动增益估算继续，连续测不到（雾或地图外空白）就拖回
 一格当边界；小队位置不明时按最后看到的位置推算避让。镜头移动只用于观察，点击仍要当前新鲜检测。
-want 决定优先级：第一类目标一出现就返回；其余类型记下首次出现的航点，全部看完仍没有第一类时倒回确认。
+want 决定优先级：第一类目标一出现就返回；其余类型每次出现都记下（只留最近几处），全部看完仍没有
+第一类时倒回确认：看得到小队的那屏先找回小队，其余由近及远按镜头估算移回去，再按当时画面的背景特征配准修正。
 """
 
 import time
@@ -60,6 +61,18 @@ SQUAD_MARGIN = 300.
 MINIMAP_RING_RADIUS = 150.
 MINIMAP_CHASES = 3
 MINIMAP_VIEW = np.array([888., 600.])
+# 次要目标最多记几处（每处留一份背景特征，约 1.5MB），倒回时由近及远逐处试。
+REWIND_SIGHTINGS = 3
+# 倒回一处时按当时画面配准修正镜头的次数；两屏位移聚成一簇的半径（客户区像素）；参与聚簇的匹配上限。
+REWIND_CORRECTIONS = 2
+OFFSET_CLUSTER = 40.
+OFFSET_MATCHES = 600
+# 倒回配准不用画面左右边缘和底边这一带的特征：离屏小队头像、EX 标记贴边显示，左边的头像和右边的头像
+# 互相匹配会聚出一簇假的约 1600px 横移（实录 2026-10-25 HARD 9 探索帧离线回放）。
+OFFSET_EDGE = 150.
+CLIENT_SIZE = np.array([1776., 999.])
+# 成簇匹配在参考帧里铺开的范围（外接框对角线）至少这么大，避免一个小图标撑起整个位移。
+OFFSET_SPREAD = 400.
 
 
 class SweepUnconfirmed(RuntimeError):
@@ -111,6 +124,38 @@ def content_shift(before, after, drag, first=None, second=None):
     if along.sum() < SHIFT_SUPPORT:
         return None
     return np.median(shifts[along], axis=0)
+
+
+def view_offset(reference, current):
+    """两屏背景特征之间画面内容的整体位移（客户区像素，当前减参考）；重叠不够或位移不成簇时返回 None。
+
+    与 content_shift 不同，事先不知道镜头往哪走：取双向匹配位移里近邻最多的一簇的中位数。
+    视差让单应配准常常失败（内点率 17～28%），这里只要一个够用的平移把镜头挪回当时那一屏。
+    """
+    if (reference is None or current is None or reference.descriptors is None or current.descriptors is None
+            or min(len(reference.keys), len(current.keys)) < SHIFT_SUPPORT):
+        return None
+    def inside(point):
+        return OFFSET_EDGE <= point[0] <= CLIENT_SIZE[0]-OFFSET_EDGE and point[1] <= CLIENT_SIZE[1]-OFFSET_EDGE
+
+    matcher = cv2.BFMatcher()
+    reverse = matcher.match(current.descriptors, reference.descriptors)
+    pairs = sorted((pair[0] for pair in matcher.knnMatch(reference.descriptors, current.descriptors, k=2)
+                    if len(pair) == 2 and pair[0].distance < .7*pair[1].distance
+                    and reverse[pair[0].trainIdx].trainIdx == pair[0].queryIdx
+                    and inside(reference.keys[pair[0].queryIdx]) and inside(current.keys[pair[0].trainIdx])),
+                   key=lambda item: item.distance)[:OFFSET_MATCHES]
+    if len(pairs) < SHIFT_SUPPORT:
+        return None
+    origins = np.float32([reference.keys[item.queryIdx] for item in pairs])
+    shifts = np.float32([current.keys[item.trainIdx] for item in pairs])-origins
+    near = np.linalg.norm(shifts[:, None]-shifts[None], axis=2) < OFFSET_CLUSTER
+    support = near.sum(axis=1)
+    best = int(support.argmax())
+    if (support[best] < max(SHIFT_SUPPORT, .25*len(shifts))
+            or np.linalg.norm(np.ptp(origins[near[best]], axis=0)) < OFFSET_SPREAD):
+        return None
+    return np.median(shifts[near[best]], axis=0)
 
 
 def off_switches(frames):
@@ -165,7 +210,7 @@ class Explorer:
         self.views, self.pans, self.catalog_errors, self.unmeasured, self.edges = 0, 0, 0, 0, 0
         # 镜头相对起点的累计位移（按实测累加，测不到时按增益估算）及上次取帧位置。
         self.camera, self.gain, self.looked = np.zeros(2), INITIAL_GAIN, None
-        self.hinted, self.chases = set(), 0
+        self.hinted, self.chases, self.noted = set(), 0, 0
         # 小队箭头上次所见的画面位置及当时的镜头位置；小队在探索期间不动，离屏后按镜头位移推算。
         self.squad, self.squad_camera = None, None
         # 上一次拖动后帧的配准特征，作为下一次拖动的前帧特征复用。
@@ -261,6 +306,7 @@ class Explorer:
         hints = self.catalog_hints(fresh) if 'switch' in self.want and not switches and not goal else []
         minimap = [] if goal or 'enemy' not in self.want else self.minimap_targets(fresh, enemies)
         self.views += 1
+        arrow = None
         if goal:
             marks = [item['position'] for item in story_markers(fresh) if item['kind'] in QUEST_MARKER_KINDS]
             anchor = np.asarray(marks[0] if len(marks) == 1 else goto.VIEWPORT_PIXEL, float)
@@ -279,7 +325,7 @@ class Explorer:
                     f'镜头离起点 {np.round(self.camera).astype(int).tolist()}。')
         seen = bool(enemies or switches or hints or minimap)
         return dict(state='seen' if seen else 'none', field=fresh, enemies=enemies, switches=switches,
-                    hints=hints, minimap=minimap)
+                    hints=hints, minimap=minimap, squad=arrow)
 
     def minimap_targets(self, field, enemies):
         """小地图敌人提示里，画面上附近没有可选脚圈的（被挡住、在画面边缘或画面外）。"""
@@ -405,6 +451,61 @@ class Explorer:
             return self.look(step)
         return None
 
+    def note(self, sightings, seen, step):
+        """记下次要目标出现的一屏：看得到小队的只留最近一处，其余只留最近 REWIND_SIGHTINGS 处；按记下先后编号。"""
+        self.noted += 1
+        item = dict(step=step, camera=self.camera.copy(), squad=seen.get('squad') is not None,
+                    features=facility_frame(seen['field'], []), order=self.noted)
+        anchored = [entry for entry in sightings+[item] if entry['squad']][-1:]
+        others = [entry for entry in sightings+[item] if not entry['squad']][-REWIND_SIGHTINGS:]
+        return sorted(anchored+others, key=lambda entry: entry['order'])
+
+    def home_to_squad(self):
+        """把镜头拉回小队：小队已在画面里直接算到，离屏时点头像找回；找不回返回 False。"""
+        from module.campaign.vision.minimap_occlusion import recenter_offscreen
+        if squad_arrow(self.runner.map_frame(track=False)) is not None:
+            return True
+        try:
+            return recenter_offscreen(self.session) is not None
+        except RuntimeError as exc:
+            logger.info(f'倒回时找回小队失败：{exc}')
+            return False
+
+    def revisit(self, sighting, kinds):
+        """倒回记下目标的一屏：看得到小队的那屏先找回小队，否则按镜头估算移回去；没再认出就按当时画面配准修正，
+        最多 REWIND_CORRECTIONS 次。
+
+        返回 pick 的结果、entry 那一屏，或 None（配不上当时画面、已对准但目标不在了、修正次数用完）。
+        小队探索期间不动，找回小队后镜头就在当时那屏附近，估算重置成当时的值。
+        """
+        step = sighting['step']
+        if sighting['squad'] and self.home_to_squad():
+            self.camera = sighting['camera'].copy()
+        else:
+            self.move_by(sighting['camera']-self.camera)
+        for correction in range(REWIND_CORRECTIONS+1):
+            seen = self.look(step)
+            if seen['state'] == 'entry':
+                return seen
+            found = self.pick(seen, kinds)
+            if found is not None:
+                return found
+            if correction == REWIND_CORRECTIONS:
+                break
+            offset = view_offset(sighting['features'], facility_frame(seen['field'], []))
+            if offset is None:
+                logger.info(f'倒回第 {step} 屏：和当时画面配不上，镜头估算已偏出一屏以上。')
+                return None
+            if np.all(np.abs(offset) <= WAYPOINT_TOLERANCE/4):
+                logger.info(f'倒回第 {step} 屏：已对准当时画面，记下的目标不在了。')
+                return None
+            logger.info(f'倒回第 {step} 屏：按当时画面配准，镜头还差 '
+                        f'{np.round(offset).astype(int).tolist()}，再移过去。')
+            # 画面坐标 = 世界坐标 − 镜头：内容比当时偏了 offset，即镜头比当时偏了 −offset，再移 offset 回去。
+            self.move_by(offset, pans=HINT_PANS, tolerance=WAYPOINT_TOLERANCE/4)
+        logger.info(f'倒回第 {step} 屏未再确认到记下的目标。')
+        return None
+
     def result(self, found, step):
         """记录并返回找到的目标。"""
         if found['state'] == 'enemy':
@@ -419,7 +520,7 @@ class Explorer:
         logger.info(f"开始探索：找{'、'.join({'enemy': '敌人', 'switch': '关闭机关'}[kind] for kind in self.want)}，"
                     f'{len(self.waypoints)-1} 个航点由近及远，时限 {self.seconds:.0f} 秒。')
         primary, secondary = self.want[:1], self.want[1:]
-        noted = None
+        sightings = []
         for step, waypoint in enumerate(self.waypoints):
             self.session.check()
             if time.monotonic()-self.started > self.seconds:
@@ -434,26 +535,26 @@ class Explorer:
                 found = self.pick(seen, primary)
                 if found is not None:
                     return self.result(found, step)
-                if noted is None and self.pick(seen, secondary) is not None:
-                    noted = (step, self.camera.copy())
-                    logger.info(f'探索第 {step} 屏记下{"敌人" if seen.get("enemies") else "关闭机关"}，'
-                                '先看完其余航点找更优先的目标。')
+                if self.pick(seen, secondary) is not None:
+                    if not sightings:
+                        logger.info(f'探索第 {step} 屏记下{"敌人" if seen.get("enemies") else "关闭机关"}，'
+                                    '先看完其余航点找更优先的目标。')
+                    sightings = self.note(sightings, seen, step)
                 chased = self.chase(seen, step)
                 if chased is None:
                     break
                 seen = chased
             if seen['state'] == 'entry':
                 return dict(state='entry', field=seen['field'], views=self.views, pans=self.pans)
-        if noted is not None:
-            step, camera = noted
-            self.move_by(camera-self.camera)
-            seen = self.look(step)
-            if seen['state'] == 'entry':
-                return dict(state='entry', field=seen['field'], views=self.views, pans=self.pans)
-            found = self.pick(seen, secondary)
+        # 实录 2026-10-25（HARD 9）：第 0、2、7、10、11、15 屏都看到过敌人，只记了第 0 屏；探索途中 18 次测不到
+        # 位移，按估算倒回「第 0 屏」实际到了另一片悬崖，没再认出敌人就报探索没找到，整轮停止。
+        # 能看到小队的那处先倒回（找回小队是绝对锚点），其余由近及远：越晚记下的那处，之后累计的估算误差越小。
+        for sighting in sorted(sightings, key=lambda item: (not item['squad'], -item['order'])):
+            found = self.revisit(sighting, secondary)
+            if found is not None and found['state'] == 'entry':
+                return dict(state='entry', field=found['field'], views=self.views, pans=self.pans)
             if found is not None:
-                return self.result(found, step)
-            logger.info(f'倒回第 {step} 屏未再确认到记下的目标。')
+                return self.result(found, sighting['step'])
         logger.info(f'探索结束未找到可用目标：{self.views} 屏，{self.pans} 次镜头移动，'
                     f'镜头离起点 {np.round(self.camera).astype(int).tolist()}，边界 {self.edges} 次，'
                     f'位移未测得 {self.unmeasured} 次，目录无法重定位 {self.catalog_errors} 次。')
