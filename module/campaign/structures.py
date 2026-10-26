@@ -175,6 +175,10 @@ TRANSIT_NEAR = 150.
 TRANSIT_SAMPLES = 24
 # 续点时目标平台投影与新鲜检测的最大偏差（客户区像素）；目录投影误差实测 25～55px。
 TRANSIT_MATCH = 80.
+# 小队落点离平台中心不超过它（客户区像素）算站在平台上；实录小队站在平台边上时约 66px。
+UNDER_SQUAD = 110.
+# 两帧之间小队箭头、平台投影的最大漂移（客户区像素），超过说明还在动或配准不稳。
+UNDER_SQUAD_DRIFT = 12.
 
 
 # 点关闭机关后盯住机关本身的时长，以及原位判定半径（客户区像素）。
@@ -356,6 +360,46 @@ def eligible_structures(catalog, candidates, registered, blocked_goal):
             and catalog.eligible(known['facility_id'], blocked_goal)]
 
 
+def pad_under_squad(catalog, field, fresh, candidates, blocked_goal):
+    """小队停在没试过的电梯平台上时交回这块平台：画面里认得出就用新鲜检测，被小队挡住认不出就用目录投影。
+
+    实录 2026-10-25（HARD 9）：原生寻路把小队带到山脊传送平台上停下，要点一下脚下平台才会传送。平台被小队
+    和路灯挡住，近端 400px 补查也认不出；脚本转去点远处平台，游戏改走地面，小队卡在楼后。人工录像里点的
+    就是脚下这块平台，一点即传到下一片敌人旁边。两帧小队箭头和平台投影各自漂移都不超过 UNDER_SQUAD_DRIFT、
+    平台中心离小队落点不超过 UNDER_SQUAD 才算；每个平台仍按目录只试一次，传送与否由之后的实际寻路判断。
+    candidates 是已按目录过滤过的两帧稳定候选。返回目标 dict 或 None。
+    """
+    arrow, previous = squad_arrow(fresh), squad_arrow(field)
+    if arrow is None or previous is None or np.linalg.norm(np.asarray(arrow)-previous) > UNDER_SQUAD_DRIFT:
+        return None
+    ground = np.asarray(arrow, float)+[0., goto.ARROW_GROUND_OFFSET]
+
+    def distance(position):
+        return float(np.linalg.norm(np.asarray(position, float)-ground))
+    seen = [item for item in candidates if item['kind'] == 'elevator' and distance(item['position']) <= UNDER_SQUAD]
+    if seen:
+        return min(seen, key=lambda item: distance(item['position']))
+    pool = [identifier for identifier, record in catalog.data['facilities'].items()
+            if record['kind'] == 'elevator' and catalog.eligible(identifier, blocked_goal)]
+    if not pool:
+        return None
+    before, after = catalog.project_facilities(field, pool), catalog.project_facilities(fresh, pool)
+    near = [(distance(after[identifier]), identifier) for identifier in pool
+            if identifier in before and identifier in after
+            and np.linalg.norm(np.asarray(after[identifier])-before[identifier]) <= UNDER_SQUAD_DRIFT
+            and distance(after[identifier]) <= UNDER_SQUAD]
+    if not near:
+        return None
+    gap, identifier = min(near)
+    record = catalog.data['facilities'][identifier]
+    position = np.round(np.asarray(after[identifier], float), 1).tolist()
+    logger.info(f'小队停在目录里的电梯平台 {identifier} 上（落点离平台中心 {gap:.0f}px），平台被小队挡住认不出；'
+                '按目录投影点这块平台。')
+    return dict(label='catalog_elevator', kind='elevator', state=record.get('last_state', 'start'),
+                confidence=0., position=position, space='client', facility_id=identifier,
+                view='catalog_under_squad')
+
+
 def platform_look(runner, catalog, blocked_goal, expected):
     """移镜头后两帧确认平台；返回 (entry/found/none, 离预计位置最近的未试平台, 新鲜帧)。"""
     session = runner.session
@@ -380,7 +424,7 @@ def platform_look(runner, catalog, blocked_goal, expected):
 def known_platform_view(runner, catalog, blocked_goal):
     """最后一级：画面内没有可试设施时，按底图坐标去看目录里没试过的电梯平台，当场两帧确认后交回。
 
-    实录 2026-10-25（HARD 9）：点 Boss 时游戏把小队经右侧炮台平台送上山脊，山脊是死路；之后的受阻
+    实录 2026-10-25（HARD 9）：点 Boss 时游戏把小队经右侧炮台平台送上山脊（要再点脚下平台才能往前）；之后的受阻
     恢复只看当前画面，画面里唯一的平台以前试过，于是直接停止，炮台区另外几个平台（目录里 11 个
     没试过）一次没踩。由近及远，每个受阻目标在同一道路状态下最多移 KNOWN_PLATFORM_LOOKS 次镜头；
     坐标只决定往哪看，点击仍用新鲜检测，传送与否由之后的实际寻路判断。
@@ -480,10 +524,12 @@ def closest_approach(catalog, identifier, samples):
 
 
 def continue_transit(runner, target, before, observed, samples, catalog, blocked_goal, resumed):
-    """平台尝试后小队换了位置、却一直没到过目标平台旁：多半中途坐了别的传送平台，游戏到站即停。
+    """平台尝试后小队换了位置、却一直没到过目标平台旁：可能中途坐了别的平台到站即停，也可能绕地面走到半路受阻。
 
-    实录 2026-10-25（HARD 9）：从山脊点炮台区左侧平台，小队经山脊传送平台到了楼顶就停下，离目标约
-    525px；脚本把左侧平台记成已试，转去点走不到的敌人，又被游戏送回山脊。人工做法是到站后再点一次。
+    实录 2026-10-25（HARD 9）：小队站在山脊传送平台上时点炮台区左侧平台，游戏没有传送，而是走地面绕到
+    楼后停下（被楼挡住只显示白色轮廓，当时误判成到了楼顶），离目标约 525px；续点后只挪了约 45px。
+    人工录像证实正路是先点脚下的山脊平台（见 pad_under_squad）。两种停法从画面上分不开，这里仍从新位置
+    续点一次，只多一次输入；第二次仍停下就记已试。
     小队到过目标旁（坐的就是它）或画面没变（没走动）都不算；投影不出目标时判断不了，按已试处理。
     返回 None（不是中途换乘或无法续点）或续点的 attempt_structure 结果。
     """
@@ -629,6 +675,10 @@ def recover_visible_structure(runner, field, allow_unanchored=False):
             return 'scouted'
     if catalog is not None:
         candidates = eligible_structures(catalog, candidates, registered, blocked_goal)
+        # 寻路停在平台上多半是要点一下才传送：先点脚下这块，再找机关或去看别处的平台。
+        under = pad_under_squad(catalog, field, fresh, candidates, blocked_goal)
+        if under is not None:
+            return attempt_structure(runner, under, fresh, catalog, blocked_goal)
     # 目录按设施去重：同一道路状态下每个设施只试一次，次数不再另设上限。
     budget = catalog is not None or inputs < STRUCTURE_INPUTS
     ground = None if arrow is None else np.asarray(arrow) + [0., goto.ARROW_GROUND_OFFSET]

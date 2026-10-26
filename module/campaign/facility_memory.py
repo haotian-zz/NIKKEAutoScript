@@ -561,19 +561,30 @@ class FacilityMemory:
 
         只用于判断小队到没到过设施旁，不授予点击许可，也不改变目录。
         """
-        views = [old for old in self.data['facilities'][identifier]['observations'] if old['view'] in self.frames]
-        if not views:
-            return None
+        return self.project_facilities(field, [identifier]).get(identifier)
+
+    def project_facilities(self, field, identifiers):
+        """批量投影：这一帧只算一次特征，每个关键帧只配准一次；配不上的编号不出现在结果里。"""
+        if not any(old['view'] in self.frames for identifier in identifiers
+                   for old in self.data['facilities'][identifier]['observations']):
+            return {}
         frame = facility_frame(field, [])
         if frame.descriptors is None or len(frame.keys) < 30:
-            return None
-        for old in views:
-            try:
-                matrix, _, _ = scene_registration(self.frames[old['view']], frame)
-            except (ValueError, cv2.error, np.linalg.LinAlgError):
-                continue
-            return project(matrix, old['position'])
-        return None
+            return {}
+        matrices, result = {}, {}
+        for identifier in identifiers:
+            for old in self.data['facilities'][identifier]['observations']:
+                if old['view'] not in self.frames:
+                    continue
+                if old['view'] not in matrices:
+                    try:
+                        matrices[old['view']], _, _ = scene_registration(self.frames[old['view']], frame)
+                    except (ValueError, cv2.error, np.linalg.LinAlgError):
+                        matrices[old['view']] = None
+                if matrices[old['view']] is not None:
+                    result[identifier] = project(matrices[old['view']], old['position'])
+                    break
+        return result
 
     def switch_activated(self):
         """点下的关闭机关已在原位确认开启：道路可能整体改变，此前对各受阻目标的尝试都重新可用。"""

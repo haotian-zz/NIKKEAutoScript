@@ -189,6 +189,7 @@ class StructureTests(unittest.TestCase):
         catalog = Mock(data=dict(facilities=facilities))
         catalog.eligible.side_effect = lambda identifier, goal: identifier != 'persisted'
         catalog.project_facility.return_value = None
+        catalog.project_facilities.return_value = {}
         catalog.observe.side_effect = observed
         return catalog
 
@@ -276,6 +277,57 @@ class StructureTests(unittest.TestCase):
                 structure.recover_visible_structure(self.runner, self.field)
         seek.assert_not_called()
         self.runner.session.tap.assert_not_called()
+
+    def test_hidden_pad_under_squad_is_clicked_before_switch_hunt(self):
+        """实录 2026-10-25（HARD 9）：寻路停在山脊平台上，平台被小队挡住认不出；先按目录投影点脚下平台，不先找机关。"""
+        self.runner.world = WorldModel()
+        fresh = self.field.copy()
+        self.runner.map_frame.return_value = fresh
+        facilities = {'scene-0021': dict(kind='elevator', last_state='start'),
+                      'scene-0006': dict(kind='elevator', last_state='start')}
+        catalog = self.catalog(facilities, [[]])
+        catalog.project_facilities.return_value = {'scene-0021': np.array([864., 436.]),
+                                                   'scene-0006': np.array([1202., 535.])}
+        catalog.project_facility.return_value = np.array([864., 436.])
+        with patch.object(structure, 'facility_catalog', return_value=catalog), \
+                patch.object(structure, 'detect_objects', return_value=[]), \
+                patch.object(structure, 'squad_arrow', return_value=np.array([895., 404.])), \
+                patch.object(structure.goto, 'ARROW_GROUND_OFFSET', 90.), \
+                patch.object(structure.goto, 'battle_popup_score', return_value=0.), \
+                patch.object(structure, 'scene_unchanged', return_value=False), \
+                patch.object(structure, 'known_switch_view') as hunt, \
+                patch.object(structure, 'wait_structure_settle', return_value=fresh):
+            self.assertEqual(structure.recover_visible_structure(self.runner, self.field), 'attempted')
+        hunt.assert_not_called()
+        self.runner.session.tap.assert_called_once_with([864., 436.])
+        catalog.attempt.assert_called_once_with('scene-0021', 'quest:(21, 15)')
+        # 小队本来就站在这块平台上，传走后不算中途换乘，不续点。
+        catalog.transit.assert_not_called()
+
+    def test_pad_under_squad_needs_still_squad_and_steady_projection(self):
+        """小队还在动、投影两帧漂移、平台离落点太远或已试过，都不按投影点；画面里认得出的近端平台优先。"""
+        field, fresh = self.field, self.field.copy()
+        catalog = self.catalog({'scene-0021': dict(kind='elevator'), 'persisted': dict(kind='elevator')}, [])
+
+        def run(arrows, projections, candidates=()):
+            catalog.project_facilities.side_effect = lambda frame, pool: {
+                identifier: np.array(position) for identifier, position in projections[frame is fresh].items()
+                if identifier in pool}
+            with patch.object(structure, 'squad_arrow', side_effect=lambda frame: np.array(arrows[frame is fresh])), \
+                    patch.object(structure.goto, 'ARROW_GROUND_OFFSET', 90.):
+                return structure.pad_under_squad(catalog, field, fresh, list(candidates), 'quest:None')
+
+        steady = {'scene-0021': [864., 436.], 'persisted': [890., 480.]}
+        found = run({False: [895., 404.], True: [895., 404.]}, {False: steady, True: steady})
+        self.assertEqual((found['facility_id'], found['position'], found['view']),
+                         ('scene-0021', [864., 436.], 'catalog_under_squad'))
+        self.assertIsNone(run({False: [860., 404.], True: [895., 404.]}, {False: steady, True: steady}))
+        self.assertIsNone(run({False: [895., 404.], True: [895., 404.]},
+                              {False: {'scene-0021': [820., 436.]}, True: steady}))
+        far = {'scene-0021': [700., 300.]}
+        self.assertIsNone(run({False: [895., 404.], True: [895., 404.]}, {False: far, True: far}))
+        seen = fixture(position=(930., 470.))
+        self.assertIs(run({False: [895., 404.], True: [895., 404.]}, {False: steady, True: steady}, [seen]), seen)
 
     def transit_run(self, projected, unchanged=False):
         """从山脊点远处平台的替身：等待途中收集一帧，目标平台投影到 projected；返回 (结果, 目录)。"""

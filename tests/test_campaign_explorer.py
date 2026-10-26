@@ -236,6 +236,7 @@ class ExplorerTests(unittest.TestCase):
         """目录记得的关闭机关在画面上部被挡住：先移到画面中下部，新鲜两帧检测到才作为机关返回。"""
         catalog = Mock()
         catalog.observe.return_value = []
+        catalog.project_facilities.return_value = {}
         catalog.eligible.return_value = True
         catalog.expected = [dict(facility_id='scene-0003', kind='ground_mechanism', state='off',
                                  position=[1200., 340.])]
@@ -412,6 +413,7 @@ class RecoveryOrderTests(unittest.TestCase):
         """目录：远近两个未用过的关闭机关，另有已开启、无底图坐标的机关和一个平台。"""
         catalog = Mock()
         catalog.observe.return_value = []
+        catalog.project_facilities.return_value = {}
         catalog.eligible.return_value = True
         catalog.data = dict(survey={}, facilities={
             'scene-1': dict(kind='ground_mechanism', activated='observed_off', map_position=[900., 0.]),

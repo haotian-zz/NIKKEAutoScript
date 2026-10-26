@@ -76,6 +76,20 @@ class FacilityMemoryTests(unittest.TestCase):
         np.testing.assert_allclose(self.catalog.project_facility(self.panned, identifier), [980., 500.], atol=2.)
         self.assertIsNone(self.catalog.project_facility(np.zeros_like(self.field), identifier))
 
+    def test_project_facilities_batches_one_registration_per_view(self):
+        """批量投影与逐个投影一致；同一关键帧只配准一次，配不上的画面返回空表。"""
+        items = self.catalog.observe(self.field, [observed(), observed((1100., 500.), 'off', 'ground_mechanism')])
+        identifiers = [item['facility_id'] for item in items]
+        # 整套发现运行时模块可能被载入两份，按方法自己的全局表替换才能确保拦到实际调用。
+        scope = FacilityMemory.project_facilities.__globals__
+        register = Mock(wraps=scope['scene_registration'])
+        with patch.dict(scope, scene_registration=register):
+            projected = self.catalog.project_facilities(self.panned, identifiers)
+        self.assertEqual(register.call_count, 1)
+        for identifier in identifiers:
+            np.testing.assert_allclose(projected[identifier], self.catalog.project_facility(self.panned, identifier))
+        self.assertEqual(self.catalog.project_facilities(np.zeros_like(self.field), identifiers), {})
+
     def test_click_and_motion_do_not_activate_switch(self):
         """点击及192px地图位移不能认领机关开启，只有重新观察on状态才记录observed_on。"""
         identifier = self.catalog.observe(
