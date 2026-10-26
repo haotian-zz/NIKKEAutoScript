@@ -7,7 +7,8 @@ import numpy as np
 
 from module.campaign.navigation import controls as goto
 from module.campaign.navigation.camera_navigation import pan_scene
-from module.campaign.navigation.facility_map import gaze_position, locate_view, record_map_positions, seek_map_point
+from module.campaign.navigation.facility_map import (
+    gaze_position, in_seek_view, locate_view, record_map_positions, seek_map_point)
 from module.campaign.navigation.movement_feedback import TargetTriggered
 from module.campaign.navigation.hybrid_localization import locate_squad, position_feedback
 from module.campaign.facility_memory import FacilityMemory, FacilityUnconfirmed, stable_facilities
@@ -323,8 +324,8 @@ def known_switch_view(runner, catalog, blocked_goal):
     return None
 
 
-# 每个受阻目标最多去看几个目录里没试过的电梯平台。
-KNOWN_PLATFORM_TRIES = 3
+# 每个受阻目标最多为目录里没试过的电梯平台移几次镜头（每次约十秒）。
+KNOWN_PLATFORM_LOOKS = 3
 
 
 def known_platforms(catalog, blocked_goal, tried):
@@ -369,15 +370,19 @@ def known_platform_view(runner, catalog, blocked_goal):
 
     实录 2026-10-25（HARD 9）：点 Boss 时游戏把小队经右侧炮台平台送上山脊，山脊是死路；之后的受阻
     恢复只看当前画面，画面里唯一的平台以前试过，于是直接停止，炮台区另外几个平台（目录里 11 个
-    没试过）一次没踩。由近及远，每个受阻目标在同一道路状态下最多看 KNOWN_PLATFORM_TRIES 个；
+    没试过）一次没踩。由近及远，每个受阻目标在同一道路状态下最多移 KNOWN_PLATFORM_LOOKS 次镜头；
     坐标只决定往哪看，点击仍用新鲜检测，传送与否由之后的实际寻路判断。
     返回 None（没有可看的或都没确认到，镜头已找回小队）或 dict(state=entry/found, ...)。
     """
     if catalog is None:
         return None
     world = runner.world
+
+    def looks():
+        return world.count('known_platform_look', blocked_goal, reset_on=('switch',))
+
     tried = world.members('known_platform_tried', blocked_goal, reset_on=('switch',))
-    if len(tried) >= KNOWN_PLATFORM_TRIES or not known_platforms(catalog, blocked_goal, tried):
+    if looks() >= KNOWN_PLATFORM_LOOKS or not known_platforms(catalog, blocked_goal, tried):
         return None
     try:
         gaze = gaze_position(locate_view(runner, 'known_platform_start'))
@@ -385,12 +390,13 @@ def known_platform_view(runner, catalog, blocked_goal):
         logger.info(f'目录里有没试过的电梯平台，但镜头配准未通过：{exc}')
         return None
     moved = False
-    while len(tried) < KNOWN_PLATFORM_TRIES:
+    while looks() < KNOWN_PLATFORM_LOOKS:
         pool = known_platforms(catalog, blocked_goal, tried)
         if not pool:
             break
         identifier, point = min(pool, key=lambda item: np.linalg.norm(item[1]-gaze))
         tried = world.add_member('known_platform_tried', blocked_goal, identifier, reset_on=('switch',))
+        world.bump('known_platform_look', blocked_goal, reset_on=('switch',))
         logger.info(f'目标受阻：目录里的电梯平台 {identifier} 未对本目标试过，按底图坐标 '
                     f'{np.round(point).astype(int).tolist()} 移镜头过去用新鲜检测确认。')
         moved = True
@@ -407,7 +413,14 @@ def known_platform_view(runner, catalog, blocked_goal):
             logger.info(f"已知平台附近新鲜确认没试过的平台 {target['facility_id']} {target['position']}"
                         f"（{target['confidence']:.2f}），交由原生寻路前往。")
             return dict(state='found', target=target, field=fresh)
-        logger.info(f'已知平台 {identifier} 附近未新鲜确认到没试过的平台。')
+        # 实录 2026-10-25（HARD 9）：scene-0004/0007/0008 的底图坐标都投影在小队身旁，画面里只有一个已试平台，
+        # 三次查看拍的是同一屏。一屏内没确认到的其余目录平台多是配准误差留下的重复编号，一并排除。
+        covered = sorted(other for other, spot in pool
+                         if other != identifier and in_seek_view(reached['chart'], reached['report'], spot))
+        for other in covered:
+            tried = world.add_member('known_platform_tried', blocked_goal, other, reset_on=('switch',))
+        logger.info(f'已知平台 {identifier} 附近未新鲜确认到没试过的平台'
+                    + (f"；同屏范围内的 {', '.join(covered)} 一并排除" if covered else '') + '。')
     if moved:
         recenter_squad(runner)
     return None

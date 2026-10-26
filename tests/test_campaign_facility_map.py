@@ -41,6 +41,14 @@ class FacilityMapTests(unittest.TestCase):
         np.testing.assert_allclose(facility.map_to_client(chart, view, point), [1200., 700.], atol=1e-6)
         self.assertIsNone(facility.map_to_client(chart, view, facility.gaze_position(view)+[900., 0.]))
 
+    def test_in_seek_view_only_for_points_projecting_into_view(self):
+        """注视点在可确认范围内；HUD 区和 ROI 外的远点都不算本屏看过。"""
+        chart = facility.gaze_chart(self.localizer)
+        view = report([1000., 2000.])
+        self.assertTrue(facility.in_seek_view(chart, view, facility.gaze_position(view)))
+        self.assertFalse(facility.in_seek_view(chart, view, facility.client_to_map(chart, view, [100., 900.])))
+        self.assertFalse(facility.in_seek_view(chart, view, facility.gaze_position(view)+[900., 0.]))
+
     def test_seek_pans_until_target_projects_into_view(self):
         """目标起初远在视野外：拖一次后重新配准，投影进入画面即停，返回预计落点。"""
         target = np.array([5000., 3000.])

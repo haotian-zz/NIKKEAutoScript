@@ -215,7 +215,7 @@ class StructureTests(unittest.TestCase):
                       'scene-0011': dict(kind='ground_mechanism', map_position=[120., 100.])}
         catalog = self.catalog(facilities, [[dict(used, facility_id='persisted')],
                                             [dict(pad, facility_id='scene-0004')]])
-        seek = Mock(return_value=dict(client=np.array([690., 515.]), field=self.field))
+        seek = Mock(return_value=dict(client=np.array([690., 515.]), field=self.field, chart=None, report=None))
         with patch.object(structure, 'facility_catalog', return_value=catalog), \
                 patch.object(structure, 'detect_objects', side_effect=[[used], [used], [pad], [pad]]), \
                 patch.object(structure, 'squad_arrow', return_value=np.array([600., 400.])), \
@@ -230,6 +230,36 @@ class StructureTests(unittest.TestCase):
         catalog.attempt.assert_called_once_with('scene-0004', 'quest:(21, 15)')
         self.assertEqual(self.runner.world.members('known_platform_tried', 'quest:(21, 15)', reset_on=('switch',)),
                          {'scene-0004'})
+
+    def test_known_platform_look_excludes_ghosts_in_the_same_view(self):
+        """实录 2026-10-25（HARD 9）：三个目录平台投影在同一屏、都没确认到；一次查看排除全部，下一次去远处的平台。"""
+        used, pad = fixture(), fixture(position=(700., 520.))
+        facilities = {'persisted': dict(kind='elevator', map_position=[100., 100.]),
+                      'scene-0004': dict(kind='elevator', map_position=[160., 130.]),
+                      'scene-0007': dict(kind='elevator', map_position=[170., 90.]),
+                      'scene-0008': dict(kind='elevator', map_position=[175., 85.]),
+                      'scene-0014': dict(kind='elevator', map_position=[900., 600.])}
+        catalog = self.catalog(facilities, [[dict(used, facility_id='persisted')], [dict(used, facility_id='persisted')],
+                                            [dict(pad, facility_id='scene-0014')]])
+        near = dict(client=np.array([830., 580.]), field=self.field, chart='near', report='near')
+        far = dict(client=np.array([700., 515.]), field=self.field, chart='far', report='far')
+        seek = Mock(side_effect=[near, far])
+        in_view = Mock(side_effect=lambda chart, report, spot: chart == 'near' and spot[0] < 200.)
+        with patch.object(structure, 'facility_catalog', return_value=catalog), \
+                patch.object(structure, 'detect_objects', side_effect=[[used], [used], [used], [used], [pad], [pad]]), \
+                patch.object(structure, 'squad_arrow', return_value=np.array([600., 400.])), \
+                patch.object(structure.goto, 'battle_popup_score', return_value=0.), \
+                patch.object(structure, 'locate_view', return_value={}), \
+                patch.object(structure, 'gaze_position', return_value=np.array([150., 120.])), \
+                patch.object(structure, 'seek_map_point', seek), \
+                patch.object(structure, 'in_seek_view', in_view), \
+                patch.object(structure, 'recenter_squad'), \
+                patch.object(structure, 'wait_structure_settle', return_value=self.field):
+            self.assertEqual(structure.recover_visible_structure(self.runner, self.field), 'attempted')
+        self.assertEqual([call.args[1].tolist() for call in seek.call_args_list], [[160., 130.], [900., 600.]])
+        self.runner.session.tap.assert_called_once_with(pad['position'])
+        catalog.attempt.assert_called_once_with('scene-0014', 'quest:(21, 15)')
+        self.assertEqual(self.runner.world.count('known_platform_look', 'quest:(21, 15)', reset_on=('switch',)), 2)
 
     def test_known_platforms_all_tried_stop_without_moving_camera(self):
         """目录里的平台都试过：不移镜头、不点击，按设施都试过停止。"""

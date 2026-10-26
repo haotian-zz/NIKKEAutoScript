@@ -122,10 +122,16 @@ def record_map_positions(runner, catalog, items, field):
     return dict(field=after, unchanged=unchanged)
 
 
+def in_seek_view(chart, report, point):
+    """底图点在这次配准的镜头下是否落进 SEEK_VIEW（可交给新鲜检测确认的画面范围）。"""
+    client = map_to_client(chart, report, np.asarray(point, float))
+    return client is not None and inside(client, SEEK_VIEW)
+
+
 def seek_map_point(runner, point, tag='facility_seek', pans=SEEK_PANS):
     """闭环把镜头移到底图点附近：每次重新配准展开地图，按局部方向拖动。
 
-    返回 dict(client=目标预计客户区位置, field=新帧) 或 None（拖不动、配准失败或未确认小队
+    返回 dict(client=目标预计客户区位置, field=新帧, chart, report=最后一次配准) 或 None（拖不动、配准失败或未确认小队
     位置）。只移动镜头，不发送走位。小队在寻位期间不动：看到箭头时记下它的底图坐标，之后
     每次配准都投影回画面，仍在画面附近就避开它，投影已在展开 ROI 外即确认离屏。
     实录 2026-10-22（22-36）：拖一次后小队离屏，离屏头像被小地图挡住，原先因此停止寻位。
@@ -143,7 +149,7 @@ def seek_map_point(runner, point, tag='facility_seek', pans=SEEK_PANS):
         field = runner.map_frame(track=False)
         client = map_to_client(chart, report, point)
         if client is not None and inside(client, SEEK_VIEW):
-            return dict(client=client, field=field)
+            return dict(client=client, field=field, chart=chart, report=report)
         distance = float(np.linalg.norm(gaze_position(report) - point))
         if index == pans or (previous is not None and distance > previous - SEEK_STUCK):
             logger.info(f'镜头未能移到已知设施附近（剩余底图距离 {distance:.0f}px）。')
