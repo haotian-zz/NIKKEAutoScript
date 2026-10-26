@@ -8,11 +8,22 @@ from module.exception import RequestHumanTakeover
 from module.handler.assets import END_FIGHTING_CHECK
 from module.logger import logger
 from module.simulation_room.assets import AUTO_BURST, AUTO_SHOOT, END_FIGHTING
-from module.tribe_tower.assets import OPERATION_FAILED
+from module.tribe_tower.assets import BACK, OPERATION_FAILED
 from module.ui.assets import FIGHT_QUICKLY_CHECK
 
 
 class EventChallenge(EventBase):
+    def leave_failed_battle(self):
+        """点战败页左下角「返回」，直到战败页消失；10 秒没离开就交给人工。"""
+        timeout = Timer(10).start()
+        while 1:
+            self.device.screenshot()
+            if not self.appear(OPERATION_FAILED, offset=10):
+                return
+            if timeout.reached():
+                raise RequestHumanTakeover
+            self.appear_then_click(BACK, offset=10, interval=2)
+
     def challenge(self, skip_first_screenshot=True):
         """执行活动挑战，并在关卡无法入场时返回活动继续其他日常。
 
@@ -120,10 +131,13 @@ class EventChallenge(EventBase):
             if self.appear_then_click(AUTO_BURST, offset=10, threshold=0.9, interval=5):
                 continue
 
+            # 打不过只跳过挑战，退回活动页继续剩下的活动日常和其他任务
             if self.appear(OPERATION_FAILED, offset=10):
                 report('blocked', '活动挑战战斗未通过', '可调整活动队伍后再试')
                 logger.error('Challenge stage fight failed')
-                raise RequestHumanTakeover
+                self.leave_failed_battle()
+                self.back_to_event()
+                return False
 
         self.back_to_event()
         logger.info('Event challenge done')
