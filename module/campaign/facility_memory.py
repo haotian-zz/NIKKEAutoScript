@@ -15,6 +15,8 @@ MAX_VIEWS = 64
 MAX_FACILITIES = 256
 # 每个设施保留最近几次视野观测；更早的视野不再锚定它，可作为桥接帧淘汰。
 MAX_OBSERVATIONS = 4
+# 同一受阻目标、同一道路状态下，中途换乘又没能续点的平台最多尝试几次（防止在两个平台间来回）。
+TRANSIT_TRIES = 3
 # 先按特征投票挑出最可能重叠的几个关键帧再做严格配准；都配不上才补查其余关键帧。
 # 实测 2026-10-22（22章64个关键帧）：逐个严格配准约3秒，投票约0.06秒，票数前几名基本都是真重叠。
 CANDIDATE_VIEWS = 8
@@ -536,20 +538,22 @@ class FacilityMemory:
     def eligible(self, identifier, blocked_goal):
         """只跳过已确认开启机关或针对同一受阻目标已尝试设施，不永久封禁可重复使用的传送点。
 
-        唯一一次尝试是中途换乘停在半路（transit）时还能再试一次；第二次之后不论结果都不再放行。
+        中途换乘停在半路（transit）又没能当场续点的尝试不算试过，但同一目标最多 TRANSIT_TRIES 次；
+        普通尝试或已经续点过的中途换乘都算试过。
         """
         record = self.data['facilities'][identifier]
         if record['kind'] == 'ground_mechanism' and record['activated'] == 'observed_on':
             return False
         attempts = [attempt for attempt in record['attempts'] if attempt['blocked_goal'] == blocked_goal
                     and attempt.get('state_epoch', 0) == self.data.get('state_epoch', 0)]
-        return not attempts or (len(attempts) == 1 and attempts[0].get('transit', False))
+        return (len(attempts) < TRANSIT_TRIES
+                and all(attempt.get('transit') and not attempt.get('continued') for attempt in attempts))
 
-    def transit(self, identifier):
-        """最近一次尝试小队换了位置却没到过这个设施旁（多半中途坐了别的传送平台）：允许再试一次。"""
+    def transit(self, identifier, continued):
+        """最近一次尝试小队换了位置却没到过这个设施旁（多半中途坐了别的传送平台）；continued 表示已当场续点。"""
         attempts = self.data['facilities'][identifier]['attempts']
         if attempts:
-            attempts[-1]['transit'] = True
+            attempts[-1].update(transit=True, continued=continued)
             self.save()
 
     def project_facility(self, field, identifier):

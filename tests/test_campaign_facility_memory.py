@@ -53,17 +53,22 @@ class FacilityMemoryTests(unittest.TestCase):
         self.assertTrue(restarted.eligible(identifier, 'quest:21-16'))
         self.assertEqual(restarted.data['connections'], [])
 
-    def test_transit_attempt_allows_exactly_one_retry(self):
-        """中途换乘停在半路的那次不算试过，只放行一次；重启后同样生效。"""
+    def test_transit_without_continuation_does_not_count(self):
+        """中途换乘又没能续点的尝试不算试过（重启后同样），最多三次；续点过的中途换乘算试过。"""
         identifier = self.catalog.observe(self.field, [observed()])[0]['facility_id']
         self.catalog.attempt(identifier, 'quest:None')
         self.assertFalse(self.catalog.eligible(identifier, 'quest:None'))
-        self.catalog.transit(identifier)
+        self.catalog.transit(identifier, continued=False)
         restarted = FacilityMemory('isolated', (21, 'normal'), 'sha-A', root=self.temporary.name)
         self.assertTrue(restarted.eligible(identifier, 'quest:None'))
-        restarted.attempt(identifier, 'quest:None')
-        restarted.transit(identifier)
+        for _ in range(2):
+            restarted.attempt(identifier, 'quest:None')
+            restarted.transit(identifier, continued=False)
         self.assertFalse(restarted.eligible(identifier, 'quest:None'))
+        other = self.catalog.observe(self.field, [observed(), observed((1100., 500.))])[1]['facility_id']
+        self.catalog.attempt(other, 'quest:None')
+        self.catalog.transit(other, continued=True)
+        self.assertFalse(self.catalog.eligible(other, 'quest:None'))
 
     def test_project_facility_follows_camera_pan(self):
         """镜头平移180px后设施投影跟着平移；无纹理画面配不上，返回None。"""

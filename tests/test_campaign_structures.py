@@ -306,7 +306,8 @@ class StructureTests(unittest.TestCase):
         self.assertEqual(result, 'attempted')
         self.assertEqual(self.runner.session.tap.call_count, 2)
         self.assertEqual(catalog.attempt.call_count, 2)
-        self.assertEqual(catalog.transit.call_args_list[0].args, ('scene-0013',))
+        self.assertEqual([call.args + tuple(call.kwargs.values()) for call in catalog.transit.call_args_list],
+                         [('scene-0013', True), ('scene-0013', False)])
 
     def test_platform_reached_or_unmoved_is_not_transit(self):
         """小队到过目标平台旁（坐的就是它）或画面没变，都按一次普通尝试处理，不续点。"""

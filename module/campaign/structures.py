@@ -490,9 +490,9 @@ def continue_transit(runner, target, before, observed, samples, catalog, blocked
     closest = closest_approach(catalog, target['facility_id'], samples+[(observed, squad_arrow(observed))])
     if closest is None or closest <= TRANSIT_NEAR:
         return None
-    catalog.transit(target['facility_id'])
     if resumed:
-        logger.info(f"续点后小队仍停在离平台 {target['facility_id']} {closest:.0f}px 处：不再续点，按已试处理。")
+        catalog.transit(target['facility_id'], continued=False)
+        logger.info(f"续点后小队仍停在离平台 {target['facility_id']} {closest:.0f}px 处：不再续点。")
         return None
     field = runner.map_frame()
     first = structure_observations(field, squad_arrow(field), True)
@@ -509,6 +509,7 @@ def continue_transit(runner, target, before, observed, samples, catalog, blocked
     again = [dict(item, facility_id=known['facility_id']) for item in stable_structures(first, second)
              for known in registered if known['facility_id'] == target['facility_id']
              and known['kind'] == item['kind'] and np.linalg.norm(np.asarray(known['position'])-item['position']) < 1.]
+    catalog.transit(target['facility_id'], continued=bool(again))
     runner.session.record_evidence('structure_transit', fresh, target=target, closest=closest,
                                    resumed=bool(again), arrays=dict(field=fresh))
     logger.info(f"小队换了位置但一直没到平台 {target['facility_id']} 旁（最近 {closest:.0f}px）：多半中途坐了别的"
