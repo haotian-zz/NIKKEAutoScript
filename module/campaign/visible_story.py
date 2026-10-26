@@ -1012,6 +1012,17 @@ class VisibleStoryRunner:
         goal = 'quest:'+str(self.quest)
         return attempt_structure(self, found['target'], found['field'], self.facilities or facility_catalog(self), goal)
 
+    def progress_check_due(self):
+        """困难持续推图画面没怪时，本段还没看过章节列表计数、或看过之后又有新胜利，就该再看一次。
+
+        用户建议（2026-10-25）：没怪时点章节号看计数，例如困难 9 是 27/27 就说明本章已全部打完。
+        实录同日 HARD 9：9-27 打完后第二段先探索了五分钟多才可能交回读计数。
+        """
+        if not (self.hard and getattr(self.owner, 'progress_check', False)):
+            return False
+        checked = getattr(self.owner, 'progress_checked_wins', None)
+        return checked is None or len(self.owner.story_wins) > checked
+
     def exhausted(self, found):
         """探索看完全部航点没有可用目标：停止并说明还差什么；困难难度交回任务读章节列表的进度计数。"""
         detail = (f"探索 {found.get('views', 0)} 屏、{found.get('pans', 0)} 次镜头移动"
@@ -1123,6 +1134,9 @@ class VisibleStoryRunner:
             preferred, marked = self.quest_target(field, fresh, candidates)
             if marked and preferred is None and self.reveal_marked_area(fresh, has_targets=bool(candidates)):
                 continue
+            if not candidates and preferred is None and self.progress_check_due():
+                logger.info('画面没有可点敌人：先回章节列表看本章关卡计数，左右相等就是本章已打完。')
+                return dict(state='continue', reason='hard_progress_check')
             # 实录 2026-10-21（22-27）：受阻时画面内还有 3 个可选敌人，挡在机关前的支线怪就在其中，
             # 原先直接进入设施恢复，一个都没打。恢复开始后则保持恢复优先，不插入敌人点击。
             if self.blocked_views and preferred is None and not (self.try_visible and candidates):

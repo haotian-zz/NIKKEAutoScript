@@ -573,6 +573,7 @@ class AutoPush(UI):
         require_story_return = None
         returned_chapters = set()
         resume_map = False
+        progress_checked = False
         try:
             while True:
                 if not resume_map and not self.ensure_main_map():
@@ -613,6 +614,10 @@ class AutoPush(UI):
                 self.device.check_resolution(*Campaign.RESOLUTION)
                 campaign = Campaign(self.config, device=self.device)
                 campaign.continuous = continuous
+                # 困难持续推图：画面没怪时交回这里读章节列表计数（刚读过则本段要等有新胜利才再读）。
+                campaign.progress_check = difficulty == 'hard' and continuous
+                campaign.progress_checked_wins = 0 if progress_checked else None
+                progress_checked = False
                 campaign.story_first = True
                 if not self.select_chapter(campaign, target, difficulty):
                     if total_cleared:
@@ -644,6 +649,13 @@ class AutoPush(UI):
                 if code == 'chapter_cleared':
                     report('success', f'本章清怪巡检完成，本轮确认清除 {total_cleared} 个敌人', reason)
                     return
+                if code == 'hard_progress_check':
+                    # 竖屏经章节列表：最新已解锁章计数已满则 enter_hard 报告完成；没满就进最新章（可能就是本章）继续。
+                    progress_checked = True
+                    if not self.enter_hard():
+                        return
+                    resume_map = True
+                    continue
                 if difficulty == 'hard' and target is None and code in EXHAUSTED_CODES:
                     # 探索或设施预算用尽不等于本章清空：回章节列表读本章计数，满了才算完成（困难每段都经列表进最新章）。
                     progress = self.enter_hard(peek=True)

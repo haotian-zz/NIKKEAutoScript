@@ -335,6 +335,24 @@ class VisibleStoryTests(unittest.TestCase):
         self.assertEqual(structures.known_switches.call_args[0][1], 'quest:None')
         self.session.tap.assert_not_called()
 
+    def test_hard_no_targets_hands_back_for_chapter_counter_once_per_win(self):
+        """困难持续推图没怪：先交回读章节列表计数，不探索；读过后要有新胜利才再交回。"""
+        self.runner.hard = True
+        self.owner.progress_check = True
+        self.owner.progress_checked_wins = None
+        self.runner.scan = Mock(return_value=(self.field, []))
+        self.runner.quest_target = Mock(return_value=(None, False))
+        self.runner.reveal_marked_area = Mock(return_value=False)
+        self.ns['chapter_identity'] = Mock(return_value=None)
+        self.assertEqual(self.runner.run(ticks=1), dict(state='continue', reason='hard_progress_check'))
+        self.runner.explore.assert_not_called()
+        self.owner.progress_checked_wins = 0
+        self.assertFalse(self.runner.progress_check_due())
+        self.owner.story_wins.add((9, 27))
+        self.assertTrue(self.runner.progress_check_due())
+        self.owner.progress_check = False
+        self.assertFalse(self.runner.progress_check_due())
+
     def test_no_targets_tries_known_switch_before_explore(self):
         """没有可点敌人时先问已知机关；转入找机关就不启动探索。"""
         self.runner.scan = Mock(return_value=(self.field, []))

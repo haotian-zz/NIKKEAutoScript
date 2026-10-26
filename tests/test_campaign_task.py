@@ -257,6 +257,46 @@ class CampaignStartTests(unittest.TestCase):
         self.assertEqual(reports[-1][0], 'blocked')
         self.assertIn('章节列表：蓝色关卡 12/27', reports[-1][2])
 
+    def hard_progress_runner(self, check_results):
+        """困难持续推图：第一段画面没怪交回读计数（hard_progress_check），之后按 enter_hard 结果继续或结束。"""
+        takeover = type('Takeover', (Exception,), {})
+        first = SimpleNamespace(run=Mock(), state=SimpleNamespace(enemies={}),
+                                last_result={'state': 'continue', 'reason': 'hard_progress_check'})
+        second = SimpleNamespace(run=Mock(side_effect=takeover()), state=SimpleNamespace(enemies={}),
+                                 last_result={'state': 'needs_review', 'reason': 'unknown_stop', 'message': '停'})
+        factory = Mock(side_effect=[first, second])
+        factory.RESOLUTION = (1776, 999)
+        reports = []
+        fn = load('run', Campaign=factory, RequestHumanTakeover=takeover, GameStuckError=RuntimeError,
+                  save_wait_image=Mock(), logger=Mock(), report=lambda *a: reports.append(a),
+                  chapter_number=load('chapter_number', re=re), GOAL_REASONS={},
+                  EXHAUSTED_CODES=('story_exploration_exhausted',), progress_text=str)
+        runner = SimpleNamespace(config=SimpleNamespace(Client_Platform='win', CampaignMap_MapType='main',
+                                 CampaignMap_Chapter='current', CampaignMap_Difficulty='hard',
+                                 CampaignMap_RunMode='continuous', PCClient_ScreenNumber=1,
+                                 PCClient_GameWindowPosition='center', task_delay=Mock()), device=Mock(),
+                                 runtime_ready=lambda: True, renew_progress_guard=Mock(),
+                                 ensure_main_map=Mock(return_value=True), enter_hard=Mock(side_effect=[True]+check_results),
+                                 select_chapter=Mock(return_value=True), cleared_count=load('cleared_count'))
+        fn(runner)
+        return runner, factory, first, second, reports
+
+    def test_no_enemy_progress_check_reenters_latest_chapter_without_lobby(self):
+        """计数没满：经章节列表进最新章（可能就是本章）续推，不回大厅；新段要等有新胜利才再读计数。"""
+        runner, factory, first, second, reports = self.hard_progress_runner([True])
+        self.assertEqual(factory.call_count, 2)
+        self.assertEqual(runner.ensure_main_map.call_count, 1)
+        self.assertEqual([c.kwargs for c in runner.enter_hard.call_args_list], [{}, {}])
+        self.assertTrue(first.progress_check)
+        self.assertIsNone(first.progress_checked_wins)
+        self.assertEqual(second.progress_checked_wins, 0)
+
+    def test_no_enemy_progress_check_ends_when_list_reports_complete(self):
+        """最新章计数已满：enter_hard 自己报告完成并返回 False，推图结束，不再开新段。"""
+        runner, factory, first, second, reports = self.hard_progress_runner([False])
+        self.assertEqual(factory.call_count, 1)
+        self.assertEqual(runner.enter_hard.call_count, 2)
+
     def test_critical_memory_pressure_stops_before_loading_detector(self):
         """真实低余量必须先于模型初始化被拦住，保留具体资源原因而非误报模型依赖失败。"""
         reports = []
