@@ -119,6 +119,19 @@ class SceneMemoryTests(unittest.TestCase):
             self.assertEqual(memory.records['future']['status'], 'pending')
             self.assertEqual(memory.records['cleared']['status'], 'deferred')
 
+    def test_hard_map_releases_locked_stage_after_each_win(self):
+        """困难图没有任务（quest 为 None）：打赢一关后放回被锁的关卡，已胜利的不放回，没打赢不放回。"""
+        with tempfile.TemporaryDirectory() as folder:
+            memory = SceneEnemyMemory(Path(folder) / 'enemies.json')
+            memory.records = {
+                'locked': dict(stage=[9, 25], status='deferred'),
+                'cleared': dict(stage=[9, 24], status='deferred')}
+            memory.reconsider(None, {(9, 24)})
+            self.assertEqual(memory.records['locked']['status'], 'deferred')
+            memory.reconsider(None, {(9, 24)}, after_win=True)
+            self.assertEqual(memory.records['locked']['status'], 'pending')
+            self.assertEqual(memory.records['cleared']['status'], 'deferred')
+
     def test_ex_classification_survives_ring_deduplication_and_temporary_ocr_miss(self):
         """模型脚圈与文字脚圈同处只计一只，已验证的 EX 不因下一帧 OCR 漏检变成普通目标。"""
         field = np.zeros((999, 1776, 3), np.uint8)

@@ -48,8 +48,12 @@ if EX_STAGE_TPL is None:
 # 模板分落在这段且快速战斗按钮为橙色实心时仍算备战弹窗（返回接受分 LOCKED_ENTRY_ACCEPT），
 # 但 entry_locked 为真：快速战斗也只会弹「该作战目前无法进行。请先完成前置主线任务。」，只能关闭。
 # 实录 2026-10-23：任务 23-26 未完成时路上碰到 23-27，没认出弹窗，等地图或备战 30 秒后停了整轮。
+# 困难图从没打过的关卡没有快速战斗按钮，只看按钮本身：可进入的按钮蓝色实心（模板饱和度均值 176），
+# 被锁的灰色压锁实测 1.9～2.0。实录 2026-10-25（9-25 HARD，9-23/9-24 未打）：模板 0.761、快速战斗位置空白，
+# 旧判据没认出弹窗，当成「点了没反应」带着弹窗去探索。历史 2763 帧里 0.5～0.8 区间只有这两帧。
 LOCKED_ENTRY_SCORE = .7
 LOCKED_ENTRY_ACCEPT = .85
+LOCKED_BUTTON_SATURATION = 30
 
 
 def map_open(win, reset=False):
@@ -96,27 +100,35 @@ def battle_popup_score(image):
     只返回浮点分数，阈值与后续动作由调用者决定；此函数不发送输入。
     进入战斗按钮被锁（前置主线未完成）的弹窗返回 LOCKED_ENTRY_ACCEPT，是否被锁另用 entry_locked 判断。
     """
-    value = entry_template_score(image)
-    return LOCKED_ENTRY_ACCEPT if locked_entry(image, value) else value
+    value, point = entry_template_match(image)
+    return LOCKED_ENTRY_ACCEPT if locked_entry(image, value, point) else value
 
 
 def entry_locked(image):
     """备战弹窗的进入战斗按钮是否被锁；被锁的关卡前置主线未完成，不能开战也不能快速战斗。"""
-    return locked_entry(image, entry_template_score(image))
+    return locked_entry(image, *entry_template_match(image))
 
 
-def entry_template_score(image):
-    """进入战斗按钮模板的归一化相关峰值。"""
-    result = cv2.matchTemplate(image, ENTER_BATTLE_TPL, cv2.TM_CCOEFF_NORMED)
-    return float(cv2.minMaxLoc(result)[1])
+def entry_template_match(image):
+    """进入战斗按钮模板的归一化相关峰值及其左上角客户区坐标。"""
+    _, value, _, point = cv2.minMaxLoc(cv2.matchTemplate(image, ENTER_BATTLE_TPL, cv2.TM_CCOEFF_NORMED))
+    return float(value), point
 
 
-def locked_entry(image, value):
-    """模板分落在被锁区间且快速战斗按钮为橙色实心。"""
+def locked_entry(image, value, point):
+    """模板分落在被锁区间，且快速战斗按钮为橙色实心或进入战斗按钮本身灰色无饱和。"""
     if not LOCKED_ENTRY_SCORE <= value < .8:
         return False
     from module.campaign.vision.battle import quick_battle_available
-    return quick_battle_available(image)
+    return quick_battle_available(image) or entry_button_gray(image, point)
+
+
+def entry_button_gray(image, point):
+    """模板命中位置的按钮是否灰色无饱和（被锁外观）。"""
+    height, width = ENTER_BATTLE_TPL.shape[:2]
+    x, y = point
+    box = image[y:y+height, x:x+width]
+    return box.size > 0 and float(cv2.cvtColor(box, cv2.COLOR_BGR2HSV)[..., 1].mean()) < LOCKED_BUTTON_SATURATION
 
 
 def normal_enemy_markers(image, matrix):

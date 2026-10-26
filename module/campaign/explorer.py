@@ -479,7 +479,8 @@ class Explorer:
         小队探索期间不动，找回小队后镜头就在当时那屏附近，估算重置成当时的值。
         """
         step = sighting['step']
-        if sighting['squad'] and self.home_to_squad():
+        anchored = sighting['squad'] and self.home_to_squad()
+        if anchored:
             self.camera = sighting['camera'].copy()
         else:
             self.move_by(sighting['camera']-self.camera)
@@ -494,7 +495,10 @@ class Explorer:
                 break
             offset = view_offset(sighting['features'], facility_frame(seen['field'], []))
             if offset is None:
-                logger.info(f'倒回第 {step} 屏：和当时画面配不上，镜头估算已偏出一屏以上。')
+                # 找回小队后的第一屏不靠估算，配不上多半是画面纹理不足或小队已经移动，不是估算漂移。
+                cause = ('找回小队后仍和当时画面配不上（纹理不足或小队已移动）' if anchored and not correction
+                         else '和当时画面配不上，镜头估算已偏出一屏以上')
+                logger.info(f'倒回第 {step} 屏：{cause}。')
                 return None
             if np.all(np.abs(offset) <= WAYPOINT_TOLERANCE/4):
                 logger.info(f'倒回第 {step} 屏：已对准当时画面，记下的目标不在了。')

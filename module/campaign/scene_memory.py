@@ -181,6 +181,8 @@ class SceneEnemyMemory:
     def reconsider(self, quest, victories, after_win=False):
         """任务前进后释放未来编号，胜利后复查原先受阻的道路；已胜利身份不重新排队。
 
+        困难图不跟任务栏（quest 为 None），被锁的关卡在每次胜利后放回：困难关卡按编号依次解锁，
+        实录 2026-10-25（HARD 9）9-25 在 9-24 打赢前进入战斗被锁。
         状态只影响候选排序和冷却，恢复候选仍需新帧红圈及实际备战编号验证。
         """
         for record in self.records.values():
@@ -188,7 +190,8 @@ class SceneEnemyMemory:
             if record['status'] in ('unreachable', 'stalled') and after_win:
                 record['status'] = 'pending'
             elif (record['status'] == 'deferred' and stage is not None and tuple(stage) not in victories
-                  and quest is not None and stage[0] == quest[0] and stage[1] <= quest[1]):
+                  and (quest is None and after_win
+                       or quest is not None and stage[0] == quest[0] and stage[1] <= quest[1])):
                 record['status'] = 'pending'
         self.save()
 
