@@ -47,7 +47,7 @@ class GiftBase(UI):
                 self.appear_then_click(FETCH_SHOP_POP_GOTO_MAIN, offset=(30, 30), interval=3)
                 continue
 
-            if self.ui_page_appear(page_main) and self.appear(MAIN_CHECK, threshold=10):
+            if self.ui_page_appear(page_main) and self.appear(MAIN_CHECK, threshold=20):
                 logger.info('Returned to main after cash shop billing information fetch failed')
                 return
 

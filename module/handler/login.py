@@ -21,6 +21,7 @@ class LoginHandler(UI):
         click_timer = Timer(0.3)
         orientation_timer = Timer(10)
         login_success = False
+        download_guard = None
 
         while 1:
             # 检查设备方向
@@ -67,7 +68,13 @@ class LoginHandler(UI):
                 continue
 
             # 下载中
+            # 实录 2026-10-29：版本更新要下 4.4GB 资源，下载画面不算进展，300 秒一到就杀游戏重开，
+            # 连续 3 次后要人工接管。下载画面还在就算登录有进展，下载本身最多等 60 分钟。
             if click_timer.reached() and self.handle_downloading():
+                guard.progress()
+                if download_guard is None:
+                    download_guard = WaitGuard(self.device, '游戏资源下载', timeout=3600, warn_after=600)
+                download_guard.check()
                 click_timer.reset()
                 continue
 

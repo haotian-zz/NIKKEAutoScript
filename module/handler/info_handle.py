@@ -56,7 +56,9 @@ class InfoHandler(ModuleBase):
 
                 # 领取完奖励，返回主界面
                 if reward_done:
-                    if self.appear(MAIN_CHECK, offset=30) and self.appear(MAIN_CHECK, threshold=10):
+                    # 颜色阈值与登录一致取 20。实录 2026-10-29 版本更新后大厅聊天图标蓝通道差 10.1，
+                    # 阈值 10 认不出大厅，一直点空白直到 GameStuck；弹窗遮罩的变暗远大于 20。
+                    if self.appear(MAIN_CHECK, offset=30) and self.appear(MAIN_CHECK, threshold=20):
                         logger.info('Page arrive: main')
                         return True
 
@@ -184,7 +186,7 @@ class InfoHandler(ModuleBase):
                 continue
 
             # 弹窗下的主页仍可能匹配模板，需同时检查颜色，确认遮罩已经消失。
-            if self.appear(MAIN_CHECK, offset=30) and self.appear(MAIN_CHECK, threshold=10):
+            if self.appear(MAIN_CHECK, offset=30) and self.appear(MAIN_CHECK, threshold=20):
                 self.device.stuck_record_clear()
                 self.device.click_record_clear()
                 logger.info('Returned to main after system error')
