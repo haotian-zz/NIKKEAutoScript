@@ -215,8 +215,10 @@ class EventStory(EventBase):
                     continue
             # STORY_CHECK may coincide with EVENT_CHECK for small events.
             normal = getattr(self.event_assets, f'STORY_{part}_NORMAL')
+            # MARIAn（event_20261029）的 Story 1 只有普通难度，没有 STORY_1_HARD 素材
+            hard_button = getattr(self.event_assets, f'STORY_{part}_HARD', None)
             active_normal = self.appear(normal, threshold=10) and self.appear(normal, offset=30)
-            active_hard = self.appear(getattr(self.event_assets, f'STORY_{part}_HARD'), threshold=10)
+            active_hard = hard_button is not None and self.appear(hard_button, threshold=10)
             if active_normal or active_hard:
                 if not hard:
                     if self.appear_then_click(normal, offset=30, interval=2):
@@ -232,8 +234,8 @@ class EventStory(EventBase):
                     button = getattr(self.event_assets, f'STORY_{part}_HARD_HIDDEN', None)
                     if button is not None and self.appear_then_click(button, threshold=10, interval=2):
                         continue
-                    self.appear_then_click(getattr(self.event_assets, f'STORY_{part}_HARD'),
-                                           offset=30, interval=3)
+                    if hard_button is not None:
+                        self.appear_then_click(hard_button, offset=30, interval=3)
                 continue
             unlock = getattr(self.event_assets, f'STORY_{part}_HARD_UNLOCK', None)
             if unlock is not None and self.appear_then_click(unlock, offset=10, interval=1):
