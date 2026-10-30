@@ -6,7 +6,7 @@ import unittest
 from unittest.mock import Mock
 
 
-source = ast.parse((Path(__file__).resolve().parents[1] / 'module/ui/ui.py').read_text())
+source = ast.parse((Path(__file__).resolve().parents[1] / 'module/ui/ui.py').read_text(encoding='utf-8'))
 method = next(node for node in ast.walk(source)
               if isinstance(node, ast.FunctionDef) and node.name == 'ui_additional')
 
@@ -97,7 +97,8 @@ class NavigationHomeFallbackTests(unittest.TestCase):
                          WaitGuard=lambda *a, **kw: SimpleNamespace(check=check_guard))
         exec(compile(ast.Module(body=[method], type_ignores=[]), 'ui_goto', 'exec'), namespace)
         ui = SimpleNamespace(ui_pages=[main, target], device=SimpleNamespace(screenshot=screenshot, click=click),
-                             appear=appear, appear_then_click=click_home, ui_additional=lambda: False)
+                             appear=appear, appear_then_click=click_home, ui_additional=lambda: False,
+                             ui_page_appear=lambda page, **kw: appear(page.check_button, **kw))
         namespace['ui_goto'](ui, target)
         return clicks
 

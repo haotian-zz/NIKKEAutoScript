@@ -5,7 +5,16 @@ from module.exception import GameNotRunningError, GamePageUnknownError, GameStar
 from module.handler.assets import *
 from module.handler.info_handle import InfoHandler
 from module.logger import logger
-from module.ui.assets import FACILITY_BACK, FACILITY_ENTER, GOTO_MAIN, UI_LOADING_1, UI_LOADING_2, UI_LOADING_3, UI_LOADING_4
+from module.ui.assets import (
+    ARK_CHECK_ABOVEGROUND,
+    FACILITY_BACK,
+    FACILITY_ENTER,
+    GOTO_MAIN,
+    UI_LOADING_1,
+    UI_LOADING_2,
+    UI_LOADING_3,
+    UI_LOADING_4,
+)
 from module.ui.page import (
     Page,
     page_arena,
@@ -93,12 +102,14 @@ class UI(InfoHandler):
         page_breaking_news,
     ]
 
-    def ui_page_appear(self, page: Page):
+    def ui_page_appear(self, page: Page, offset=(30, 30), interval=0):
         """
         Args:
             page: Page
         """
-        return self.appear(page.check_button, offset=(30, 30))
+        if page == page_ark:
+            return self.appear_any([page.check_button, ARK_CHECK_ABOVEGROUND], offset=offset, interval=interval)
+        return self.appear(page.check_button, offset=offset, interval=interval)
 
     def ui_get_current_page(self, skip_first_screenshot=True):
         logger.info('UI get current page')
@@ -229,7 +240,7 @@ class UI(InfoHandler):
             guard.check()
 
             # Destination page
-            if self.appear(destination.check_button, offset=offset):
+            if self.ui_page_appear(destination, offset=offset):
                 if confirm_timer.reached():
                     logger.info(f'Page arrive: {destination}')
                     break
@@ -246,7 +257,7 @@ class UI(InfoHandler):
                 if not page.parent or not page.check_button:
                     continue
 
-                if self.appear(page.check_button, offset=offset, interval=4):
+                if self.ui_page_appear(page, offset=offset, interval=4):
                     logger.info(f'Page switch: {page} -> {page.parent}')
                     button = page.links[page.parent]
                     self.device.click(button)

@@ -35,6 +35,14 @@ class EventStory(EventBase):
         }
         return getattr(self.event_assets, stages[story])
 
+    def appear_story_part(self, story, offset=30):
+        button = self.STORY_PART_CHECK(story)
+        if story == 'story_1_normal':
+            if self.event.type == 2:
+                return self.appear(button, threshold=20)
+            return self.appear(button, offset=offset)
+        return self.appear(button, threshold=10) and self.appear(button, offset=offset)
+
     def STORY_STAGE_11(self, story):
         clear = story.endswith('_clear')
         key = story[:-6] if clear else story
@@ -97,10 +105,7 @@ class EventStory(EventBase):
             f'{finder["horizontal_direction"]}'
         )
         for index, (base_x, base_y) in enumerate(points, start=1):
-            if not (
-                self.appear(self.STORY_PART_CHECK(open_story), threshold=10)
-                and self.appear(self.STORY_PART_CHECK(open_story), offset=30)
-            ):
+            if not self.appear_story_part(open_story, offset=10):
                 logger.warning('Not in story list page, retry')
                 return 'retry'
             # 关卡推完回到了关卡列表
@@ -196,9 +201,7 @@ class EventStory(EventBase):
             if self.appear(self.event_assets.STORY_STAGE_CHECK, offset=30):
                 self.appear_then_click(FIGHT_CLOSE, offset=30, interval=1)
                 continue
-            if self.appear(self.STORY_PART_CHECK(story), threshold=10) and self.appear(
-                self.STORY_PART_CHECK(story), offset=30
-            ):
+            if self.appear_story_part(story):
                 logger.info(f'Event page opened: {story}')
                 return True
             if self.event.type != 2:
@@ -315,8 +318,7 @@ class EventStory(EventBase):
                 if grid_mode:
                     if (
                         grid_retry_timer.reached()
-                        and self.appear(self.STORY_PART_CHECK(open_story), threshold=10)
-                        and self.appear(self.STORY_PART_CHECK(open_story), offset=30)
+                        and self.appear_story_part(open_story)
                         and not self.appear(self.event_assets.STORY_STAGE_CHECK, offset=30)
                     ):
                         result = self.find_pending_stage_by_grid(open_story)
@@ -607,15 +609,16 @@ class EventStory(EventBase):
                 if self.appear_then_click(FIGHT_QUICKLY, threshold=20, interval=2):
                     continue
             if self.appear(FIGHT_QUICKLY_CHECK, offset=10):
-                if max_clicks < 2 and self.appear_then_click(FIGHT_QUICKLY_MAX, offset=30,
-                                                           threshold=0.99, interval=1):
+                # 上游 f636feba：固定点满 3 次 MAX 再战斗
+                if max_clicks < 3 and self.appear_then_click(FIGHT_QUICKLY_MAX, offset=30,
+                                                           threshold=0.99, interval=0.5):
                     max_clicks += 1
                     self.device.sleep(0.4)
                     continue
-                if max_clicks and self.appear_then_click(FIGHT_QUICKLY_FIGHT, threshold=20, interval=2):
+                if max_clicks >= 3 and self.appear_then_click(FIGHT_QUICKLY_FIGHT, threshold=20, interval=2):
                     submitted = True
                     continue
-            if self.appear(self.STORY_PART_CHECK(open_story), threshold=10) and not self.appear(
+            if self.appear_story_part(open_story) and not self.appear(
                 self.event_assets.STORY_STAGE_CHECK, offset=30
             ):
                 if submitted and completed:

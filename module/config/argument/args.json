@@ -3168,8 +3168,8 @@
         "type": "select",
         "value": "",
         "option": [
-          "event_20261008",
-          "event_20260917"
+          "event_20261029",
+          "event_20261008"
         ],
         "display": "disabled"
       },
@@ -3324,8 +3324,8 @@
         "type": "select",
         "value": "",
         "option": [
-          "event_20261008",
-          "event_20260917"
+          "event_20261029",
+          "event_20261008"
         ],
         "display": "disabled"
       },

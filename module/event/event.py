@@ -1,7 +1,12 @@
 from module.base.timer import Timer
 from module.coop.coop import CoopIsUnavailable
 from module.event.assets import TEMPLATE_SHOP_GEM
-from module.event.base import ChallengeNotFoundError, EventSelectError, EventUnavailableError
+from module.event.base import (
+    DEFAULT_EVENT_TASK_ORDER,
+    ChallengeNotFoundError,
+    EventSelectError,
+    EventUnavailableError,
+)
 from module.event.challenge import EventChallenge
 from module.event.coop import EventCoop
 from module.event.extend import EventExtend
@@ -119,27 +124,39 @@ class Event(
             _ = self.event
 
             self.ensure_into_event()
-            if self.config.Event_LoginStamp:
-                step('event.login', '活动签到', self.login_stamp, verified=True)
-            if self.config.Event_Challenge:
-                step('event.challenge', '活动挑战', self.challenge, verified=True)
-            # 提前买票
-            if self.config.StoryStage_HardTicket and self.config.EventInfo_StoryDifficulty == 'Hard':
-                step('event.tickets', '活动票购买', self.shop, TEMPLATE_SHOP_GEM)
-                self.back_to_event()
-            if self.config.StoryStage_AutoPush or self.config.StoryStage_Sweep:
-                step('event.story', '活动推图 / 剩余票扫荡', self.story)
-            # if self.config.Event_Coop:
-            #     coop_reschedule = self.coop()
-            if self.config.Event_Game:
-                step('event.game', '活动小游戏', self.game)
+            configured_order = list(dict.fromkeys(self.event.task_order))
+            unknown_tasks = [task for task in configured_order if task not in DEFAULT_EVENT_TASK_ORDER]
+            if unknown_tasks:
+                logger.warning(f'Ignore unknown event tasks: {unknown_tasks}')
+            task_order = [task for task in configured_order if task in DEFAULT_EVENT_TASK_ORDER]
+            task_order.extend(task for task in DEFAULT_EVENT_TASK_ORDER if task not in task_order)
+            logger.info(f'Event task order: {task_order}')
 
-            step('event.reward', '活动奖励', self.reward, verified=True)
-
-            step('event.extend', '活动额外内容', self.event_extend)
-
-            if self.config.Event_Shop:
-                step('event.shop', '活动商店', self.shop)
+            for task in task_order:
+                if task == 'login_stamp':
+                    if self.config.Event_LoginStamp:
+                        step('event.login', '活动签到', self.login_stamp, verified=True)
+                elif task == 'challenge':
+                    if self.config.Event_Challenge:
+                        step('event.challenge', '活动挑战', self.challenge, verified=True)
+                elif task == 'hard_ticket':
+                    # 提前买票
+                    if self.config.StoryStage_HardTicket and self.config.EventInfo_StoryDifficulty == 'Hard':
+                        step('event.tickets', '活动票购买', self.shop, TEMPLATE_SHOP_GEM)
+                        self.back_to_event()
+                elif task == 'story':
+                    if self.config.StoryStage_AutoPush or self.config.StoryStage_Sweep:
+                        step('event.story', '活动推图 / 剩余票扫荡', self.story)
+                elif task == 'game':
+                    if self.config.Event_Game:
+                        step('event.game', '活动小游戏', self.game)
+                elif task == 'reward':
+                    step('event.reward', '活动奖励', self.reward, verified=True)
+                elif task == 'event_extend':
+                    step('event.extend', '活动额外内容', self.event_extend)
+                elif task == 'shop':
+                    if self.config.Event_Shop:
+                        step('event.shop', '活动商店', self.shop)
 
         except EventSelectError:
             report('blocked', '活动关卡配置与当前进度不匹配', '请检查关卡和难度，完成必要的首次通关')

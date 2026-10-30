@@ -6,7 +6,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 
-source = ast.parse((Path(__file__).resolve().parents[1] / 'module/event/story.py').read_text())
+source = ast.parse((Path(__file__).resolve().parents[1] / 'module/event/story.py').read_text(encoding='utf-8'))
 methods = [node for node in source.body if isinstance(node, ast.ClassDef)][0].body
 body = [node for node in methods if isinstance(node, ast.FunctionDef) and node.name in
         ('story', 'story_modes', 'stage_assets', 'STORY_STAGE_11', 'STORY_STAGE_12', 'find_and_sweep_stage', 'event_tickets')]
@@ -54,7 +54,7 @@ class EventProgressionTests(unittest.TestCase):
     def test_entry_timeout_is_failure_instead_of_activity_closed(self):
         from module.exception import GameStuckError
         import sys
-        tree = ast.parse((Path(__file__).resolve().parents[1] / 'module/event/event.py').read_text())
+        tree = ast.parse((Path(__file__).resolve().parents[1] / 'module/event/event.py').read_text(encoding='utf-8'))
         method = next(node for node in ast.walk(tree)
                       if isinstance(node, ast.FunctionDef) and node.name == 'ensure_into_event')
         namespace = dict(logger=Mock(), Timer=Mock(return_value=Mock()), GameStuckError=GameStuckError)
@@ -126,6 +126,7 @@ class SweepRunner:
         self.team_up = lambda **kwargs: None
         self.stage_assets = lambda _: [(9, 'stage9', 'clear9'), (10, 'stage10', 'clear10')]
         self.STORY_PART_CHECK = lambda _: 'map'
+        self.appear_story_part = lambda story, offset=30: self.appear(self.STORY_PART_CHECK(story))
         namespace.update(WaitGuard=lambda *args, **kwargs: SimpleNamespace(check=lambda: None, progress=lambda: None),
                          Ocr=lambda *args, **kwargs: SimpleNamespace(ocr=lambda _: {'text': '1-9 EVENT'}),
                          report=lambda *args, **kwargs: self.results.append((args, kwargs)),
