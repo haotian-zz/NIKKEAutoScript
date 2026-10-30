@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import unittest
 
 
-source = (Path(__file__).resolve().parents[1] / 'module/event/challenge.py').read_text()
+source = (Path(__file__).resolve().parents[1] / 'module/event/challenge.py').read_text(encoding='utf-8')
 methods = [node for node in ast.parse(source).body if isinstance(node, ast.ClassDef)][0].body
 body = [node for node in methods if isinstance(node, ast.FunctionDef) and node.name == 'leave_failed_battle']
 

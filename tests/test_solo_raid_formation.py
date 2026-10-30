@@ -8,7 +8,7 @@ import time
 import unittest
 from unittest.mock import Mock
 
-source = ast.parse((Path(__file__).resolve().parents[1] / 'module/solo_raid/challenge.py').read_text())
+source = ast.parse((Path(__file__).resolve().parents[1] / 'module/solo_raid/challenge.py').read_text(encoding='utf-8'))
 
 class Guard:
     def __init__(self, device, *args, **kwargs):
@@ -161,7 +161,7 @@ class RaidResultTests(unittest.TestCase):
 
 class RaidRecoveryTests(unittest.TestCase):
     def load(self, name, namespace):
-        tree = ast.parse((Path(__file__).resolve().parents[1] / 'module/solo_raid/solo_raid.py').read_text())
+        tree = ast.parse((Path(__file__).resolve().parents[1] / 'module/solo_raid/solo_raid.py').read_text(encoding='utf-8'))
         node = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == name)
         exec(compile(ast.Module(body=[node], type_ignores=[]), name, 'exec'), namespace)
         return namespace[name]

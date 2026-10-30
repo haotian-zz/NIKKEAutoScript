@@ -7,7 +7,7 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
-source = (ROOT / 'module/handler/login.py').read_text()
+source = (ROOT / 'module/handler/login.py').read_text(encoding='utf-8')
 cls = [node for node in ast.parse(source).body if isinstance(node, ast.ClassDef) and node.name == 'LoginHandler'][0]
 body = [node for node in cls.body if isinstance(node, ast.FunctionDef) and node.name == '_handle_app_login']
 

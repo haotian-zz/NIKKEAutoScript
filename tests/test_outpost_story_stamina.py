@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import unittest
 
 
-source = (Path(__file__).resolve().parents[1] / 'module/outpost/outpost_story.py').read_text()
+source = (Path(__file__).resolve().parents[1] / 'module/outpost/outpost_story.py').read_text(encoding='utf-8')
 cls = [node for node in ast.parse(source).body if isinstance(node, ast.ClassDef) and node.name == 'OutpostStory'][0]
 body = [node for node in cls.body if isinstance(node, ast.FunctionDef) and node.name in ('story_view', 'close_story_list')]
 

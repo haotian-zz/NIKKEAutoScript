@@ -96,7 +96,7 @@ class SceneMemoryTests(unittest.TestCase):
                 target = memory.observe(None)[0]
             memory.identify(target['id'], (20, 7), 'encountered_on_route')
             memory.victory((20, 7))
-            saved = json.loads(path.read_text())
+            saved = json.loads(path.read_text(encoding='utf-8'))
             self.assertEqual(saved['confirmed_wins'], [[20, 7]])
             self.assertEqual(saved['enemies'][0]['status'], 'encountered_on_route')
             self.assertEqual(saved['coordinates'], 'client_pixels_per_frame')
