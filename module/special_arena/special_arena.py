@@ -170,6 +170,17 @@ class SpecialArena(UI, ArenaBase):
                 click_timer.reset()
                 continue
 
+            # 实录 2026-10-29 版本更新后结算页改成 ARENA RESULT，底部「点击进行下一步 ESC」，
+            # 左下角回放图标没了，END_COMPETITION 认不出，停在结算页 8 分钟后 GameStuck。
+            if click_timer.reached() and self.appear(RESULT_NEXT, offset=(30, 30), interval=2):
+                logger.info('Click %s @ %s' % (point2str(100, 100), 'RESULT_NEXT'))
+                self.device.handle_control_check(RESULT_NEXT)
+                self.device.click_xy(100, 100)
+                already_start = True
+                confirm_timer.reset()
+                click_timer.reset()
+                continue
+
             if (
                 already_start
                 and self.appear(SPECIAL_ARENA_CHECK, offset=(10, 10), static=False)
