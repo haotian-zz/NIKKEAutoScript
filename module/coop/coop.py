@@ -173,7 +173,8 @@ class Coop(UI):
             else:
                 self.device.screenshot()
 
-            if self.appear(MAIN_CHECK, offset=10) and self.appear_then_click(COOP, offset=10, interval=3, static=False):
+            # 大厅左列的 COOP 图标；只在左列上下找，旧的细条模板全屏搜会误点顶部资源栏
+            if self.appear(MAIN_CHECK, offset=10) and self.appear_then_click(COOP, offset=(20, 300), interval=3):
                 logger.info('Enter Coop')
                 continue
 
