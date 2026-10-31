@@ -26,7 +26,7 @@ from module.execution.context import report
 from module.logger import logger
 from module.ocr.ocr import Ocr
 from module.simulation_room.assets import END_FIGHTING
-from module.ui.assets import ARK_CHECK, MAIN_CHECK
+from module.ui.assets import ARK_CHECK_UNDERGROUND, MAIN_CHECK
 from module.ui.page import page_main, page_outpost
 from module.ui.ui import UI
 
@@ -152,7 +152,7 @@ class AutoPush(UI):
         while time.monotonic() < deadline:
             self.device.sleep(1.)
             self.device.screenshot()
-            ark = self.appear(ARK_CHECK, offset=30)
+            ark = self.appear(ARK_CHECK_UNDERGROUND, offset=30)
             if not (ark or self.appear(page_outpost.check_button, offset=30) or self.appear(MAIN_CHECK, offset=30)):
                 continue
             self.quest_stage()
@@ -181,7 +181,7 @@ class AutoPush(UI):
             if index:
                 self.device.sleep(.3)
                 self.device.screenshot()
-                if not self.appear(ARK_CHECK, offset=30):
+                if not self.appear(ARK_CHECK_UNDERGROUND, offset=30):
                     return None
             text = re.sub(r'\s+', '', reader.ocr(self.device.image, threshold=.9)['text'] or '')
             if text != place:

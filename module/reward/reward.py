@@ -153,7 +153,7 @@ class Reward(UI):
             if self.appear_then_click(ARK_GOTO_RANKING, offset=20, threshold=0.85, interval=3):
                 continue
 
-            if self.appear(ARK_CHECK, offset=10):
+            if self.appear(ARK_CHECK_UNDERGROUND, offset=10):
                 location = self.appear_text('排名', threshold=0.9, interval=3)
                 if location and 570 <= location[0] < 720 and 80 <= location[1] < 350:
                     self.device.click_xy(*location)

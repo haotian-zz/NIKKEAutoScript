@@ -19,7 +19,12 @@ from module.interception.data import (
 from module.logger import logger
 from module.ocr.ocr import Digit, Ocr
 from module.simulation_room.assets import AUTO_BURST, AUTO_SHOOT, END_FIGHTING, PAUSE
-from module.ui.assets import ARK_CHECK, ARK_GOTO_INTERCEPTION, INTERCEPTION_CHECK, SPECIAL_INTERCEPTION_CHECK
+from module.ui.assets import (
+    ARK_CHECK_UNDERGROUND,
+    ARK_GOTO_INTERCEPTION,
+    INTERCEPTION_CHECK,
+    SPECIAL_INTERCEPTION_CHECK,
+)
 from module.ui.page import page_ark
 from module.ui.ui import UI
 from module.warehouse_stats.assets import CUSTOM_MODULE_TEMPLATE, ITEM_NUM_PREFIX
@@ -117,7 +122,7 @@ class Interception(UI):
                 logger.warning('Anomaly interception unavailable: check unlock status or select Special mode')
                 return False
 
-            if self.appear(ARK_CHECK, offset=10) and self.appear_then_click(
+            if self.appear(ARK_CHECK_UNDERGROUND, offset=10) and self.appear_then_click(
                 ARK_GOTO_INTERCEPTION, offset=10, interval=3
             ):
                 continue
@@ -524,7 +529,7 @@ class Interception(UI):
                 report('unknown', '特殊目标入口超时', '请检查解锁进度或入口识别', retryable=True)
                 logger.warning('Special interception skipped: target page did not open within 30 seconds')
                 return False
-            if self.appear(ARK_CHECK, offset=10) and self.appear_then_click(
+            if self.appear(ARK_CHECK_UNDERGROUND, offset=10) and self.appear_then_click(
                 ARK_GOTO_INTERCEPTION, offset=10, interval=3
             ):
                 continue

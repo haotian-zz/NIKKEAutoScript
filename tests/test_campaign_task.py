@@ -29,7 +29,7 @@ def load(name, **namespace):
     namespace.setdefault('LOBBY_RETURN_WAIT', 30.)
     namespace.setdefault('return_lobby_quest', Mock(return_value=False))
     namespace.setdefault('destination_lobby_quest', Mock(return_value=False))
-    namespace.setdefault('ARK_CHECK', object())
+    namespace.setdefault('ARK_CHECK_UNDERGROUND', object())
     namespace.setdefault('DESTINATION_SCORE', .8)
     namespace.setdefault('destination_place', Mock(return_value=None))
     namespace.setdefault('release_inference', Mock())
@@ -635,7 +635,7 @@ class CampaignStartTests(unittest.TestCase):
         clock = SimpleNamespace(now=0.)
         main, ark = object(), object()
         fn = load('visit_quest_destination', time=SimpleNamespace(monotonic=lambda: clock.now), MAIN_CHECK=main,
-                  ARK_CHECK=ark, page_outpost=SimpleNamespace(check_button=object()),
+                  ARK_CHECK_UNDERGROUND=ark, page_outpost=SimpleNamespace(check_button=object()),
                   quest_jump_point=Mock(return_value=(685.5, 128.)), destination_place=destination_place,
                   cv2=SimpleNamespace(cvtColor=lambda x, _: x, COLOR_RGB2BGR=0), logger=Mock(),
                   DESTINATION_QUEST_WAIT=30., LOBBY_JUMP_AREA=(660, 108, 710, 149))
@@ -663,7 +663,7 @@ class CampaignStartTests(unittest.TestCase):
     def test_ark_card_requires_two_frames_with_the_quest_place(self):
         """卡片地名两帧都等于任务地名才返回中心；读到别的地名或离开方舟页不点。"""
         ark = object()
-        fn = load('ark_destination_card', ARK_CHECK=ark, ARK_DESTINATION_LABEL=(292, 600, 402, 656), re=re)
+        fn = load('ark_destination_card', ARK_CHECK_UNDERGROUND=ark, ARK_DESTINATION_LABEL=(292, 600, 402, 656), re=re)
         for texts, expected in [(['市内', '市内'], (347., 628.)), (['市内', '简报室'], None), (['模拟室'], None)]:
             reader = Mock()
             reader.ocr.side_effect = [dict(text=text) for text in texts]
