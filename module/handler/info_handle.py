@@ -106,6 +106,16 @@ class InfoHandler(ModuleBase):
 
         return False
 
+    # VOLT TRIP 掷骰子小游戏，仅关闭窗口，不掷骰子
+    # 实录 2026-11-01/02：每天首次登录领完奖励后弹出，登录流程不认识，干等 300 秒才杀游戏重开
+    def handle_volt_trip(self):
+        if self.appear(VOLT_TRIP_CHECK, offset=(30, 30)) and self.appear_then_click(
+            VOLT_TRIP_CLOSE, offset=(30, 30), interval=3
+        ):
+            return True
+
+        return False
+
     # 露菲扭蛋，抽三次
     def handle_rupee_eggs(self):
         if self.appear(RUPEE_EGG_CHECK, offset=30):
