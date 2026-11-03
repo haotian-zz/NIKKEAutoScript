@@ -1,6 +1,8 @@
 import re
 from functools import cached_property
 
+import cv2
+
 from module.execution.context import report
 from module.base.decorator import del_cached_property
 from module.base.timer import Timer
@@ -143,6 +145,7 @@ class RubbishShop(ShopBase):
             self.ensure_sroll_to_top(x1=(505, 700), x2=(505, 1000), count=3, delay=1)
             logger.info(f'[Purchase Start] {product.name}')
             swipe_count = 0
+            last_list = None
 
             while 1:
                 self.device.screenshot()
@@ -166,9 +169,15 @@ class RubbishShop(ShopBase):
                     continue
 
                 # 结束当前商品的扫描，进入下一个商品
-                if self.appear(END_LIST_CHECK, threshold=5):
+                # 实录 2026-11-02：列表底部背景变成 (234, 236, 238)，和 END_LIST_CHECK 色差 8 超过阈值，
+                # 到底了也认不出，滚满 20 次报卡死，后面的商品都没买。滚一下列表纹丝不动也算到底。
+                list_image = self.device.image[610:1180, 110:710]
+                if self.appear(END_LIST_CHECK, threshold=5) or (
+                    last_list is not None and cv2.absdiff(list_image, last_list).mean() < 1
+                ):
                     logger.info(f'[Purchase done or not found] {product.name}')
                     break
+                last_list = list_image
 
                 # 滑动屏幕继续查找
                 self.ensure_sroll((505, 1000), (505, 700), speed=5, count=1, delay=0.5, method='scroll')
