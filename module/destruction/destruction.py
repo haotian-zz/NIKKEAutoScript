@@ -3,7 +3,7 @@ from module.base.timer import Timer
 from module.destruction.assets import *
 from module.logger import logger
 from module.ocr.ocr import Digit
-from module.ui.assets import DESTROY_CHECK
+from module.ui.assets import DESTROY_CHECK, REWARD_CHECK, REWARD_GOTO_DESTROY
 from module.ui.page import page_destroy
 from module.ui.ui import UI
 
@@ -46,6 +46,16 @@ class Destruction(UI):
                 reward = True
                 continue
             if self.handle_paid_gift():
+                continue
+
+            # 歼灭弹窗刚打开时可能被公告识别误点外侧关掉，退回前哨基地页就重新打开
+            if (
+                not reward
+                and not self.appear(DESTROY_CHECK, offset=10)
+                and self.appear(REWARD_CHECK, offset=10)
+                and self.appear_then_click(REWARD_GOTO_DESTROY, offset=10, interval=3)
+            ):
+                logger.info('Destroy popup closed, reopen it')
                 continue
 
             # 歼灭结算完奖励后回到歼灭页，视为免费歼灭完成
