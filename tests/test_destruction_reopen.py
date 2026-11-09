@@ -31,6 +31,9 @@ class FakeTimer:
     def clear(self):
         self._started = False
 
+    def reset(self):
+        self._started = True
+
 
 namespace = {'Timer': FakeTimer, 'DESTROY': 'destroy', 'DESTROY_CHECK': 'destroy_check',
              'DESTROY_GEM_CHECK': 'gem_check', 'REWARD_CHECK': 'reward_check',
@@ -48,7 +51,13 @@ class FakeDestruction:
         self.reopen = 0
         self.destroyed = 0
         self.frames = 0
-        self.device = SimpleNamespace(screenshot=self.screenshot)
+        self.device = SimpleNamespace(screenshot=self.screenshot, click=self.click)
+
+    def click(self, button):
+        # 「一举歼灭」模板认不出，只能按坐标点
+        if button == 'goto_destroy' and self.state == 'outpost':
+            self.reopen += 1
+            self.state = 'destroy'
 
     def screenshot(self):
         self.frames += 1
@@ -66,10 +75,6 @@ class FakeDestruction:
         if button == 'destroy' and self.state == 'destroy':
             self.destroyed += 1
             self.state = 'result'
-            return True
-        if button == 'goto_destroy' and self.state == 'outpost':
-            self.reopen += 1
-            self.state = 'destroy'
             return True
         return False
 

@@ -28,6 +28,7 @@ class Destruction(UI):
     def destroy_free(self, skip_first_screenshot=True):
         logger.hr('Destruction')
         confirm_timer = Timer(2, count=3)
+        reopen_timer = Timer(3)
 
         reward = False
         while 1:
@@ -49,13 +50,16 @@ class Destruction(UI):
                 continue
 
             # 歼灭弹窗刚打开时可能被公告识别误点外侧关掉，退回前哨基地页就重新打开
+            # 「一举歼灭」按钮已改版、模板认不出，按坐标点
             if (
                 not reward
                 and not self.appear(DESTROY_CHECK, offset=10)
                 and self.appear(REWARD_CHECK, offset=10)
-                and self.appear_then_click(REWARD_GOTO_DESTROY, offset=10, interval=3)
+                and reopen_timer.reached()
             ):
                 logger.info('Destroy popup closed, reopen it')
+                self.device.click(REWARD_GOTO_DESTROY)
+                reopen_timer.reset()
                 continue
 
             # 歼灭结算完奖励后回到歼灭页，视为免费歼灭完成
