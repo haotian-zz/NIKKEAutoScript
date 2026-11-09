@@ -22,6 +22,9 @@ class ChampionArenaUnrecognized(Exception):
 
 # 竞技场页上既没有可点入口、也没进入冠军竞技场、又不是已知赛季阶段的最长等待（秒）。
 CHAMPION_ENTRY_SECONDS = 10
+# 打开晋级赛/冠军争霸赛卡片的最长时间（秒），以及卡片上「应援」文字的搜索范围。
+CARD_OPEN_SECONDS = 60
+CARD_OFFSET = (5, 70)
 
 
 class ChampionArena(UI, ArenaBase):
@@ -59,6 +62,9 @@ class ChampionArena(UI, ArenaBase):
         logger.info('Open promotion or champion')
         click_timer = Timer(0.3)
         confirm_timer = Timer(3, count=3)
+        # 实录 2026-11-09：卡片「应援」下多了一行剩余时间，文字上移约 48px，原 offset=10 认不出，空转到 GameStuck。
+        # 放宽纵向搜索范围，并给打开卡片加总时限，认不出就跳过，不拖垮后面的任务。
+        open_timer = Timer(CARD_OPEN_SECONDS, count=CARD_OPEN_SECONDS).start()
 
         # 打开晋级赛或者冠军争霸赛
         while 1:
@@ -67,13 +73,17 @@ class ChampionArena(UI, ArenaBase):
             else:
                 self.device.screenshot()
 
+            if open_timer.reached():
+                logger.warning('Promotion or champion card not recognized')
+                raise ChampionArenaUnrecognized
+
             # 晋级赛
-            if click_timer.reached() and self.appear_then_click(PROMOTION, offset=10, interval=3):
+            if click_timer.reached() and self.appear_then_click(PROMOTION, offset=CARD_OFFSET, interval=3):
                 click_timer.reset()
                 continue
 
             # 冠军争霸赛
-            if click_timer.reached() and self.appear_then_click(CHAMPION, offset=10, interval=3):
+            if click_timer.reached() and self.appear_then_click(CHAMPION, offset=CARD_OFFSET, interval=3):
                 click_timer.reset()
                 continue
 
@@ -189,5 +199,5 @@ class ChampionArena(UI, ArenaBase):
         except ChampionArenaIsUnavailable:
             report('skipped', '冠军竞技场当前没有可应援对局')
         except ChampionArenaUnrecognized:
-            report('skipped', f'冠军竞技场入口{CHAMPION_ENTRY_SECONDS}秒内未出现可点入口或已知阶段（如尚未开放），已跳过')
+            report('skipped', '冠军竞技场入口或晋级赛/冠军争霸赛卡片状态认不出（如尚未开放或界面改版），已跳过')
         self.config.task_delay(schedule=True)

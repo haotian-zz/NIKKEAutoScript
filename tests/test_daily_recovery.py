@@ -170,6 +170,40 @@ class ChampionEntryTests(unittest.TestCase):
             ns['ensure_into_champion_arena'](script)
         self.assertLess(len(frames), 5)
 
+    def cheer_ns(self, timer=None):
+        self.unrecognized = type('Unrecognized', (Exception,), {})
+        return methods('module/champion_arena/champion_arena.py', {'cheer'},
+                       dict(Timer=timer or Timer, logger=Mock(), CARD_OPEN_SECONDS=3, CARD_OFFSET=(5, 70),
+                            ChampionArenaUnrecognized=self.unrecognized,
+                            PROMOTION='promotion', CHAMPION='champion', CHEER_RESULT='result',
+                            CHEER_RESULT_NEXT='next', PROMOTION_CHECK='p_check', CHAMPION_CHECK='c_check'))
+
+    def test_unrecognized_card_ends_instead_of_spinning(self):
+        """2026-11-09: the promotion card text moved up, nothing matched and the loop spun until GameStuck."""
+        ns = self.cheer_ns()
+        frames = []
+        script = SimpleNamespace(device=SimpleNamespace(screenshot=lambda: frames.append(1)),
+                                 appear=lambda button, **kw: False, appear_then_click=lambda button, **kw: False)
+        with self.assertRaises(self.unrecognized):
+            ns['cheer'](script)
+        self.assertLess(len(frames), 5)
+
+    def test_card_text_search_covers_shifted_layout(self):
+        """「应援」下方多一行剩余时间时，文字比模板位置高约 48px。"""
+        # 打开卡片的总时限（3 秒）还没到，点击间隔已到
+        ns = self.cheer_ns(type('OpenTimer', (Timer,), {'reached': lambda self: self.limit != 3}))
+        searched = {}
+
+        def appear_then_click(button, offset=0, **kw):
+            searched[button] = offset
+            raise StopIteration
+
+        script = SimpleNamespace(device=Mock(), appear=lambda button, **kw: False,
+                                 appear_then_click=appear_then_click)
+        with self.assertRaises(StopIteration):
+            ns['cheer'](script)
+        self.assertGreaterEqual(searched['promotion'][1], 48)
+
 
 class NotificationCheckTests(unittest.TestCase):
     def test_disabled_task_and_all_retries_never_send_a_message(self):
