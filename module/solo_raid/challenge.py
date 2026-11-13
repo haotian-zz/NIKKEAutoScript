@@ -17,6 +17,11 @@ from module.ui.assets import MAIN_CHECK
 from module.ui.ui import UI
 
 
+# 「挑战」按钮的颜色容差。实录 2026-11-12：新一期按钮下多了一行更新时间并带发光，
+# 平均色与素材差 11～18，原阈值 10 一次都没过，普通突击在关卡页空转。
+# 灰掉的按钮差 100 以上，放宽到 30 仍能区分可点和不可点。
+CHALLENGE_COLOR_THRESHOLD = 30
+
 class SoloRaidChallenge(UI):
     def raid_team_empty(self, editor=False):
         if self.device.image.shape[:2] != (1280, 720):
@@ -258,7 +263,7 @@ class SoloRaidChallenge(UI):
                 self.device.screenshot()
 
             # 点击挑战
-            if self.appear(SOLO_RAID_CHECK, offset=10) and self.appear_then_click(CHALLENGE, threshold=10, interval=2):
+            if self.appear(SOLO_RAID_CHECK, offset=10) and self.appear_then_click(CHALLENGE, threshold=CHALLENGE_COLOR_THRESHOLD, interval=2):
                 continue
 
             # 挑战确认

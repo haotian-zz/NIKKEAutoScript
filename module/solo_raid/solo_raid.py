@@ -4,7 +4,7 @@ from module.base.watchdog import WaitGuard, save_wait_image
 from module.logger import logger
 from module.simulation_room.assets import AUTO_BURST, AUTO_SHOOT, END_FIGHTING, PAUSE
 from module.solo_raid.assets import *
-from module.solo_raid.challenge import SoloRaidChallenge
+from module.solo_raid.challenge import CHALLENGE_COLOR_THRESHOLD, SoloRaidChallenge
 from module.ui.assets import FIGHT_QUICKLY_CHECK, FIGHT_QUICKLY_MAX, FIGHT_QUICKLY_MIN, GOTO_MAIN, MAIN_CHECK
 from module.ui.page import page_main
 
@@ -174,7 +174,7 @@ class SoloRaid(SoloRaidChallenge):
             if (
                 self.appear(SOLO_RAID_CHECK, offset=10)
                 and self.appear(CHALLENGE_QUICKLY_DISABLE, threshold=10)
-                and self.appear_then_click(CHALLENGE, threshold=10, interval=2)
+                and self.appear_then_click(CHALLENGE, threshold=CHALLENGE_COLOR_THRESHOLD, interval=2)
             ):
                 continue
 
@@ -260,7 +260,7 @@ class SoloRaid(SoloRaidChallenge):
                 self.appear(SOLO_RAID_CHECK, offset=10)
                 and self.appear(STAGE_SEVEN, offset=(30, 30))
                 and self.appear(CHALLENGE_QUICKLY_DISABLE, threshold=10)
-                and not self.appear(CHALLENGE, threshold=10)
+                and not self.appear(CHALLENGE, threshold=CHALLENGE_COLOR_THRESHOLD)
             ):
                 break
 
