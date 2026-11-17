@@ -151,6 +151,17 @@ class InfoHandler(ModuleBase):
         ):
             return True
 
+    def handle_outpost_move_mode(self):
+        """误入前哨基地「请选择要移动的建筑」模式时，点底部蓝色「取消」退出。
+
+        实录 2026-11-16：前哨剧情把基地左上角的图标误认成剧情条目点了一下，游戏进入移动建筑模式。
+        这个模式下页面、剧情按钮都认不出，脚本空等 6 分钟才 GameStuck 重启游戏。
+        """
+        if self.appear_then_click(OUTPOST_MOVE_CANCEL, offset=(20, 20), interval=2):
+            logger.info('Outpost building move mode, cancel')
+            return True
+        return False
+
     def handle_announcement(self):
         if self.appear(ANNOUNCEMENT_CHECK, offset=(30, 30), threshold=0.74, static=False) and self.appear_then_click(
             ANNOUNCEMENT, offset=(30, 30), interval=3, threshold=0.74, static=False

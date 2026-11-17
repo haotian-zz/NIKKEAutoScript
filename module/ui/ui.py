@@ -309,6 +309,10 @@ class UI(InfoHandler):
         ):
             return self.appear_then_click(FACILITY_BACK, offset=10, threshold=0.9, interval=1)
 
+        # 前哨基地移动建筑模式下认不出任何页面，先退出来
+        if self.handle_outpost_move_mode():
+            return True
+
         # 指挥官等级升级
         if self.handle_level_up():
             return True

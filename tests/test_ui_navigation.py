@@ -19,6 +19,7 @@ class NavigationPopupTests(unittest.TestCase):
                 exec(compile(ast.Module(body=[method], type_ignores=[]), 'ui_additional', 'exec'), ns)
                 handler = SimpleNamespace(appear=Mock(side_effect=lambda button, **kw: back if button == 'back' else enter),
                                           appear_then_click=Mock(return_value=True),
+                                          handle_outpost_move_mode=Mock(return_value=False),
                                           handle_level_up=Mock(return_value=False),
                                           handle_reward=Mock(return_value=True))
                 self.assertTrue(ns['ui_additional'](handler))
@@ -41,7 +42,8 @@ class NavigationPopupTests(unittest.TestCase):
                           page_reward=SimpleNamespace(check_button='reward'))
                 exec(compile(ast.Module(body=[method], type_ignores=[]), 'ui_additional', 'exec'), ns)
                 handler = Mock()
-                for name in ('handle_level_up', 'handle_reward', 'handle_paid_gift', 'handle_announcement',
+                for name in ('handle_outpost_move_mode', 'handle_level_up', 'handle_reward', 'handle_paid_gift',
+                             'handle_announcement',
                              'handle_server', 'handle_download', 'handle_system_error',
                              'handle_system_maintenance', 'handle_login', 'appear_then_click'):
                     getattr(handler, name).return_value = False

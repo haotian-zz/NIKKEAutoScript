@@ -35,6 +35,7 @@ exec(compile(ast.fix_missing_locations(ast.Module(body=body, type_ignores=[])), 
 
 class Runner:
     CONFIRM_WITHOUT_STORY_LIMIT = 3
+    DIALOG_BOX_THRESHOLD = 0.9
     story_view = namespace['story_view']
     close_story_list = namespace['close_story_list']
 
@@ -47,6 +48,9 @@ class Runner:
 
     def check_remaining(self):
         pass
+
+    def handle_outpost_move_mode(self):
+        return False
 
     def screenshot(self):
         if not self.frames:

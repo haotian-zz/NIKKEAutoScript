@@ -19,6 +19,11 @@ class NoTimesRemaining(Exception):
 class OutpostStory(UI):
     # 连续点了这么多次「确认」都没进剧情，就当耐力用完
     CONFIRM_WITHOUT_STORY_LIMIT = 3
+    # 剧情条目图标只有 18×17 像素，在基地地图上也能凑出 0.74～0.82 的分数。
+    # 实录 2026-11-02/09/16 的日志：真点到条目时都在 0.93 以上，误点都在 0.82 以下。
+    # 11-16 确认框弹着时有一次 0.77 的误点，随后游戏进了移动建筑模式，卡了 6 分钟才重启
+    # （推测这一下点穿到了基地左上角）。
+    DIALOG_BOX_THRESHOLD = 0.9
 
     def close_story_list(self):
         """点剧情列表底部「关闭」直到列表消失，10 秒还在就留给下一个任务的 UI 处理。"""
@@ -33,6 +38,9 @@ class OutpostStory(UI):
         # 检查次数
         while 1:
             self.device.screenshot()
+
+            if self.handle_outpost_move_mode():
+                continue
 
             # 剧情图标
             if self.appear(STORY_OPEN, offset=10):
@@ -62,8 +70,11 @@ class OutpostStory(UI):
                 self.close_story_list()
                 raise NoTimesRemaining
 
+            if self.handle_outpost_move_mode():
+                continue
+
             if (
-                not self.appear(STORY_DIALOG_BOX, offset=100)
+                not self.appear(STORY_DIALOG_BOX, offset=100, threshold=self.DIALOG_BOX_THRESHOLD)
                 and not self.appear(STORY_CLOSE, offset=10)
                 and self.appear_then_click(STORY_OPEN, offset=10, interval=1)
             ):
@@ -85,8 +96,18 @@ class OutpostStory(UI):
                 confirms += 1
                 continue
 
-            # 任意对话框
-            if not skip and self.appear_then_click(STORY_DIALOG_BOX, offset=100, click_offset=(30, -15), interval=3):
+            # 任意对话框（剧情列表里的条目图标）；确认框弹着时不点，免得点到框外的基地
+            if (
+                not skip
+                and not self.appear(STORY_START_CONFIRM, offset=10)
+                and self.appear_then_click(
+                    STORY_DIALOG_BOX,
+                    offset=100,
+                    click_offset=(30, -15),
+                    interval=3,
+                    threshold=self.DIALOG_BOX_THRESHOLD,
+                )
+            ):
                 continue
 
             # SKIP
