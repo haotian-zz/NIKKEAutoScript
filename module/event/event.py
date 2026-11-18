@@ -37,6 +37,7 @@ class Event(
         confirm_timer = Timer(30, count=20).start()
         event_timer = Timer(3, count=5)
         skip_click_timer = Timer(5)
+        entry_clicked = False
 
         while 1:
             if skip_first_screenshot:
@@ -56,6 +57,13 @@ class Event(
             if confirm_timer.reached():
                 from module.base.watchdog import save_wait_image
                 from module.execution.context import report
+                # 实录 2026-11-18：MARIA-n 活动换期，大厅横幅变成新活动，配置的活动入口一次都没出现。
+                # 原逻辑按卡死重启游戏，第 3 次失败会让整个调度退出，后面的单人突击、通行证等都不跑。
+                # 到时还在大厅、入口一次都没点到时，重启也找不到入口，按活动不可用跳过。
+                if not entry_clicked and self.appear(MAIN_CHECK, offset=10):
+                    save_wait_image(self.device, 'event_entry_missing')
+                    logger.warning('Configured event entry not found on main page, event may have ended')
+                    raise EventUnavailableError
                 save_wait_image(self.device, 'event_entry_timeout')
                 report('failed', '活动入口未能打开', '30 秒内未进入活动，不能据此判定活动已结束', retryable=True)
                 raise GameStuckError('Event entry did not open within 30 seconds')
@@ -75,6 +83,7 @@ class Event(
                 and self.appear(MAIN_CHECK, offset=10)
                 and self.appear_then_click(self.event_assets.MAIN_GOTO_EVENT, offset=(50, 50), interval=5)
             ):
+                entry_clicked = True
                 click_timer.reset()
                 logger.info('Open event story')
                 continue

@@ -57,7 +57,8 @@ class EventProgressionTests(unittest.TestCase):
         tree = ast.parse((Path(__file__).resolve().parents[1] / 'module/event/event.py').read_text(encoding='utf-8'))
         method = next(node for node in ast.walk(tree)
                       if isinstance(node, ast.FunctionDef) and node.name == 'ensure_into_event')
-        namespace = dict(logger=Mock(), Timer=Mock(return_value=Mock()), GameStuckError=GameStuckError)
+        namespace = dict(logger=Mock(), Timer=Mock(return_value=Mock()), GameStuckError=GameStuckError,
+                         MAIN_CHECK='main', EventUnavailableError=LookupError)
         exec(compile(ast.Module(body=[method], type_ignores=[]), 'event_entry', 'exec'), namespace)
         script = SimpleNamespace(device=Mock(), event_assets=SimpleNamespace(EVENT_CHECK='event'),
                                  appear=Mock(return_value=False))
@@ -69,6 +70,66 @@ class EventProgressionTests(unittest.TestCase):
         save_image.assert_called_once()
         self.assertEqual(outcome.call_args.args[0], 'failed')
         self.assertTrue(outcome.call_args.kwargs['retryable'])
+
+    def run_entry(self, appear, clickable=()):
+        """跑真实的 ensure_into_event；confirm_timer 在第 3 帧到时，其它计时器随时可点。"""
+        from module.exception import GameStuckError
+        import sys
+        tree = ast.parse((Path(__file__).resolve().parents[1] / 'module/event/event.py').read_text(encoding='utf-8'))
+        method = next(node for node in ast.walk(tree)
+                      if isinstance(node, ast.FunctionDef) and node.name == 'ensure_into_event')
+        frames = {'n': 0}
+
+        def make_timer(limit, **kwargs):
+            timer = Mock()
+            timer.start.return_value = timer
+            timer.started.return_value = False
+            timer.reached.side_effect = (lambda: frames['n'] >= 3) if limit == 30 else (lambda: True)
+            return timer
+
+        class Unavailable(Exception):
+            pass
+
+        namespace = dict(logger=Mock(), Timer=make_timer, GameStuckError=GameStuckError,
+                         EventUnavailableError=Unavailable, MAIN_CHECK='main', EVENT_SWITCH='switch', SKIP='skip')
+        exec(compile(ast.Module(body=[method], type_ignores=[]), 'event_entry', 'exec'), namespace)
+        clicks = []
+
+        def appear_then_click(button, **kwargs):
+            if button in clickable:
+                clicks.append(button)
+                return True
+            return False
+
+        def screenshot():
+            frames['n'] += 1
+
+        script = SimpleNamespace(device=SimpleNamespace(screenshot=screenshot, click_xy=Mock()),
+                                 event_assets=SimpleNamespace(EVENT_CHECK='event', MAIN_GOTO_EVENT='entry'),
+                                 appear=Mock(side_effect=lambda button, **kw: button in appear),
+                                 appear_then_click=appear_then_click)
+        save_image = Mock()
+        with patch.dict(sys.modules, {'module.base.watchdog': SimpleNamespace(save_wait_image=save_image)}), \
+                patch('module.execution.context.report', Mock()):
+            try:
+                namespace['ensure_into_event'](script)
+            except Unavailable:
+                return 'unavailable', clicks, save_image
+            except GameStuckError:
+                return 'stuck', clicks, save_image
+        return 'entered', clicks, save_image
+
+    def test_missing_entry_on_stable_main_page_skips_instead_of_restart(self):
+        # 实录 2026-11-18：大厅横幅换成新活动，旧活动入口和切换按钮都认不出，30 秒一次没点
+        outcome, clicks, save_image = self.run_entry(appear={'main'})
+        self.assertEqual(outcome, 'unavailable')
+        self.assertEqual(clicks, [])
+        self.assertEqual(save_image.call_args.args[1], 'event_entry_missing')
+
+    def test_entry_clicked_but_not_opened_is_still_stuck(self):
+        outcome, clicks, _ = self.run_entry(appear={'main'}, clickable={'entry'})
+        self.assertEqual(outcome, 'stuck')
+        self.assertIn('entry', clicks)
 
     def test_normal_clear_unlocks_hard_before_spending_repeat_tickets(self):
         run = Runner(releases={'story_1_normal': ['story_1_hard']})
